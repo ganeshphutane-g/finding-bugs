@@ -1,13 +1,16 @@
 # State
 
 Current project: #1 docker-mop (Docker CLI plugin: prune preview + volume rename/copy)
-Phase: spec
-Repo: ganeshphutane-g/docker-mop (to be created, private)
+Phase: build (milestone 1 of 5 done)
+Repo: building in projects/docker-mop/ inside finding-bugs (own repo blocked, see below)
+Spec: projects/docker-mop/SPEC.md
 
 ## Next step
 
-Create the private repo, write SPEC.md with milestones, then start milestone 1.
-See autopilot/IDEAS.md for the evidence behind this choice.
+Milestone 2: `docker mop plan` for containers, images, volumes and networks, with
+filters (until, label, label!=), sizes, table and JSON output. Integration tests must
+create real objects, run the plan, then run Docker's real prune and compare the
+deleted IDs with the plan. Skip integration tests cleanly when no daemon is reachable.
 
 ## Notes for runs
 
@@ -22,4 +25,8 @@ None yet.
 
 ## Blockers for the owner
 
-None.
+- Creating new repos fails: the Claude GitHub app gets "403 Resource not accessible
+  by integration". To give docker-mop its own repo, create an empty private repo
+  `ganeshphutane-g/docker-mop` on GitHub and give the Claude GitHub app access to it
+  (GitHub settings > Applications > Claude > Repository access). The next run will
+  move the project there with its history.

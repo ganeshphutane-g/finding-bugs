@@ -1,0 +1,159 @@
+// Package cli implements the docker-mop commands.
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/ganeshphutane-g/docker-mop/internal/engine"
+)
+
+// Version is set at build time with -ldflags "-X ...cli.Version=v1.2.3".
+var Version = "dev"
+
+const pluginName = "mop"
+
+// metadataCommand is the hidden subcommand the docker CLI calls to discover plugins.
+const metadataCommand = "docker-cli-plugin-metadata"
+
+// Env is everything a command needs from the outside world, so tests can
+// swap any of it.
+type Env struct {
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
+	Getenv func(string) string
+	// NewClient connects to the daemon. Tests may replace it.
+	NewClient func(engine.Endpoint) (*engine.Client, error)
+}
+
+// DefaultEnv uses the real process environment.
+func DefaultEnv() Env {
+	return Env{
+		Stdin:     os.Stdin,
+		Stdout:    os.Stdout,
+		Stderr:    os.Stderr,
+		Getenv:    os.Getenv,
+		NewClient: engine.New,
+	}
+}
+
+// errUsage marks errors caused by bad arguments; they exit with code 2.
+var errUsage = errors.New("usage error")
+
+type usageError struct{ msg string }
+
+func (e usageError) Error() string { return e.msg }
+func (e usageError) Is(target error) bool {
+	return target == errUsage
+}
+
+func usagef(format string, args ...any) error {
+	return usageError{msg: fmt.Sprintf(format, args...)}
+}
+
+// Run executes docker-mop with the given arguments (without the program name)
+// and returns the process exit code.
+func Run(ctx context.Context, env Env, args []string) int {
+	err := run(ctx, env, args)
+	switch {
+	case err == nil:
+		return 0
+	case errors.Is(err, errUsage):
+		fmt.Fprintf(env.Stderr, "docker mop: %v\nRun 'docker mop help' for usage.\n", err)
+		return 2
+	default:
+		fmt.Fprintf(env.Stderr, "docker mop: %v\n", err)
+		return 1
+	}
+}
+
+func run(ctx context.Context, env Env, args []string) error {
+	if len(args) > 0 && args[0] == metadataCommand {
+		return printMetadata(env.Stdout)
+	}
+	// When called by the docker CLI, the first argument is the plugin name.
+	if len(args) > 0 && args[0] == pluginName {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		printHelp(env.Stdout)
+		return nil
+	}
+
+	cmd, rest := args[0], args[1:]
+	switch cmd {
+	case "help", "-h", "--help":
+		printHelp(env.Stdout)
+		return nil
+	case "version", "--version":
+		return runVersion(ctx, env, rest)
+	default:
+		return usagef("unknown command %q", cmd)
+	}
+}
+
+func printMetadata(w io.Writer) error {
+	meta := map[string]string{
+		"SchemaVersion":    "0.1.0",
+		"Vendor":           "Ganesh Phutane",
+		"Version":          Version,
+		"ShortDescription": "Preview prunes before they delete anything; rename and copy volumes",
+		"URL":              "https://github.com/ganeshphutane-g/docker-mop",
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(meta)
+}
+
+const helpText = `Usage: docker mop COMMAND
+
+See exactly what a prune will delete before it deletes anything,
+and rename or copy volumes.
+
+Commands:
+  version     Show docker-mop and Docker daemon versions
+  help        Show this help
+
+Run 'docker mop COMMAND --help' for more information on a command.
+`
+
+func printHelp(w io.Writer) {
+	fmt.Fprint(w, helpText)
+}
+
+func connect(env Env) (*engine.Client, error) {
+	ep, err := engine.ResolveEndpoint(env.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	return env.NewClient(ep)
+}
+
+func runVersion(ctx context.Context, env Env, args []string) error {
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			fmt.Fprintln(env.Stdout, "Usage: docker mop version\n\nShow docker-mop and Docker daemon versions.")
+			return nil
+		}
+		return usagef("version takes no arguments, got %q", strings.Join(args, " "))
+	}
+
+	fmt.Fprintf(env.Stdout, "docker-mop:  %s\n", Version)
+	client, err := connect(env)
+	if err != nil {
+		return err
+	}
+	v, err := client.Version(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(env.Stdout, "Docker:      %s (API %s, %s/%s)\n", v.Version, v.APIVersion, v.Os, v.Arch)
+	fmt.Fprintf(env.Stdout, "Daemon:      %s (from %s)\n", client.Endpoint.Host, client.Endpoint.Source)
+	return nil
+}

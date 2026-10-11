@@ -1,0 +1,25 @@
+name: docker-mop
+
+on:
+  push:
+    paths: ["projects/docker-mop/**", ".github/workflows/docker-mop.yml"]
+  pull_request:
+    paths: ["projects/docker-mop/**", ".github/workflows/docker-mop.yml"]
+
+defaults:
+  run:
+    working-directory: projects/docker-mop
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/docker-mop/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: unit and integration tests
+        run: go test -race ./...
