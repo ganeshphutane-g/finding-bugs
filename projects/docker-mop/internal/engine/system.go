@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"net/http"
+	"time"
 )
 
 // ServerVersion is the subset of GET /version that docker-mop shows.
@@ -21,21 +22,34 @@ func (c *Client) Version(ctx context.Context) (ServerVersion, error) {
 	return v, err
 }
 
-// UsesContainerdStore reports whether the daemon keeps images in the
-// containerd image store
-// rather than the classic graph driver store. The two prune images
-// differently.
-func (c *Client) UsesContainerdStore(ctx context.Context) (bool, error) {
-	var info struct {
+// Info is the part of GET /info docker-mop uses.
+type Info struct {
+	// ContainerdStore is true when images live in the containerd image store
+	// rather than the classic graph driver store. The two prune images
+	// differently.
+	ContainerdStore bool
+	// SystemTime is the daemon's clock, in the daemon's time zone. Docker
+	// evaluates "until" filters against it.
+	SystemTime time.Time
+}
+
+// Info returns facts about the daemon that change how prunes behave.
+func (c *Client) Info(ctx context.Context) (Info, error) {
+	var raw struct {
 		DriverStatus [][2]string `json:"DriverStatus"`
+		SystemTime   string      `json:"SystemTime"`
 	}
-	if err := c.Call(ctx, Request{Method: http.MethodGet, Path: "/info"}, &info); err != nil {
-		return false, err
+	if err := c.Call(ctx, Request{Method: http.MethodGet, Path: "/info"}, &raw); err != nil {
+		return Info{}, err
 	}
-	for _, kv := range info.DriverStatus {
+	var info Info
+	for _, kv := range raw.DriverStatus {
 		if kv[0] == "driver-type" && kv[1] == "io.containerd.snapshotter.v1" {
-			return true, nil
+			info.ContainerdStore = true
 		}
 	}
-	return false, nil
+	if t, err := time.Parse(time.RFC3339Nano, raw.SystemTime); err == nil {
+		info.SystemTime = t
+	}
+	return info, nil
 }

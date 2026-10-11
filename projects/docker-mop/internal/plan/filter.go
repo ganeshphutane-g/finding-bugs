@@ -15,11 +15,13 @@ type Filters map[string]map[string]bool
 
 // ParseFilters turns "key=value" strings into Filters, splitting at the first
 // "=", the way the docker CLI does ("label!=a=b" is key "label!", value "a=b").
+// Like the CLI it lowercases the key and trims spaces around both parts.
 func ParseFilters(raw []string) (Filters, error) {
 	f := Filters{}
 	for _, r := range raw {
 		key, value, ok := strings.Cut(r, "=")
-		key = strings.TrimSpace(key)
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
 		if !ok || key == "" {
 			return nil, fmt.Errorf("bad format of filter (expected name=value): %q", r)
 		}
@@ -112,7 +114,8 @@ func (f Filters) MatchLabels(labels map[string]string) bool {
 }
 
 // Until returns the cut-off time from the "until" filter, or the zero time
-// when none is set.
+// when none is set. now should be the daemon's clock, in the daemon's time
+// zone, because Docker evaluates the filter there.
 func (f Filters) Until(now time.Time) (time.Time, error) {
 	values := f.Get("until")
 	switch len(values) {
@@ -125,40 +128,60 @@ func (f Filters) Until(now time.Time) (time.Time, error) {
 	}
 }
 
-// parseTimestamp accepts the same forms as Docker's "until" filter: a Go
-// duration relative to now ("24h", "90m"), an RFC 3339 date or date-time
-// (local time when no zone is given), or Unix seconds with optional fraction.
+// parseTimestamp follows Docker's timetypes.GetTimestamp: a Go duration
+// relative to now ("24h", "90m"; but "0" means the Unix epoch), an RFC 3339
+// date or date-time with or without a zone (no zone means now's time zone),
+// or Unix seconds with an optional fraction.
 func parseTimestamp(value string, now time.Time) (time.Time, error) {
-	if d, err := time.ParseDuration(value); err == nil {
-		return now.Add(-d), nil
+	if value != "0" {
+		if d, err := time.ParseDuration(value); err == nil {
+			return now.Add(-d), nil
+		}
 	}
 
-	layouts := []string{
-		time.RFC3339Nano,
-		time.RFC3339,
+	bases := []string{
 		"2006-01-02T15:04:05.999999999",
 		"2006-01-02T15:04:05",
 		"2006-01-02T15:04",
 		"2006-01-02T15",
 		"2006-01-02",
 	}
-	for _, layout := range layouts {
-		var t time.Time
-		var err error
-		if strings.Contains(layout, "Z07") {
-			t, err = time.Parse(layout, value)
-		} else {
-			t, err = time.ParseInLocation(layout, value, time.Local)
+	for _, base := range bases {
+		if t, err := time.Parse(base+"Z07:00", value); err == nil {
+			return t, nil
 		}
-		if err == nil {
+		if t, err := time.ParseInLocation(base, value, now.Location()); err == nil {
 			return t, nil
 		}
 	}
 
-	secs, err := strconv.ParseFloat(value, 64)
-	if err != nil || math.IsNaN(secs) || math.IsInf(secs, 0) || strings.ContainsAny(value, "eE") {
+	if !unixSeconds(value) {
 		return time.Time{}, fmt.Errorf("invalid until value %q: use a duration (24h), a date (2006-01-02), a date-time (2006-01-02T15:04:05) or Unix seconds", value)
 	}
+	secs, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsInf(secs, 0) {
+		return time.Time{}, fmt.Errorf("invalid until value %q", value)
+	}
 	whole, frac := math.Modf(secs)
-	return time.Unix(int64(whole), int64(frac*1e9)), nil
+	return time.Unix(int64(whole), int64(math.Round(frac*1e9))), nil
+}
+
+// unixSeconds accepts digits with at most one decimal point and an optional
+// leading minus, the only number forms Docker takes.
+func unixSeconds(s string) bool {
+	s = strings.TrimPrefix(s, "-")
+	if s == "" || s == "." {
+		return false
+	}
+	dot := false
+	for _, r := range s {
+		switch {
+		case r == '.' && !dot:
+			dot = true
+		case r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }

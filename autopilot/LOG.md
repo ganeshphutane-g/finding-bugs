@@ -29,7 +29,15 @@ Newest first.
   label copy, --compose-project relabelling, and refusals for unsafe cases (in use,
   driver options, target exists). No image pulls: an empty local helper image and
   never-started containers. Tested with awkward data on both image stores.
-- Next: milestone 5 (README, licence, release build, full review, v1.0.0).
+- Milestone 5 done: two independent full reviews; fixed 6 issues in volume copy
+  (race with a concurrently created target, hidden leftover helpers, stale Compose
+  labels, xattr/dir-time checks, Ctrl-C leftovers, one fewer full read) and 9 in
+  plan/prune (deleting an image that was tagged after the plan, config-only networks,
+  until=0 and date parsing vs Docker, daemon clock/time zone, https without cert
+  checks, docker global flags, API<1.42 volume rules, image edge cases). Added tests
+  for each. README with real captured output, LICENSE, CHANGELOG, `make dist`.
+  Full suite green on both image stores. Tagged docker-mop/v1.0.0.
+- Project #1 is done. Next run: research round 2.
 
 ## 2026-10-12 — setup
 

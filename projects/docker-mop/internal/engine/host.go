@@ -131,6 +131,8 @@ func contextEndpoint(configDir, name string) (Endpoint, error) {
 		out.TLS = true
 		out.TLSVerify = !ep.SkipTLSVerify
 		out.CertPath = tlsDir
+	} else if ep.SkipTLSVerify {
+		out.TLS = true // TLS without certificate checks, like the docker CLI
 	}
 	return out, nil
 }

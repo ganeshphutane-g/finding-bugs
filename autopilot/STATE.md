@@ -1,25 +1,17 @@
 # State
 
 Current project: #1 docker-mop (Docker CLI plugin: prune preview + volume rename/copy)
-Phase: build (milestones 1–4 of 5 done)
+Phase: done (v1.0.0 tagged as docker-mop/v1.0.0)
 Repo: building in projects/docker-mop/ inside finding-bugs (own repo blocked, see below)
 Spec: projects/docker-mop/SPEC.md
 
 ## Next step
 
-Milestone 5 (release):
-1. README.md: what/why (link the two moby issues), install (Makefile + manual copy to
-   ~/.docker/cli-plugins), quick start with real example output, command reference,
-   safety guarantees and known limits (build cache not previewed; local volumes
-   without driver options only; image totals are lower bounds), how tests work.
-2. LICENSE (MIT, Ganesh Phutane), CHANGELOG.md (1.0.0), Makefile `dist` target that
-   cross-builds linux/darwin/windows amd64+arm64 with checksums.
-3. Full review for bugs and security issues (use the code-review approach on the
-   whole project), fix findings, rerun all tests on both image stores.
-4. Tag: since the project still lives in finding-bugs, tag `docker-mop/v1.0.0`
-   (Go's nested-module tag form). If the owner has created the docker-mop repo by
-   then, move the project there first (git subtree split keeps the history).
-5. Mark the project done in STATE and start research round 2.
+Start research round 2 for project #2 (see "1. Research" in AUTOPILOT.md). Re-check
+the runners-up in autopilot/IDEAS.md first (the VS Code layered settings composer
+scored highest), then look for new signals. If the owner has created the
+ganeshphutane-g/docker-mop repo, move the project there first with
+`git subtree split --prefix=projects/docker-mop` and push, keeping history.
 
 ## Notes for runs
 
@@ -35,7 +27,12 @@ Milestone 5 (release):
 
 ## Finished projects
 
-None yet.
+1. **docker-mop** (projects/docker-mop, tag docker-mop/v1.0.0). Docker CLI plugin:
+   `plan`/`prune` (exact prune preview, verified against Docker's real prune on both
+   image stores) and verified `volume copy`/`rename`. Before making it public the
+   owner should: read the README, try `make install` and `docker mop plan` on their
+   own machine, check that GitHub Actions ran green on the push, and decide whether
+   to give it its own repo (recommended, so `go install` and releases work).
 
 ## Blockers for the owner
 

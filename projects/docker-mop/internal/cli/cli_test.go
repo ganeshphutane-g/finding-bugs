@@ -122,3 +122,35 @@ func TestShellQuote(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestGlobalDockerFlags(t *testing.T) {
+	env, _, _ := testEnv(map[string]string{"DOCKER_HOST": "unix:///from/env.sock"})
+	args, env2, err := globalFlags([]string{"--context", "prod", "-D", "mop", "plan"}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(args, " ") != "mop plan" {
+		t.Fatalf("args = %v", args)
+	}
+	if env2.Getenv("DOCKER_CONTEXT") != "prod" || env2.Getenv("DOCKER_HOST") != "" {
+		t.Fatalf("--context must win over DOCKER_HOST: context=%q host=%q", env2.Getenv("DOCKER_CONTEXT"), env2.Getenv("DOCKER_HOST"))
+	}
+
+	args, env2, err = globalFlags([]string{"-H=tcp://h:2376", "--tlsverify", "mop", "version"}, env)
+	if err != nil || env2.Getenv("DOCKER_HOST") != "tcp://h:2376" || env2.Getenv("DOCKER_TLS_VERIFY") != "1" || args[0] != "mop" {
+		t.Fatalf("got %v %v", args, err)
+	}
+
+	if _, _, err := globalFlags([]string{"--tlscacert", "x", "mop"}, env); err == nil {
+		t.Fatal("unsupported flags must be reported")
+	}
+
+	// Through Run: an unreachable host given by -H shows up in the error.
+	env3, _, errOut := testEnv(nil)
+	if code := Run(context.Background(), env3, []string{"-H", "unix:///nonexistent/flag.sock", "mop", "version"}); code != 1 {
+		t.Fatalf("exit code %d", code)
+	}
+	if !strings.Contains(errOut.String(), "/nonexistent/flag.sock") {
+		t.Fatalf("stderr = %q", errOut.String())
+	}
+}

@@ -160,3 +160,52 @@ func TestPruneSkipsVolumeTakenIntoUse(t *testing.T) {
 	}
 	docker(t, "volume", "inspect", repo+"-data")
 }
+
+func TestPruneLeavesImageTaggedAfterPlan(t *testing.T) {
+	c := requireDocker(t)
+	run := newRunID(t)
+	cleanupRun(t, run)
+	repo := "mop-" + run
+	buildImage(t, run, repo+":old", "old")
+
+	p := planFor(t, plan.Images, true, run)
+	if len(p.Images) != 1 {
+		t.Fatalf("expected one image in the plan, got %+v", p.Images)
+	}
+	docker(t, "tag", repo+":old", repo+":prod") // a new tag the plan never showed
+
+	res, err := plan.Apply(context.Background(), c, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason := skippedReason(res, p.Images[0].ID); !strings.Contains(reason, "tagged after the plan") {
+		t.Fatalf("expected a skip for the new tag, got %q (%+v)", reason, res)
+	}
+	docker(t, "image", "inspect", repo+":prod")
+	docker(t, "image", "inspect", repo+":old")
+}
+
+func TestPruneLeavesImageTakenIntoUse(t *testing.T) {
+	c := requireDocker(t)
+	run := newRunID(t)
+	cleanupRun(t, run)
+	repo := "mop-" + run
+	buildImage(t, run, repo+":a", "x")
+	docker(t, "tag", repo+":a", repo+":b")
+
+	p := planFor(t, plan.Images, true, run)
+	if len(p.Images) != 1 {
+		t.Fatalf("expected one image in the plan, got %+v", p.Images)
+	}
+	docker(t, "create", "--label", testLabel+"="+run, repo+":a")
+
+	res, err := plan.Apply(context.Background(), c, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason := skippedReason(res, p.Images[0].ID); !strings.Contains(reason, "uses it") {
+		t.Fatalf("expected a skip because a container uses the image, got %q (%+v)", reason, res)
+	}
+	docker(t, "image", "inspect", repo+":a")
+	docker(t, "image", "inspect", repo+":b") // no tag was removed
+}

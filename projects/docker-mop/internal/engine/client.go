@@ -91,7 +91,8 @@ func New(ep Endpoint) (*Client, error) {
 		c.baseURL = "http://docker"
 	case "tcp", "http", "https":
 		scheme := "http"
-		if ep.TLS || u.Scheme == "https" {
+		useTLS := ep.TLS || u.Scheme == "https"
+		if useTLS {
 			cfg, err := tlsConfig(ep)
 			if err != nil {
 				return nil, err
@@ -99,7 +100,16 @@ func New(ep Endpoint) (*Client, error) {
 			transport.TLSClientConfig = cfg
 			scheme = "https"
 		}
-		c.baseURL = scheme + "://" + u.Host
+		host := u.Host
+		if u.Port() == "" {
+			// Docker's default ports, as the docker CLI uses them.
+			port := "2375"
+			if useTLS {
+				port = "2376"
+			}
+			host = net.JoinHostPort(u.Hostname(), port)
+		}
+		c.baseURL = scheme + "://" + host
 	default:
 		return nil, fmt.Errorf("docker host %q: the %q scheme is not supported yet (use unix:// or tcp://)", ep.Host, u.Scheme)
 	}
@@ -109,7 +119,10 @@ func New(ep Endpoint) (*Client, error) {
 }
 
 func tlsConfig(ep Endpoint) (*tls.Config, error) {
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: !ep.TLSVerify}
+	// Certificates are only left unchecked when TLS was asked for without
+	// verification (--tls / DOCKER_TLS, or a context with SkipTLSVerify),
+	// as with the docker CLI. A plain https:// host is always verified.
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: ep.TLS && !ep.TLSVerify}
 	if ep.CertPath == "" {
 		return cfg, nil
 	}

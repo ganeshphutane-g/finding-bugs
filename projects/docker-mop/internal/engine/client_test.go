@@ -110,3 +110,25 @@ func TestCompareVersions(t *testing.T) {
 		}
 	}
 }
+
+func TestTCPDefaultPortsAndVerification(t *testing.T) {
+	c, err := New(Endpoint{Host: "tcp://example.com"})
+	if err != nil || c.baseURL != "http://example.com:2375" {
+		t.Fatalf("plain tcp: %v %q", err, c.baseURL)
+	}
+	c, err = New(Endpoint{Host: "tcp://example.com", TLS: true, TLSVerify: true})
+	if err != nil || c.baseURL != "https://example.com:2376" {
+		t.Fatalf("tls tcp: %v %q", err, c.baseURL)
+	}
+	if c.http.Transport.(*http.Transport).TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("verified TLS must check certificates")
+	}
+	c, err = New(Endpoint{Host: "https://example.com:443"})
+	if err != nil || c.http.Transport.(*http.Transport).TLSClientConfig.InsecureSkipVerify {
+		t.Fatalf("https:// must check certificates (err=%v)", err)
+	}
+	c, err = New(Endpoint{Host: "tcp://example.com:2376", TLS: true})
+	if err != nil || !c.http.Transport.(*http.Transport).TLSClientConfig.InsecureSkipVerify {
+		t.Fatalf("--tls without verify skips checks like the docker CLI (err=%v)", err)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ganeshphutane-g/docker-mop/internal/engine"
@@ -182,12 +183,17 @@ func removeVolume(ctx context.Context, c *engine.Client, it Item) error {
 	return classify(c.Call(ctx, engine.Request{Method: http.MethodDelete, Path: path}, nil), "the volume")
 }
 
-func inspectImageID(ctx context.Context, c *engine.Client, ref string) (string, error) {
-	var img struct {
-		ID string `json:"Id"`
-	}
+// imageRefs is an image's current ID, tags and digest references.
+type imageRefs struct {
+	ID          string   `json:"Id"`
+	RepoTags    []string `json:"RepoTags"`
+	RepoDigests []string `json:"RepoDigests"`
+}
+
+func inspectImage(ctx context.Context, c *engine.Client, ref string) (imageRefs, error) {
+	var img imageRefs
 	err := c.Call(ctx, engine.Request{Method: http.MethodGet, Path: "/images/" + url.PathEscape(ref) + "/json"}, &img)
-	return img.ID, err
+	return img, err
 }
 
 func deleteImageRef(ctx context.Context, c *engine.Client, ref string) error {
@@ -198,21 +204,59 @@ func deleteImageRef(ctx context.Context, c *engine.Client, ref string) error {
 	}, nil)
 }
 
-// removeImage removes an image by deleting each of its tags (an image with
-// several tags cannot be deleted by ID without force). Each tag is checked to
-// still point at the planned image first, so a tag moved to a newer image is
-// never touched.
+// imageInUse reports whether any container, running or not, uses the image.
+func imageInUse(ctx context.Context, c *engine.Client, id string) (bool, error) {
+	var list []engine.Container
+	if err := c.Call(ctx, engine.Request{Method: http.MethodGet, Path: "/containers/json", Query: url.Values{"all": {"1"}}}, &list); err != nil {
+		return false, err
+	}
+	for _, ct := range list {
+		if ct.ImageID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// unplannedRefs returns references the image has now that the plan did not
+// show. Deleting the image would take them with it.
+func unplannedRefs(img imageRefs, it Item) []string {
+	planned := map[string]bool{}
+	for _, r := range append(append([]string{}, it.Tags...), it.Digests...) {
+		planned[r] = true
+	}
+	var extra []string
+	for _, r := range append(append([]string{}, img.RepoTags...), img.RepoDigests...) {
+		if r != "<none>:<none>" && r != "<none>@<none>" && !planned[r] {
+			extra = append(extra, r)
+		}
+	}
+	return extra
+}
+
+// removeImage removes an image by deleting each of its planned tags (an
+// image with several tags cannot be deleted by ID without force). Before
+// anything is touched it checks that the image is unused and has gained no
+// tag or digest since the plan; each tag is also checked to still point at
+// the planned image, so a tag moved to a newer image is never touched.
 func removeImage(ctx context.Context, c *engine.Client, it Item) error {
-	id, err := inspectImageID(ctx, c, it.ID)
+	img, err := inspectImage(ctx, c, it.ID)
 	if err := classify(err, "the image"); err != nil {
 		return err
 	}
-	if id != it.ID {
+	if img.ID != it.ID {
 		return skip("the image changed after the plan was made")
 	}
+	if extra := unplannedRefs(img, it); len(extra) > 0 {
+		return skip("it was tagged after the plan was made (%s)", strings.Join(extra, ", "))
+	}
+	if used, err := imageInUse(ctx, c, it.ID); err != nil {
+		return err
+	} else if used {
+		return skip("a container now uses it")
+	}
 
-	tags := it.Tags
-	if len(tags) == 0 {
+	if len(it.Tags) == 0 {
 		// Digest references cannot move to another image, so they are
 		// safe to delete as they are. With more than one, Docker refuses
 		// to delete by ID without force.
@@ -222,30 +266,29 @@ func removeImage(ctx context.Context, c *engine.Client, it Item) error {
 					return err
 				}
 			}
-			if _, err := inspectImageID(ctx, c, it.ID); engine.IsNotFound(err) {
+			if _, err := inspectImage(ctx, c, it.ID); engine.IsNotFound(err) {
 				return nil
 			}
 		}
-		return classify(deleteImageRef(ctx, c, it.ID), "the image")
+		return deleteByIDIfUnchanged(ctx, c, it)
 	}
+
 	removedAny := false
-	for _, tag := range tags {
-		current, err := inspectImageID(ctx, c, tag)
+	for _, tag := range it.Tags {
+		current, err := inspectImage(ctx, c, tag)
 		if engine.IsNotFound(err) {
 			continue
 		}
 		if err := classify(err, "tag "+tag); err != nil {
 			return err
 		}
-		if current != it.ID {
+		if current.ID != it.ID {
 			continue // the tag now names a different image; leave it alone
 		}
 		if err := classify(deleteImageRef(ctx, c, tag), "tag "+tag); err != nil {
-			if removedAny {
-				var s errSkip
-				if errors.As(err, &s) {
-					return skip("partly untagged: %s", s.reason)
-				}
+			var s errSkip
+			if removedAny && errors.As(err, &s) {
+				return skip("partly untagged: %s", s.reason)
 			}
 			return err
 		}
@@ -257,18 +300,36 @@ func removeImage(ctx context.Context, c *engine.Client, it Item) error {
 	if it.Note != "" {
 		return nil // only untagged, as planned
 	}
-	// After the last tag goes the image should be gone. If it is still there
-	// (for example it also had digest references), delete it by ID.
-	if _, err := inspectImageID(ctx, c, it.ID); err == nil {
-		return classify(deleteImageRef(ctx, c, it.ID), "the image")
-	} else if !engine.IsNotFound(err) {
+	// After the last tag goes the image is normally gone. If it is still
+	// there (it also had digest references), delete it by ID, but only if it
+	// has not gained a reference meanwhile.
+	if _, err := inspectImage(ctx, c, it.ID); engine.IsNotFound(err) {
+		return nil
+	} else if err != nil {
 		return err
 	}
-	return nil
+	return deleteByIDIfUnchanged(ctx, c, it)
+}
+
+// deleteByIDIfUnchanged deletes an image by ID after checking once more that
+// it has no references the plan did not show. Deleting by ID removes the
+// image's last tag too, so this check is what keeps a newly added tag safe.
+func deleteByIDIfUnchanged(ctx context.Context, c *engine.Client, it Item) error {
+	img, err := inspectImage(ctx, c, it.ID)
+	if engine.IsNotFound(err) {
+		return nil
+	}
+	if err := classify(err, "the image"); err != nil {
+		return err
+	}
+	if extra := unplannedRefs(img, it); len(extra) > 0 {
+		return skip("it was tagged after the plan was made (%s)", strings.Join(extra, ", "))
+	}
+	return classify(deleteImageRef(ctx, c, it.ID), "the image")
 }
 
 func checkParentGone(ctx context.Context, c *engine.Client, it Item) error {
-	_, err := inspectImageID(ctx, c, it.ID)
+	_, err := inspectImage(ctx, c, it.ID)
 	if engine.IsNotFound(err) {
 		return nil
 	}

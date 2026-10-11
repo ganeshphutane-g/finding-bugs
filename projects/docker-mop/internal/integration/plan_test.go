@@ -46,6 +46,8 @@ func world(t *testing.T, run string) {
 	docker(t, "network", "create", "--label", label, repo+"-net-unused")
 	docker(t, "network", "create", "--label", label, repo+"-net-running")
 	docker(t, "network", "create", "--label", label, repo+"-net-stopped")
+	// Config-only networks are templates; Docker's prune keeps them.
+	docker(t, "network", "create", "--config-only", "--label", label, repo+"-net-config")
 
 	docker(t, "run", "-d", "--name", repo+"-running", "--label", label,
 		"--network", repo+"-net-running", repo+":running", "sleep")

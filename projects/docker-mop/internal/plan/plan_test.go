@@ -29,6 +29,10 @@ func TestParseFiltersSplitsAtFirstEquals(t *testing.T) {
 	if got := f.Get("label"); !reflect.DeepEqual(got, []string{"env"}) {
 		t.Fatalf("label = %v", got)
 	}
+	f = mustFilters(t, " Label = env ")
+	if got := f.Get("label"); !reflect.DeepEqual(got, []string{"env"}) {
+		t.Fatalf("key should be lowercased and both sides trimmed: %v", f)
+	}
 	if _, err := ParseFilters([]string{"nokey"}); err == nil {
 		t.Fatal("expected an error for a filter without '='")
 	}
@@ -71,9 +75,12 @@ func TestUntil(t *testing.T) {
 		{"-1h", now.Add(time.Hour)},
 		{"2026-10-01T10:00:00Z", time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)},
 		{"2026-10-01T10:00:00+05:30", time.Date(2026, 10, 1, 4, 30, 0, 0, time.UTC)},
-		{"2026-10-01", time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local)},
+		{"2026-10-01", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}, // now's zone
 		{"1791748808", time.Unix(1791748808, 0)},
 		{"1791748808.5", time.Unix(1791748808, 500000000)},
+		{"0", time.Unix(0, 0)},
+		{"2026-10-01Z", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)},
+		{"2026-10-01T10+05:30", time.Date(2026, 10, 1, 4, 30, 0, 0, time.UTC)},
 	}
 	for _, tc := range cases {
 		got, err := mustFilters(t, "until="+tc.value).Until(now)
@@ -85,7 +92,7 @@ func TestUntil(t *testing.T) {
 			t.Errorf("%s: got %v, want %v", tc.value, got, tc.want)
 		}
 	}
-	for _, bad := range []string{"yesterday", "1e9", "NaN"} {
+	for _, bad := range []string{"yesterday", "1e9", "NaN", "0x10p0", "Inf", "."} {
 		if _, err := mustFilters(t, "until="+bad).Until(now); err == nil {
 			t.Errorf("%s: expected an error", bad)
 		}

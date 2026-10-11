@@ -76,9 +76,9 @@ both image stores.
 - It removes only the objects in the list you confirmed, one by one, never with
   force.
 - If something changed after the list was made, it is skipped and reported rather
-  than removed. That covers a container that was started, a tag moved to a newer
-  image, a volume that was recreated or taken into use, and a network that gained a
-  running container.
+  than removed. That covers a container that was started, an image that gained a tag
+  or came into use, a tag moved to a newer image, a volume that was recreated or
+  taken into use, and a network that gained a running container.
 
 Here `webapp:1.4` was rebuilt while the prompt was waiting. The old image it named
 was gone, so it was skipped, and the new `webapp:1.4` was left alone:
@@ -143,7 +143,8 @@ platforms yourself.
 
 It works with Docker Engine 20.10 or newer (API 1.41+) on Linux and macOS. It
 connects the same way the docker CLI does: `DOCKER_HOST`, `DOCKER_CONTEXT`, the
-current context, then `/var/run/docker.sock`. `unix://` and `tcp://` (with TLS)
+current context, then `/var/run/docker.sock`. Docker's own `--context`, `-H` and
+`--tls`/`--tlsverify` flags work too (`docker --context prod mop plan`). `unix://` and `tcp://` (with TLS)
 endpoints are supported. `ssh://` and Windows named pipes are not yet.
 
 ## Limits
@@ -152,6 +153,8 @@ endpoints are supported. `ssh://` and Windows named pipes are not yet.
   `docker builder prune` would remove, and a guess would break the promise above.
 - **Image sizes are lower bounds.** Images share layers. A shared layer is only
   freed when every image using it goes, so totals say "at least".
+- **Swarm networks** are left alone. On a swarm manager, `docker network prune` also
+  removes unused swarm networks; docker-mop does not show or remove them.
 - **Volume copy** works for `local` volumes without driver options. Volumes with
   options (NFS, bind devices, tmpfs) keep their data outside Docker and are refused.
   POSIX ACLs and extended attributes other than file capabilities are not carried

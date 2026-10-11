@@ -67,6 +67,12 @@ type State struct {
 	// ContainerdStore is true when the daemon uses the containerd image
 	// store, which prunes each image on its own and ignores parent images.
 	ContainerdStore bool
+	// DaemonNow is the daemon's clock and time zone when the state was read;
+	// "until" filters are evaluated against it, as Docker does.
+	DaemonNow time.Time
+	// APIVersion is the daemon's Engine API version. Before 1.42, volume
+	// prune also removes named volumes.
+	APIVersion string
 }
 
 // Item is one object the prune would remove.
@@ -126,6 +132,9 @@ func Compute(state State, opts Options) (Plan, error) {
 		opts.Filters = Filters{}
 	}
 	if opts.Now.IsZero() {
+		opts.Now = state.DaemonNow
+	}
+	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
 	p := Plan{Kind: opts.Kind}
@@ -153,7 +162,7 @@ func Compute(state State, opts Options) (Plan, error) {
 		if err := f.Validate("label", "label!", "all"); err != nil {
 			return p, err
 		}
-		all, err := boolFilter(f, "all", opts.All)
+		all, err := boolFilter(f, "all", opts.All || namedVolumesPruned(state))
 		if err != nil {
 			return p, err
 		}
@@ -185,7 +194,7 @@ func Compute(state State, opts Options) (Plan, error) {
 		p.Networks, notes = planNetworks(state.Networks, remaining, f, until)
 		p.Notes = append(p.Notes, notes...)
 		if opts.Volumes {
-			p.Volumes = planVolumes(state.Volumes, remaining, f, false)
+			p.Volumes = planVolumes(state.Volumes, remaining, f, namedVolumesPruned(state))
 		}
 		p.Images = planImages(state, remaining, f, until, opts.All)
 		p.Notes = append(p.Notes, "Build cache is not included. Docker cannot preview it; use 'docker builder prune' for that.")
@@ -193,6 +202,12 @@ func Compute(state State, opts Options) (Plan, error) {
 		return p, fmt.Errorf("unknown prune target %q", opts.Kind)
 	}
 	return p, nil
+}
+
+// namedVolumesPruned is true for daemons older than API 1.42 (Docker 23),
+// whose volume prune removes named volumes too.
+func namedVolumesPruned(state State) bool {
+	return state.APIVersion != "" && engine.CompareVersions(state.APIVersion, "1.42") < 0
 }
 
 // boolFilter reads a true/false filter such as dangling=false or all=true.
@@ -274,7 +289,9 @@ func planNetworks(all []engine.Network, containers []engine.Container, f Filters
 	var items []Item
 	var notes []string
 	for _, n := range all {
-		if n.Scope == "swarm" || predefinedNetworks[n.Name] || len(n.Containers) > 0 {
+		// Docker's prune keeps config-only networks (templates for
+		// --config-from) and leaves swarm networks to the swarm.
+		if n.ConfigOnly || n.Scope == "swarm" || predefinedNetworks[n.Name] || len(n.Containers) > 0 {
 			continue
 		}
 		if !until.IsZero() && n.Created.After(until) {
@@ -354,7 +371,8 @@ func planImages(state State, containers []engine.Container, f Filters, until tim
 		if len(img.Tags()) == 0 && len(children[img.ID]) > 0 {
 			continue
 		}
-		if !until.IsZero() && time.Unix(img.Created, 0).After(until) {
+		// Docker skips images without a creation time when "until" is set.
+		if !until.IsZero() && (img.Created == 0 || time.Unix(img.Created, 0).After(until)) {
 			continue
 		}
 		if !f.MatchLabels(img.Labels) || used[img.ID] {
@@ -370,7 +388,8 @@ func planImages(state State, containers []engine.Container, f Filters, until tim
 	// images with a surviving child until nothing changes.
 	gone := map[string]bool{}
 	for _, img := range state.Images {
-		if candidate[img.ID] || (len(img.Tags()) == 0 && !used[img.ID]) {
+		intermediate := len(img.Tags()) == 0 && len(img.Digests()) == 0 && len(children[img.ID]) > 0
+		if candidate[img.ID] || (intermediate && !used[img.ID]) {
 			gone[img.ID] = true
 		}
 	}
