@@ -1,7 +1,7 @@
 # State
 
 Current project: #1 docker-mop (Docker CLI plugin: prune preview + volume rename/copy)
-Phase: done (v1.0.0 tagged as docker-mop/v1.0.0)
+Phase: done (v1.0.0; tag docker-mop/v1.0.0 to be created by the owner, see blockers)
 Repo: building in projects/docker-mop/ inside finding-bugs (own repo blocked, see below)
 Spec: projects/docker-mop/SPEC.md
 
@@ -27,7 +27,7 @@ ganeshphutane-g/docker-mop repo, move the project there first with
 
 ## Finished projects
 
-1. **docker-mop** (projects/docker-mop, tag docker-mop/v1.0.0). Docker CLI plugin:
+1. **docker-mop** (projects/docker-mop, v1.0.0 at commit 50c1a1e). Docker CLI plugin:
    `plan`/`prune` (exact prune preview, verified against Docker's real prune on both
    image stores) and verified `volume copy`/`rename`. Before making it public the
    owner should: read the README, try `make install` and `docker mop plan` on their
@@ -41,3 +41,7 @@ ganeshphutane-g/docker-mop repo, move the project there first with
   `ganeshphutane-g/docker-mop` on GitHub and give the Claude GitHub app access to it
   (GitHub settings > Applications > Claude > Repository access). The next run will
   move the project there with its history.
+- Pushing git tags is refused by this environment's git proxy (branch pushes work).
+  To mark the release, create tag `docker-mop/v1.0.0` on commit 50c1a1e from the
+  GitHub web UI (Releases > Draft a new release), or let the run tag it in the new
+  repo once it exists.

@@ -36,7 +36,8 @@ Newest first.
   until=0 and date parsing vs Docker, daemon clock/time zone, https without cert
   checks, docker global flags, API<1.42 volume rules, image edge cases). Added tests
   for each. README with real captured output, LICENSE, CHANGELOG, `make dist`.
-  Full suite green on both image stores. Tagged docker-mop/v1.0.0.
+  Full suite green on both image stores and in GitHub Actions. The v1.0.0 tag could
+  not be pushed (git proxy refuses tags); noted as an owner step.
 - Project #1 is done. Next run: research round 2.
 
 ## 2026-10-12 — setup
