@@ -76,7 +76,16 @@ type Item struct {
 	Size    int64     `json:"size"` // bytes freed; -1 when unknown
 	Created time.Time `json:"created"`
 	Note    string    `json:"note,omitempty"`
+	// Tags and Digests are set for images; prune deletes images through them.
+	Tags    []string `json:"tags,omitempty"`
+	Digests []string `json:"digests,omitempty"`
 }
+
+// Notes on image items that change how they are removed.
+const (
+	noteUntagOnly   = "only untagged: other images are built on it"
+	noteParentLayer = "untagged parent layer"
+)
 
 // Plan is the result: objects in the order Docker would remove them.
 type Plan struct {
@@ -386,11 +395,11 @@ func planImages(state State, containers []engine.Container, f Filters, until tim
 		case candidate[img.ID]:
 			it := imageItem(img)
 			it.Size = 0
-			it.Note = "only untagged: other images are built on it"
+			it.Note = noteUntagOnly
 			items = append(items, it)
 		case gone[img.ID] && feedsRemovedCandidate(img.ID, children, gone, candidate):
 			it := imageItem(img)
-			it.Note = "untagged parent layer"
+			it.Note = noteParentLayer
 			items = append(items, it)
 		}
 	}
@@ -418,7 +427,7 @@ func imageItem(img engine.Image) Item {
 	if img.SharedSize > 0 {
 		size -= img.SharedSize
 	}
-	return Item{ID: img.ID, Name: name, Size: size, Created: time.Unix(img.Created, 0)}
+	return Item{ID: img.ID, Name: name, Size: size, Created: time.Unix(img.Created, 0), Tags: img.Tags(), Digests: img.Digests()}
 }
 
 func plural(n int, word string) string {

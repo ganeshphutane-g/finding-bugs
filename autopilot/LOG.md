@@ -19,7 +19,12 @@ Newest first.
   parent handling, and containerd ignoring parent links.
 - Found that Docker removes networks still used by stopped containers; the plan now
   warns about it.
-- Next: milestone 3 (`docker mop prune`).
+- Milestone 3 done: `docker mop prune` shows the plan, asks (or --yes), removes
+  exactly the planned objects without force, and skips anything that changed:
+  a container started, a tag moved to a new image, a volume recreated or taken into
+  use. docker-mop prune leaves the same state as Docker's prune in every case, on
+  both image stores.
+- Next: milestone 4 (volume copy and rename).
 
 ## 2026-10-12 — setup
 

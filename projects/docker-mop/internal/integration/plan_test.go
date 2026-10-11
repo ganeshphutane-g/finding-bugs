@@ -94,6 +94,14 @@ func TestPlanMatchesRealPrune(t *testing.T) {
 
 func comparePlanWithPrune(t *testing.T, c *engine.Client, tc pruneCase, filters []string) {
 	t.Helper()
+	compare(t, c, tc, filters, false)
+}
+
+// compare computes the plan, then removes things either with Docker's own
+// prune or with docker-mop's Apply, and checks that exactly the planned
+// objects disappeared.
+func compare(t *testing.T, c *engine.Client, tc pruneCase, filters []string, useMop bool) {
+	t.Helper()
 	ctx := context.Background()
 	f, err := plan.ParseFilters(filters)
 	if err != nil {
@@ -109,12 +117,22 @@ func comparePlanWithPrune(t *testing.T, c *engine.Client, tc pruneCase, filters 
 	}
 
 	before := takeSnapshot(t, c)
-	args := append([]string{}, tc.cli...)
-	args = append(args, "-f")
-	for _, fl := range filters {
-		args = append(args, "--filter", fl)
+	if useMop {
+		res, err := plan.Apply(ctx, c, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if skipped := res.Skipped(); len(skipped) > 0 {
+			t.Errorf("unexpected skips: %+v", skipped)
+		}
+	} else {
+		args := append([]string{}, tc.cli...)
+		args = append(args, "-f")
+		for _, fl := range filters {
+			args = append(args, "--filter", fl)
+		}
+		docker(t, args...)
 	}
-	docker(t, args...)
 	after := takeSnapshot(t, c)
 
 	check := func(what string, planned, actual []string) {
@@ -133,6 +151,7 @@ func comparePlanWithPrune(t *testing.T, c *engine.Client, tc pruneCase, filters 
 	check("volumes", ids(p.Volumes, nil), removed(before.volumes, after.volumes))
 	check("networks", ids(p.Networks, nil), removed(before.networks, after.networks))
 	isUntagOnly := func(it plan.Item) bool { return strings.HasPrefix(it.Note, "only untagged") }
+
 	check("images removed", ids(p.Images, func(it plan.Item) bool { return !isUntagOnly(it) }), removedImages(before.images, after.images))
 	check("images untagged only", ids(p.Images, isUntagOnly), untaggedOnly(before.images, after.images))
 

@@ -44,14 +44,15 @@ func (c Container) Name() string {
 
 // Image is the part of an image summary docker-mop uses.
 type Image struct {
-	ID         string            `json:"Id"`
-	RepoTags   []string          `json:"RepoTags"`
-	ParentID   string            `json:"ParentId"`
-	Created    int64             `json:"Created"`
-	Size       int64             `json:"Size"`
-	SharedSize int64             `json:"SharedSize"`
-	Labels     map[string]string `json:"Labels"`
-	Containers int64             `json:"Containers"`
+	ID          string            `json:"Id"`
+	RepoTags    []string          `json:"RepoTags"`
+	RepoDigests []string          `json:"RepoDigests"`
+	ParentID    string            `json:"ParentId"`
+	Created     int64             `json:"Created"`
+	Size        int64             `json:"Size"`
+	SharedSize  int64             `json:"SharedSize"`
+	Labels      map[string]string `json:"Labels"`
+	Containers  int64             `json:"Containers"`
 }
 
 // Tags returns the image's real tags, dropping the "<none>:<none>" placeholder.
@@ -60,6 +61,18 @@ func (i Image) Tags() []string {
 	for _, t := range i.RepoTags {
 		if t != "<none>:<none>" {
 			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// Digests returns the image's digest references ("repo@sha256:..."),
+// dropping the "<none>@<none>" placeholder.
+func (i Image) Digests() []string {
+	var out []string
+	for _, d := range i.RepoDigests {
+		if d != "<none>@<none>" {
+			out = append(out, d)
 		}
 	}
 	return out

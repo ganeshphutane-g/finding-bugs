@@ -95,6 +95,8 @@ func run(ctx context.Context, env Env, args []string) error {
 		return runVersion(ctx, env, rest)
 	case "plan", "preview":
 		return runPlan(ctx, env, rest)
+	case "prune":
+		return runPrune(ctx, env, rest)
 	default:
 		return usagef("unknown command %q", cmd)
 	}
@@ -120,6 +122,7 @@ and rename or copy volumes.
 
 Commands:
   plan        Show what a prune would remove, without removing anything
+  prune       Remove exactly what plan shows, after confirmation
   version     Show docker-mop and Docker daemon versions
   help        Show this help
 
