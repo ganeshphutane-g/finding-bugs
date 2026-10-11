@@ -66,3 +66,59 @@ func TestVersionWithoutDaemon(t *testing.T) {
 		t.Fatalf("stderr = %q", errOut.String())
 	}
 }
+
+func TestParsePruneArgs(t *testing.T) {
+	pf, help, err := parsePruneArgs("plan", []string{"--filter", "until=24h", "images", "-a", "--format", "json"}, false)
+	if err != nil || help {
+		t.Fatalf("err=%v help=%v", err, help)
+	}
+	if pf.kind != "images" || !pf.all || pf.format != "json" || len(pf.filters) != 1 {
+		t.Fatalf("got %+v", pf)
+	}
+
+	pf, _, err = parsePruneArgs("plan", nil, false)
+	if err != nil || pf.kind != "system" || pf.format != "table" {
+		t.Fatalf("defaults: %+v %v", pf, err)
+	}
+
+	for _, bad := range [][]string{
+		{"images", "volumes"},
+		{"builder"},
+		{"--format", "yaml"},
+		{"images", "--volumes"},
+		{"--nope"},
+	} {
+		if _, _, err := parsePruneArgs("plan", bad, false); err == nil {
+			t.Errorf("%v: expected an error", bad)
+		}
+	}
+
+	pf, _, err = parsePruneArgs("prune", []string{"volumes", "-y"}, true)
+	if err != nil || !pf.yes {
+		t.Fatalf("prune -y: %+v %v", pf, err)
+	}
+	if _, _, err := parsePruneArgs("plan", []string{"-y"}, false); err == nil {
+		t.Fatal("plan must not accept -y")
+	}
+}
+
+func TestHumanSize(t *testing.T) {
+	cases := map[int64]string{0: "0B", 999: "999B", 4096: "4.096kB", 209527: "209.5kB", 1_500_000_000: "1.5GB", -1: "unknown"}
+	for in, want := range cases {
+		if got := humanSize(in); got != want {
+			t.Errorf("humanSize(%d) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	if got := shellQuote("until=24h"); got != "until=24h" {
+		t.Errorf("got %q", got)
+	}
+	if got := shellQuote("label=a b"); got != "'label=a b'" {
+		t.Errorf("got %q", got)
+	}
+	if got := shellQuote("label!=x"); got != "'label!=x'" {
+		t.Errorf("got %q", got)
+	}
+}

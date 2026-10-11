@@ -93,6 +93,8 @@ func run(ctx context.Context, env Env, args []string) error {
 		return nil
 	case "version", "--version":
 		return runVersion(ctx, env, rest)
+	case "plan", "preview":
+		return runPlan(ctx, env, rest)
 	default:
 		return usagef("unknown command %q", cmd)
 	}
@@ -117,6 +119,7 @@ See exactly what a prune will delete before it deletes anything,
 and rename or copy volumes.
 
 Commands:
+  plan        Show what a prune would remove, without removing anything
   version     Show docker-mop and Docker daemon versions
   help        Show this help
 

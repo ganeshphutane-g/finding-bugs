@@ -11,7 +11,15 @@ Newest first.
   DOCKER_HOST, contexts), plugin metadata, `docker mop version`, tests, CI, Makefile.
   Verified it installs and runs as a real `docker mop` plugin.
 - Blocker: cannot create new repos (403); building in projects/docker-mop/ for now.
-- Next: milestone 2 (`docker mop plan`).
+- Milestone 2 done: `docker mop plan` (containers, images, volumes, networks,
+  system; until/label/label! filters; table and JSON). Integration tests compare the
+  plan with Docker's real prune on the same state: 11 scoped cases + 8 unscoped +
+  2 classic-builder cases, all identical on both the containerd and classic image
+  stores. Bugs found and fixed on the way: hidden intermediate images, order-dependent
+  parent handling, and containerd ignoring parent links.
+- Found that Docker removes networks still used by stopped containers; the plan now
+  warns about it.
+- Next: milestone 3 (`docker mop prune`).
 
 ## 2026-10-12 — setup
 
