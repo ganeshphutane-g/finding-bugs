@@ -24,7 +24,12 @@ Newest first.
   a container started, a tag moved to a new image, a volume recreated or taken into
   use. docker-mop prune leaves the same state as Docker's prune in every case, on
   both image stores.
-- Next: milestone 4 (volume copy and rename).
+- Milestone 4 done: `docker mop volume copy|rename` with file-by-file verification
+  (path, type, mode incl. setuid/sticky, owner, size, sha256, link targets, mtimes),
+  label copy, --compose-project relabelling, and refusals for unsafe cases (in use,
+  driver options, target exists). No image pulls: an empty local helper image and
+  never-started containers. Tested with awkward data on both image stores.
+- Next: milestone 5 (README, licence, release build, full review, v1.0.0).
 
 ## 2026-10-12 — setup
 

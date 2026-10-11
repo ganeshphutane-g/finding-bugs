@@ -1,27 +1,25 @@
 # State
 
 Current project: #1 docker-mop (Docker CLI plugin: prune preview + volume rename/copy)
-Phase: build (milestones 1–3 of 5 done)
+Phase: build (milestones 1–4 of 5 done)
 Repo: building in projects/docker-mop/ inside finding-bugs (own repo blocked, see below)
 Spec: projects/docker-mop/SPEC.md
 
 ## Next step
 
-Milestone 4: `docker mop volume copy SRC DST` and `docker mop volume rename SRC DST`.
-Plan (copy approach already proven by hand on this daemon):
-- Helper image: `docker import` of an empty tar (POST /images/create?fromSrc=-),
-  tagged e.g. docker-mop-helper:1, created on demand. No registry pulls.
-- Create (never start) a container from it with SRC at /from, another with DST at
-  /to (Cmd ["/nonexistent"] is fine because it never runs). Stream
-  GET /containers/{a}/archive?path=/from/. into PUT /containers/{b}/archive?path=/to.
-- Verify: read both archives back and compare every entry (path, type, mode,
-  uid/gid, size, sha256 of content, symlink target). Remove helper containers after.
-- DST gets SRC's driver, driver options and labels (refuse non-local drivers);
-  refuse if DST exists unless --into-existing (must be empty).
-- rename = copy + verify + remove SRC; refuse if any container (running or stopped)
-  uses SRC and list them. Optional --compose-project to rewrite
-  com.docker.compose.project/volume labels.
-- Test with non-root-owned files, symlinks, empty dirs, a large file, and hard links.
+Milestone 5 (release):
+1. README.md: what/why (link the two moby issues), install (Makefile + manual copy to
+   ~/.docker/cli-plugins), quick start with real example output, command reference,
+   safety guarantees and known limits (build cache not previewed; local volumes
+   without driver options only; image totals are lower bounds), how tests work.
+2. LICENSE (MIT, Ganesh Phutane), CHANGELOG.md (1.0.0), Makefile `dist` target that
+   cross-builds linux/darwin/windows amd64+arm64 with checksums.
+3. Full review for bugs and security issues (use the code-review approach on the
+   whole project), fix findings, rerun all tests on both image stores.
+4. Tag: since the project still lives in finding-bugs, tag `docker-mop/v1.0.0`
+   (Go's nested-module tag form). If the owner has created the docker-mop repo by
+   then, move the project there first (git subtree split keeps the history).
+5. Mark the project done in STATE and start research round 2.
 
 ## Notes for runs
 
