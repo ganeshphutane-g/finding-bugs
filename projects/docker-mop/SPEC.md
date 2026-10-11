@@ -29,9 +29,12 @@ Installed as a Docker CLI plugin, so it runs as `docker mop …`.
 - `docker mop prune [what] [flags]`: shows the plan, asks for confirmation (or
   `--yes`), then deletes **exactly the items shown**, one by one, and nothing else.
   Anything that came into use since the plan is skipped and reported, never forced.
-- `docker mop volume copy SRC DST`: creates DST with the same driver, options and
-  labels, copies all data, then verifies the copy file by file (path, type, mode,
-  owner, size, content hash).
+- `docker mop volume copy SRC DST`: creates DST with the same driver and labels,
+  copies all data, then verifies the copy file by file (path, type, mode, owner,
+  size, content hash, link targets, times, file capabilities). Docker Compose labels
+  are only set with `--compose-project`. Volumes with driver options are refused:
+  their data can live outside Docker (NFS, bind devices, tmpfs), so a "copy" could
+  point at the same storage.
 - `docker mop volume rename SRC DST`: copy and verify, then remove SRC. Refuses if any
   container (running or stopped) uses SRC, and lists those containers.
 - Works with `DOCKER_HOST`, `DOCKER_CONTEXT` and the current Docker context.
@@ -41,7 +44,8 @@ Installed as a Docker CLI plugin, so it runs as `docker mop …`.
 - Build cache. Docker exposes no way to predict exactly what `builder prune` removes,
   and a guess would break the "what you see is what gets deleted" promise.
 - Swarm services, Podman, Windows containers.
-- Renaming volumes that use non-local drivers (refused with a clear message).
+- Volumes that use non-local drivers or driver options (refused with a clear
+  message).
 
 ## Tech choices
 
