@@ -21,8 +21,9 @@ Options:
                                project NAME (TARGET must be NAME_<volume>)
   -q, --quiet                  Only print errors
 
-The new volume gets the same driver and labels as the old one. Only local
-volumes without driver options can be copied. Copy refuses while a running
+The new volume gets the same driver and labels as the old one, except Docker
+Compose labels, which are only set with --compose-project. Only local volumes
+without driver options can be copied. Copy refuses while a running
 container uses the volume; rename refuses while any container uses it.
 `
 
@@ -69,6 +70,8 @@ func runVolume(ctx context.Context, env Env, args []string) error {
 	if !quiet {
 		opts.Progress = func(s string) { fmt.Fprintln(env.Stdout, s) }
 	}
+	opts.Warn = func(s string) { fmt.Fprintln(env.Stderr, "Warning: "+s) }
+	isRename := sub == "rename" || sub == "mv"
 
 	client, err := connect(env)
 	if err != nil {
@@ -76,7 +79,7 @@ func runVolume(ctx context.Context, env Env, args []string) error {
 	}
 	start := time.Now()
 	var rep volume.Report
-	if sub == "rename" || sub == "mv" {
+	if isRename {
 		rep, err = volume.Rename(ctx, client, src, dst, opts)
 	} else {
 		rep, err = volume.Copy(ctx, client, src, dst, opts)
@@ -86,7 +89,7 @@ func runVolume(ctx context.Context, env Env, args []string) error {
 	}
 	if !quiet {
 		verb := "Copied"
-		if sub == "rename" || sub == "mv" {
+		if isRename {
 			verb = "Renamed"
 		}
 		fmt.Fprintf(env.Stdout, "%s %s to %s: %d %s, %s, verified in %s.\n",

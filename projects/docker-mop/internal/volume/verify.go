@@ -18,11 +18,20 @@ type entry struct {
 	Size     int64
 	SHA256   string
 	Link     string
-	ModTime  int64 // seconds
+	ModTime  int64  // seconds
+	Xattrs   string // extended attributes Docker carries in archives (file capabilities)
+	Device   string // major:minor for device nodes
 }
 
 func (e entry) String() string {
-	return fmt.Sprintf("type=%c mode=%o owner=%d:%d size=%d link=%q mtime=%d sha256=%.12s", e.Type, e.Mode, e.UID, e.GID, e.Size, e.Link, e.ModTime, e.SHA256)
+	s := fmt.Sprintf("type=%c mode=%o owner=%d:%d size=%d link=%q mtime=%d sha256=%.12s", e.Type, e.Mode, e.UID, e.GID, e.Size, e.Link, e.ModTime, e.SHA256)
+	if e.Xattrs != "" {
+		s += " xattrs=" + e.Xattrs
+	}
+	if e.Device != "" {
+		s += " device=" + e.Device
+	}
+	return s
 }
 
 // manifest maps each path (relative to the volume root) to its entry.
@@ -46,7 +55,9 @@ func buildManifest(tr *tar.Reader) (manifest, error) {
 			UID:     hdr.Uid,
 			GID:     hdr.Gid,
 			ModTime: hdr.ModTime.Unix(),
+			Xattrs:  xattrs(hdr),
 		}
+		path := relPath(hdr.Name)
 		switch hdr.Typeflag {
 		case tar.TypeReg, tar.TypeRegA:
 			h := sha256.New()
@@ -60,14 +71,28 @@ func buildManifest(tr *tar.Reader) (manifest, error) {
 			e.Link = hdr.Linkname
 		case tar.TypeLink:
 			e.Link = relPath(hdr.Linkname)
-		case tar.TypeDir:
-			// Directory mtimes change as entries are written into them; the
-			// copy keeps them, but Docker's extraction may not set the root
-			// directory's, so only compare file and link times.
+		case tar.TypeChar, tar.TypeBlock:
+			e.Device = fmt.Sprintf("%d:%d", hdr.Devmajor, hdr.Devminor)
+		}
+		if path == "" {
+			// The volume root is the mount point; its time is not always
+			// set by the extraction.
 			e.ModTime = 0
 		}
-		m[relPath(hdr.Name)] = e
+		m[path] = e
 	}
+}
+
+// xattrs lists the extended attributes recorded for an entry, sorted.
+func xattrs(hdr *tar.Header) string {
+	var kv []string
+	for k, v := range hdr.PAXRecords {
+		if name, ok := strings.CutPrefix(k, "SCHILY.xattr."); ok {
+			kv = append(kv, name+"="+hex.EncodeToString([]byte(v)))
+		}
+	}
+	sort.Strings(kv)
+	return strings.Join(kv, ",")
 }
 
 // normalizeType treats the old and new regular-file flags the same.
@@ -136,7 +161,7 @@ type VerifyError struct {
 func (e *VerifyError) Error() string {
 	const max = 10
 	var b strings.Builder
-	fmt.Fprintf(&b, "the copy does not match the source (%d %s)", len(e.Diffs), pluralDiffs(len(e.Diffs)))
+	fmt.Fprintf(&b, "the copy does not match the source (%d %s)", len(e.Diffs), plural(len(e.Diffs), "difference"))
 	for i, d := range e.Diffs {
 		if i == max {
 			fmt.Fprintf(&b, "\n  ... and %d more", len(e.Diffs)-max)
@@ -145,11 +170,4 @@ func (e *VerifyError) Error() string {
 		b.WriteString("\n  " + d)
 	}
 	return b.String()
-}
-
-func pluralDiffs(n int) string {
-	if n == 1 {
-		return "difference"
-	}
-	return "differences"
 }

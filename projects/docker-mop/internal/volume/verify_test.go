@@ -101,20 +101,45 @@ func TestVerifyErrorTruncates(t *testing.T) {
 
 func TestNewLabels(t *testing.T) {
 	src := map[string]string{"app": "web", composeProjectLabel: "old", composeVolumeLabel: "data"}
-	got, err := newLabels(src, "new_data", "new")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got[composeProjectLabel] != "new" || got[composeVolumeLabel] != "data" || got["app"] != "web" {
-		t.Fatalf("got %v", got)
+	got, dropped := newLabels(src, "new_data", "new")
+	if dropped || got[composeProjectLabel] != "new" || got[composeVolumeLabel] != "data" || got["app"] != "web" {
+		t.Fatalf("got %v dropped=%v", got, dropped)
 	}
 	if src[composeProjectLabel] != "old" {
 		t.Fatal("source labels were modified")
 	}
-	if _, err := newLabels(src, "data", "new"); err == nil {
+	if err := checkComposeName("data", "new"); err == nil {
 		t.Fatal("expected an error for a name without the project prefix")
 	}
-	if got, _ := newLabels(src, "anything", ""); got[composeProjectLabel] != "old" {
-		t.Fatal("labels should be copied unchanged without --compose-project")
+	got, dropped = newLabels(src, "anything", "")
+	if !dropped || got[composeProjectLabel] != "" || got[composeVolumeLabel] != "" || got["app"] != "web" {
+		t.Fatalf("without --compose-project the Compose labels must be dropped: %v dropped=%v", got, dropped)
+	}
+	if _, dropped := newLabels(map[string]string{"app": "web"}, "x", ""); dropped {
+		t.Fatal("nothing to drop")
+	}
+}
+
+func TestManifestComparesXattrs(t *testing.T) {
+	write := func(cap string) manifest {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		h := &tar.Header{Name: "volume/bin", Typeflag: tar.TypeReg, Mode: 0o755, Format: tar.FormatPAX}
+		if cap != "" {
+			h.PAXRecords = map[string]string{"SCHILY.xattr.security.capability": cap}
+		}
+		tw.WriteHeader(h)
+		tw.Close()
+		m, err := buildManifest(tar.NewReader(&buf))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if d := write("\x01").diff(write("")); len(d) == 0 {
+		t.Fatal("a lost file capability was not detected")
+	}
+	if d := write("\x01").diff(write("\x01")); len(d) != 0 {
+		t.Fatalf("unexpected diffs: %v", d)
 	}
 }

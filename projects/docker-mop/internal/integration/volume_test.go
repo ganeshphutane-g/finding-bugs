@@ -232,3 +232,43 @@ func assertNoHelpers(t *testing.T) {
 		t.Fatalf("helper containers left behind: %s", out)
 	}
 }
+
+func TestVolumeComposeLabelsDroppedWithoutProject(t *testing.T) {
+	c := requireDocker(t)
+	run := newRunID(t)
+	cleanupRun(t, run)
+	src, dst := "mop-"+run+"_data", "mop-"+run+"-copy"
+	docker(t, "volume", "create", "--label", testLabel+"="+run,
+		"--label", "com.docker.compose.project=mop-"+run, "--label", "com.docker.compose.volume=data", src)
+
+	var warnings []string
+	_, err := volume.Copy(context.Background(), c, src, dst, volume.Options{Warn: func(s string) { warnings = append(warnings, s) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := volumeLabels(t, dst)
+	if strings.Contains(labels, "com.docker.compose") || !strings.Contains(labels, testLabel) {
+		t.Fatalf("unexpected labels on the copy: %s", labels)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "--compose-project") {
+		t.Fatalf("expected one warning about --compose-project, got %v", warnings)
+	}
+}
+
+func TestVolumeRenameReportsLeftoverHelper(t *testing.T) {
+	c := requireDocker(t)
+	run := newRunID(t)
+	cleanupRun(t, run)
+	src := "mop-" + run + "-src"
+	docker(t, "volume", "create", "--label", testLabel+"="+run, src)
+	buildImage(t, run, "mop-"+run+":seed", "seed")
+	// Simulate a helper left behind by an interrupted run.
+	helper := docker(t, "create", "--label", volume.HelperLabel+"=1", "--label", testLabel+"="+run,
+		"-v", src+":/volume", "mop-"+run+":seed")
+	defer dockerQuiet("rm", "-f", helper)
+
+	_, err := volume.Rename(context.Background(), c, src, "mop-"+run+"-dst", volume.Options{})
+	if err == nil || !strings.Contains(err.Error(), "left over from an interrupted run") {
+		t.Fatalf("expected the leftover helper to be reported, got %v", err)
+	}
+}
