@@ -3,8 +3,11 @@ package s3util
 
 import (
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"strings"
+	"syscall"
 
 	"github.com/minio/minio-go/v7"
 )
@@ -62,4 +65,24 @@ func NotSupported(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "not implemented") || strings.Contains(msg, "unimplemented") || strings.Contains(msg, "not supported")
+}
+
+// Transient reports whether err is worth retrying: a server-side hiccup or a
+// dropped connection.
+func Transient(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch Code(err) {
+	case "InternalError", "SlowDown", "ServiceUnavailable", "RequestTimeout", "Throttling", "RequestTimeTooSkewed":
+		return true
+	}
+	if s := status(err); s >= 500 {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return true
+	}
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
 }

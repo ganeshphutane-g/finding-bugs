@@ -55,3 +55,31 @@ func send(ctx context.Context, out chan<- minio.ObjectInfo, obj minio.ObjectInfo
 		return false
 	}
 }
+
+// GetVersion opens one version of an object. The "null" version (written
+// before versioning was turned on) is asked for by name, because an empty
+// version ID means "the latest", which may be a newer version. Servers that
+// reject "null" are asked for the latest only when that is the same thing.
+func GetVersion(ctx context.Context, c *minio.Client, bucket string, o minio.ObjectInfo) (*minio.Object, minio.ObjectInfo, error) {
+	obj, err := c.GetObject(ctx, bucket, o.Key, minio.GetObjectOptions{VersionID: o.VersionID})
+	if err == nil {
+		var info minio.ObjectInfo
+		if info, err = obj.Stat(); err == nil {
+			return obj, info, nil
+		}
+		obj.Close()
+	}
+	if o.VersionID != "null" || !o.IsLatest {
+		return nil, minio.ObjectInfo{}, err
+	}
+	obj, err = c.GetObject(ctx, bucket, o.Key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, minio.ObjectInfo{}, err
+	}
+	info, err := obj.Stat()
+	if err != nil {
+		obj.Close()
+		return nil, minio.ObjectInfo{}, err
+	}
+	return obj, info, nil
+}

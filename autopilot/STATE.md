@@ -1,23 +1,18 @@
 # State
 
 Current project: #2 bucketmove (leave MinIO safely: inventory, target check, copy all versions, verify)
-Phase: build (milestones 1–3 of 6 done)
+Phase: build (milestones 1–5 of 6 done)
 Repo: projects/bucketmove/ inside finding-bugs (own repos blocked, see below)
 Spec: projects/bucketmove/SPEC.md
 
 ## Next step
 
-Milestone 4: `bucketmove copy`. Per bucket: create it on the target (object lock at
-creation if source has it and target supports it), versioning, then copy settings
-(lifecycle, policy, CORS, bucket tags) that the target supports. Copy every key's
-versions oldest first (list versions, group by key, reverse), recreate delete
-markers with a plain DELETE on the versioned target, carry content type, cache and
-disposition headers, user metadata, object tags, retention and legal hold. Stream
-GET→PUT (multipart above 64 MiB). Journal (JSON lines in a state dir) of finished
-source version IDs so a re-run continues; write the old→new version ID map. Refuse
-when check finds a loss unless --accept-loss. Use s3util.ListVersions everywhere
-(Garage has no ListObjectVersions). Integration test: seed MinIO, copy to every
-target, compare version chains (order, content hashes, markers, tags, metadata).
+Milestone 6 (release): README with real captured output (inventory, check against
+Garage and RustFS, copy --verify, resume), LICENSE (MIT, Ganesh Phutane), CHANGELOG,
+`make dist`; a large-volume test (a few thousand keys, a >64 MiB object, many
+versions of one key) and a Ctrl-C/resume test through the CLI; then two
+independent full reviews (copier/journal/resume correctness and data-loss paths
+first; endpoint secrets handling) and fix findings; run the suite twice; mark done.
 
 ## Notes for runs
 
@@ -28,6 +23,11 @@ target, compare version chains (order, content hashes, markers, tags, metadata).
 - The classic image store prunes differently (parent images). To test it, stop
   dockerd and start one with `--feature containerd-snapshotter=false` and a separate
   `--data-root`; the classic-builder tests (DOCKER_BUILDKIT=0) only bite there.
+- SeaweedFS quirks found: it lists versions out of key order (verify falls back to
+  per-key lookups), guesses Content-Type for application/octet-stream objects in
+  unversioned buckets (probe "exact content type"; reported as a change), stores
+  "aws-chunked" as Content-Encoding for streaming-signed uploads (copier sends
+  plain MD5-checked uploads instead), and needs -volume.max raised for many buckets.
 - bucketmove servers: `scripts/test-servers.sh up /tmp/test-servers.env`, then
   `set -a; . /tmp/test-servers.env; set +a; BUCKETMOVE_INTEGRATION=1 go test ./...`.
   MinIO runs with 4 drives (versioning/object lock need erasure coding) and

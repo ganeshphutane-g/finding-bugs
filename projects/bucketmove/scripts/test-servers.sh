@@ -81,7 +81,10 @@ TOML
 JSON
 	docker run -d --name "$PREFIX-seaweedfs" -p 127.0.0.1:18333:8333 \
 		-v "$WORK/seaweedfs/s3.json:/etc/seaweedfs/s3.json" "$SEAWEED_IMAGE" \
-		server -s3 -s3.config=/etc/seaweedfs/s3.json -ip.bind=0.0.0.0 >/dev/null
+		server -s3 -s3.config=/etc/seaweedfs/s3.json -ip.bind=0.0.0.0 \
+		-volume.max=1000 -master.volumeSizeLimitMB=16 >/dev/null
+	# SeaweedFS gives every bucket its own volumes; the default limit runs out
+	# after a few test buckets ("No writable volumes").
 
 	# RustFS
 	docker run -d --name "$PREFIX-rustfs" -p 127.0.0.1:19100:9000 \

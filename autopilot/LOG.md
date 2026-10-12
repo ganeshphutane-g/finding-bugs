@@ -15,6 +15,14 @@ Newest first.
   `check` (real feature probe + plain-words loss report, exit 3 on loss). Found on
   real servers: Garage has no versioning/tags/policy/object lock/ListObjectVersions
   and silently drops object tags on upload; MinIO has no per-bucket CORS.
+- Milestones 4–5 done: `copy` (all versions oldest first, delete markers, headers,
+  metadata, tags, retention, legal holds, lifecycle/policy/CORS/tags/default
+  retention, journal with crash-safe resume, refuses on loss or existing buckets)
+  and `verify` (version-by-version with SHA-256). Integration tests copy a seeded
+  MinIO to Garage, SeaweedFS and RustFS and verify every version; resume and
+  existing-bucket tests pass. Bugs found and fixed: objects written before
+  versioning ("null" version) would have been copied as the newest version;
+  SeaweedFS quirks (see STATE notes).
 
 ## 2026-10-12 (IST) — run 1
 

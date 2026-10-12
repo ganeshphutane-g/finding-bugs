@@ -147,6 +147,9 @@ func writeReport(w io.Writer, target string, r check.Report) {
 		for _, l := range b.Losses {
 			fmt.Fprintf(w, "  - %s\n", l.What)
 		}
+		for _, c := range b.Changes {
+			fmt.Fprintf(w, "  - changes: %s\n", c)
+		}
 		if len(b.Manual) > 0 {
 			fmt.Fprintf(w, "  - not copied by bucketmove, set up by hand: %s\n", strings.Join(b.Manual, ", "))
 		}

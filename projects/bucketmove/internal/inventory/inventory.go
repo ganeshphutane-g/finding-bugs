@@ -96,7 +96,9 @@ func bucket(ctx context.Context, c *minio.Client, info minio.BucketInfo, opts Op
 	// check records a setting the server cannot report instead of failing.
 	check := func(setting string, err error) error {
 		switch {
-		case err == nil || s3util.NotConfigured(err):
+		// Garage answers NoSuchBucket for an existing bucket without CORS
+		// or lifecycle rules; the bucket was just listed, so it exists.
+		case err == nil || s3util.NotConfigured(err) || s3util.Code(err) == "NoSuchBucket":
 			return nil
 		case s3util.NotSupported(err):
 			b.Unsupported = append(b.Unsupported, setting)

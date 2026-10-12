@@ -33,10 +33,13 @@ const (
 	ObjectLock   = "object lock"
 	Retention    = "object retention"
 	LegalHold    = "legal hold"
+	// ExactType: an object stored as application/octet-stream keeps that
+	// type (some servers replace it with a type guessed from the name).
+	ExactType = "exact content type"
 )
 
 // Order lists every feature in the order reports show them.
-var Order = []string{Versioning, DeleteMarker, ObjectTags, Metadata, Multipart, OddKeys,
+var Order = []string{Versioning, DeleteMarker, ObjectTags, Metadata, ExactType, Multipart, OddKeys,
 	BucketTags, Lifecycle, Policy, CORS, ObjectLock, Retention, LegalHold}
 
 // Result is whether a feature works, and if not, what went wrong.
@@ -66,10 +69,26 @@ func Run(ctx context.Context, c *minio.Client) (Capabilities, error) {
 	}
 	defer cleanup(ctx, c, name)
 
+	// Metadata handling can differ between versioned and unversioned buckets
+	// (SeaweedFS guesses content types only in unversioned ones), so those
+	// checks run in a plain bucket first and again after versioning is on.
 	p := prober{ctx: ctx, c: c, bucket: name, caps: caps}
-	p.versioning()
-	p.objectTags()
 	p.metadata()
+	p.exactType()
+	plain := Capabilities{Metadata: caps[Metadata], ExactType: caps[ExactType]}
+	p.versioning()
+	if caps.Supports(Versioning) {
+		p.metadata()
+		p.exactType()
+		for _, f := range []string{Metadata, ExactType} {
+			if !plain.Supports(f) {
+				caps[f] = Result{Detail: plain[f].Detail + " (in buckets without versioning)"}
+			} else if !caps.Supports(f) {
+				caps[f] = Result{Detail: caps[f].Detail + " (in buckets with versioning)"}
+			}
+		}
+	}
+	p.objectTags()
 	p.multipart()
 	p.oddKeys()
 	p.bucketTags()
@@ -235,6 +254,19 @@ func (p prober) metadata() {
 		return
 	}
 	p.set(Metadata, nil, "")
+}
+
+func (p prober) exactType() {
+	if _, err := p.put("guess-me.txt", []byte("text"), minio.PutObjectOptions{ContentType: "application/octet-stream"}); err != nil {
+		p.set(ExactType, err, "")
+		return
+	}
+	st, err := p.c.StatObject(p.ctx, p.bucket, "guess-me.txt", minio.StatObjectOptions{})
+	if err == nil && st.ContentType != "application/octet-stream" {
+		p.set(ExactType, nil, fmt.Sprintf("an object stored as application/octet-stream came back as %s (the type is guessed from the name)", st.ContentType))
+		return
+	}
+	p.set(ExactType, err, "")
 }
 
 func (p prober) multipart() {
@@ -438,12 +470,17 @@ func cleanup(ctx context.Context, c *minio.Client, bucket string) {
 // options they do not implement), then lifting a legal hold and bypassing
 // governance retention.
 func RemoveVersion(ctx context.Context, c *minio.Client, bucket, key, versionID string) error {
-	if versionID == "null" {
-		versionID = ""
-	}
 	err := c.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{VersionID: versionID})
 	if err == nil {
 		return nil
+	}
+	// Some servers reject the literal "null" version ID; on those, an empty
+	// one removes the unversioned object.
+	if versionID == "null" {
+		if err = c.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{}); err == nil {
+			return nil
+		}
+		versionID = ""
 	}
 	off := minio.LegalHoldDisabled
 	_ = c.PutObjectLegalHold(ctx, bucket, key, minio.PutObjectLegalHoldOptions{VersionID: versionID, Status: &off})

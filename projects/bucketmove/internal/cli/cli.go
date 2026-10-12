@@ -70,6 +70,8 @@ settings by accident.
 Commands:
   inventory   List buckets, their contents and the features they use
   check       Test the target and say what a move would lose
+  copy        Copy buckets with all versions, settings and tags
+  verify      Compare buckets version by version
   version     Show the version; with --from, also test the connection
 
 Endpoints are URLs with credentials (https://KEY:SECRET@host:9000), the
@@ -94,6 +96,10 @@ func run(ctx context.Context, env Env, args []string) error {
 		return runInventory(ctx, env, rest)
 	case "check":
 		return runCheck(ctx, env, rest)
+	case "copy":
+		return runCopy(ctx, env, rest)
+	case "verify":
+		return runVerify(ctx, env, rest)
 	default:
 		return usagef("unknown command %q", cmd)
 	}

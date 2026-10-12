@@ -21,6 +21,8 @@ type Bucket struct {
 	Name string `json:"name"`
 	// Losses are things the target cannot keep.
 	Losses []Loss `json:"losses"`
+	// Changes are things the target keeps, but not exactly as they were.
+	Changes []string `json:"changes,omitempty"`
 	// Manual are settings bucketmove does not copy; they must be set up on
 	// the target by hand.
 	Manual []string `json:"manual,omitempty"`
@@ -93,6 +95,9 @@ func Compare(inv []inventory.Bucket, caps probe.Capabilities, existing map[strin
 			lose(probe.CORS, "CORS rules would be lost (browsers on other sites could not use the bucket)")
 		}
 
+		if b.Objects+b.OldVersions > 0 && without(probe.ExactType) {
+			out.Changes = append(out.Changes, "objects stored as application/octet-stream may get a Content-Type guessed from their name")
+		}
 		if b.Encryption != "" {
 			out.Manual = append(out.Manual, "default encryption ("+b.Encryption+")")
 		}

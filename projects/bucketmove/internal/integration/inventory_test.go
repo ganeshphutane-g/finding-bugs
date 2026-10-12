@@ -29,9 +29,9 @@ func TestInventoryOfSeededMinIO(t *testing.T) {
 	}
 
 	h := by[f.history]
-	// notes.txt 3 versions, gone.txt 1 + marker, back.txt 2 + marker,
-	// tagged.txt 1, big.bin 2.
-	if h.Versioning != "Enabled" || h.Objects != 4 || h.OldVersions != 5 || h.DeleteMarkers != 2 || h.TaggedVersions != 1 {
+	// pre.txt 2 (null + one), notes.txt 3 versions, gone.txt 1 + marker,
+	// back.txt 2 + marker, tagged.txt 1, big.bin 2.
+	if h.Versioning != "Enabled" || h.Objects != 5 || h.OldVersions != 6 || h.DeleteMarkers != 2 || h.TaggedVersions != 1 {
 		t.Errorf("history: %+v", h)
 	}
 	if h.TotalBytes < 19<<20 || h.CurrentBytes < 7<<20 {

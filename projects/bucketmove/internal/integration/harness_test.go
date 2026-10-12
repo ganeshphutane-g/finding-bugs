@@ -141,13 +141,29 @@ type fixture struct {
 }
 
 // seed fills the MinIO source with buckets that exercise every feature
-// bucketmove cares about.
+// bucketmove cares about, and removes them when the test ends.
 func seed(t *testing.T, s server, p string) fixture {
+	t.Helper()
+	t.Cleanup(func() { removeBuckets(t, s, p) })
+	return seedInto(t, s, p)
+}
+
+// TestSeedDemo leaves a seeded set of demo-* buckets on the source, for
+// trying bucketmove by hand: BUCKETMOVE_SEED_DEMO=1 with the test servers up.
+func TestSeedDemo(t *testing.T) {
+	if os.Getenv("BUCKETMOVE_SEED_DEMO") == "" {
+		t.Skip("set BUCKETMOVE_SEED_DEMO=1 to create demo buckets")
+	}
+	src, _ := servers(t)
+	removeBuckets(t, src, "demo-")
+	seedInto(t, src, "demo")
+}
+
+func seedInto(t *testing.T, s server, p string) fixture {
 	t.Helper()
 	ctx := context.Background()
 	c := s.c
 	f := fixture{plain: p + "-plain", history: p + "-history", locked: p + "-locked", configured: p + "-configured"}
-	t.Cleanup(func() { removeBuckets(t, s, p) })
 
 	// plain: unversioned, with content types, metadata and awkward keys.
 	must(t, c.MakeBucket(ctx, f.plain, minio.MakeBucketOptions{}))
@@ -159,7 +175,10 @@ func seed(t *testing.T, s server, p string) fixture {
 
 	// history: versions, delete markers, tags and a multipart object.
 	must(t, c.MakeBucket(ctx, f.history, minio.MakeBucketOptions{}))
+	// Written before versioning is on: its first version is the "null" one.
+	put(t, c, f.history, "pre.txt", []byte("before versioning"), minio.PutObjectOptions{})
 	must(t, c.EnableVersioning(ctx, f.history))
+	put(t, c, f.history, "pre.txt", []byte("after versioning"), minio.PutObjectOptions{})
 	for i := 1; i <= 3; i++ {
 		put(t, c, f.history, "notes.txt", []byte(fmt.Sprintf("version %d\n", i)), minio.PutObjectOptions{ContentType: "text/plain"})
 	}
