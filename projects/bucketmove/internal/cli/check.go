@@ -79,6 +79,7 @@ func runCheck(ctx context.Context, env Env, args []string) error {
 // buildReport inventories the source, probes the target and compares them.
 func buildReport(ctx context.Context, env Env, srcEP endpoint.Endpoint, src *minio.Client, dstEP endpoint.Endpoint, dst *minio.Client, buckets []string, progress bool) (check.Report, error) {
 	opts := inventory.Options{Buckets: buckets}
+	progress = progress && isTerminal(env.Stderr)
 	if progress {
 		opts.Progress = func(bucket string, n int64) {
 			fmt.Fprintf(env.Stderr, "\r%s: %s versions counted...", bucket, count(n))
@@ -87,7 +88,7 @@ func buildReport(ctx context.Context, env Env, srcEP endpoint.Endpoint, src *min
 	}
 	inv, err := inventory.Take(ctx, src, opts)
 	if progress {
-		fmt.Fprint(env.Stderr, "\r\033[K")
+		clearLine(env)
 	}
 	if err != nil {
 		return check.Report{}, fmt.Errorf("%s: %w", srcEP.Name, err)
@@ -97,18 +98,26 @@ func buildReport(ctx context.Context, env Env, srcEP endpoint.Endpoint, src *min
 	}
 	caps, err := probe.Run(ctx, dst)
 	if progress {
-		fmt.Fprint(env.Stderr, "\r\033[K")
+		clearLine(env)
 	}
 	if err != nil {
 		return check.Report{}, fmt.Errorf("%s: %w", dstEP.Name, err)
 	}
-	existing := map[string]bool{}
+	existing := map[string]check.Existing{}
 	list, err := dst.ListBuckets(ctx)
 	if err != nil {
 		return check.Report{}, fmt.Errorf("%s: listing buckets: %w", dstEP.Name, err)
 	}
+	wanted := map[string]bool{}
+	for _, b := range inv {
+		wanted[b.Name] = true
+	}
 	for _, b := range list {
-		existing[b.Name] = true
+		if !wanted[b.Name] {
+			continue
+		}
+		lock, _, _, _, _ := dst.GetObjectLockConfig(ctx, b.Name)
+		existing[b.Name] = check.Existing{ObjectLock: lock == "Enabled"}
 	}
 	return check.Compare(inv, caps, existing), nil
 }

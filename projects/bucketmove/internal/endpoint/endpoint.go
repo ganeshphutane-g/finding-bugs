@@ -21,11 +21,12 @@ import (
 // Endpoint is one S3 server and the credentials to use with it.
 type Endpoint struct {
 	// Name is how the user referred to it (an alias, or the host).
-	Name      string
-	URL       *url.URL // scheme and host only
-	AccessKey string
-	SecretKey string
-	Region    string
+	Name         string
+	URL          *url.URL // scheme and host only
+	AccessKey    string
+	SecretKey    string
+	SessionToken string // for temporary credentials
+	Region       string
 	// PathStyle forces path-style requests (http://host/bucket/key). Most
 	// self-hosted servers need it; it is the default.
 	PathStyle bool
@@ -76,6 +77,10 @@ func Resolve(ref, role string, env Env) (Endpoint, error) {
 		if err != nil {
 			return Endpoint{}, fmt.Errorf("MC_HOST_%s: %w", ref, err)
 		}
+		// mc's form is https://ACCESS:SECRET[:TOKEN]@host.
+		if secret, token, ok := strings.Cut(ep.SecretKey, ":"); ok {
+			ep.SecretKey, ep.SessionToken = secret, token
+		}
 		ep.Name = ref
 		return ep, nil
 	}
@@ -85,7 +90,7 @@ func Resolve(ref, role string, env Env) (Endpoint, error) {
 func parseURL(raw, role string, env Env) (Endpoint, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return Endpoint{}, fmt.Errorf("invalid endpoint URL: %w", redact(err, raw))
+		return Endpoint{}, fmt.Errorf("invalid endpoint URL %s (if the secret contains / # ? or @, percent-encode it or use BUCKETMOVE_%s_SECRET_KEY)", Redact(raw), strings.ToUpper(role))
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return Endpoint{}, fmt.Errorf("endpoint URL must start with http:// or https://, got %q", u.Scheme+"://")
@@ -120,23 +125,30 @@ func parseURL(raw, role string, env Env) (Endpoint, error) {
 	return ep, nil
 }
 
-// redact keeps secrets out of URL parse errors.
-func redact(err error, raw string) error {
-	msg := err.Error()
-	if u, perr := url.Parse(raw); perr == nil && u.User != nil {
-		if pw, ok := u.User.Password(); ok && pw != "" {
-			msg = strings.ReplaceAll(msg, pw, "REDACTED")
-		}
+// Redact hides everything between "://" and the last "@" of a URL-like
+// string, so credentials never reach error messages, even when the URL does
+// not parse.
+func Redact(raw string) string {
+	raw = strings.TrimSpace(raw)
+	start := strings.Index(raw, "://")
+	if start < 0 {
+		return "(not shown)"
 	}
-	return errors.New(msg)
+	rest := raw[start+3:]
+	at := strings.LastIndex(rest, "@")
+	if at < 0 {
+		return fmt.Sprintf("%q", raw)
+	}
+	return fmt.Sprintf("%q", raw[:start+3]+"REDACTED"+rest[at:])
 }
 
 type mcConfig struct {
 	Aliases map[string]struct {
-		URL       string `json:"url"`
-		AccessKey string `json:"accessKey"`
-		SecretKey string `json:"secretKey"`
-		Path      string `json:"path"`
+		URL          string `json:"url"`
+		AccessKey    string `json:"accessKey"`
+		SecretKey    string `json:"secretKey"`
+		SessionToken string `json:"sessionToken"`
+		Path         string `json:"path"`
 	} `json:"aliases"`
 }
 
@@ -165,20 +177,33 @@ func fromMCConfig(alias string, env Env) (Endpoint, error) {
 		return Endpoint{}, fmt.Errorf("alias %q is not in %s", alias, path)
 	}
 	u, err := url.Parse(a.URL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") {
 		return Endpoint{}, fmt.Errorf("alias %q in %s has an invalid url %q", alias, path, a.URL)
 	}
 	if a.AccessKey == "" || a.SecretKey == "" {
 		return Endpoint{}, fmt.Errorf("alias %q in %s has no credentials", alias, path)
 	}
 	return Endpoint{
-		Name:      alias,
-		URL:       &url.URL{Scheme: u.Scheme, Host: u.Host},
-		AccessKey: a.AccessKey,
-		SecretKey: a.SecretKey,
-		// mc's "path" is "auto", "on" or "off"; only "off" means virtual-host style.
-		PathStyle: a.Path != "off",
+		Name:         alias,
+		URL:          &url.URL{Scheme: u.Scheme, Host: u.Host},
+		AccessKey:    a.AccessKey,
+		SecretKey:    a.SecretKey,
+		SessionToken: a.SessionToken,
+		PathStyle:    mcPathStyle(a.Path, u.Hostname()),
 	}, nil
+}
+
+// mcPathStyle follows mc's "path" setting: "on" and "off" are explicit;
+// "auto" (the default) uses virtual-host style for AWS and Aliyun only.
+func mcPathStyle(setting, host string) bool {
+	switch strings.ToLower(setting) {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	host = strings.ToLower(host)
+	return !(strings.HasSuffix(host, ".amazonaws.com") || strings.HasSuffix(host, ".aliyuncs.com"))
 }
 
 // Client builds an S3 client for the endpoint.
@@ -188,7 +213,7 @@ func (e Endpoint) Client(transport http.RoundTripper) (*minio.Client, error) {
 		lookup = minio.BucketLookupDNS
 	}
 	return minio.New(e.URL.Host, &minio.Options{
-		Creds:        credentials.NewStaticV4(e.AccessKey, e.SecretKey, ""),
+		Creds:        credentials.NewStaticV4(e.AccessKey, e.SecretKey, e.SessionToken),
 		Secure:       e.URL.Scheme == "https",
 		Region:       e.Region,
 		BucketLookup: lookup,

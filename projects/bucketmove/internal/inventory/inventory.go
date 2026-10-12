@@ -46,7 +46,12 @@ type Bucket struct {
 	TaggedVersions int64 `json:"tagged_versions"` // versions with object tags
 	Retained       int64 `json:"retained"`        // versions under retention
 	LegalHolds     int64 `json:"legal_holds"`     // versions under legal hold
-	Metadata       int64 `json:"with_metadata"`   // versions with user metadata
+	Metadata       int64 `json:"with_metadata"`   // versions with user metadata or extra headers
+	// StorageClasses counts versions per storage class other than STANDARD.
+	StorageClasses map[string]int64 `json:"storage_classes,omitempty"`
+	// NoVersionListing is true when the server could not list old versions,
+	// so OldVersions and DeleteMarkers may be too low.
+	NoVersionListing bool `json:"no_version_listing,omitempty"`
 }
 
 // Options control how deep the inventory looks.
@@ -96,9 +101,11 @@ func bucket(ctx context.Context, c *minio.Client, info minio.BucketInfo, opts Op
 	// check records a setting the server cannot report instead of failing.
 	check := func(setting string, err error) error {
 		switch {
+		case err == nil || s3util.NotConfigured(err):
+			return nil
 		// Garage answers NoSuchBucket for an existing bucket without CORS
 		// or lifecycle rules; the bucket was just listed, so it exists.
-		case err == nil || s3util.NotConfigured(err) || s3util.Code(err) == "NoSuchBucket":
+		case s3util.Code(err) == "NoSuchBucket" && (setting == "CORS" || setting == "lifecycle"):
 			return nil
 		case s3util.NotSupported(err):
 			b.Unsupported = append(b.Unsupported, setting)
@@ -183,7 +190,13 @@ func bucket(ctx context.Context, c *minio.Client, info minio.BucketInfo, opts Op
 
 func countObjects(ctx context.Context, c *minio.Client, b *Bucket, opts Options) error {
 	var seen int64
-	objects, _ := s3util.ListVersions(ctx, c, b.Name, "", true)
+	objects, versioned := s3util.ListVersions(ctx, c, b.Name, "", true)
+	defer func() {
+		if b.Versioning != "" && !versioned() {
+			b.NoVersionListing = true
+			b.Unsupported = append(b.Unsupported, "version listing")
+		}
+	}()
 	for obj := range objects {
 		if obj.Err != nil {
 			return fmt.Errorf("listing objects: %w", obj.Err)
@@ -206,13 +219,14 @@ func countObjects(ctx context.Context, c *minio.Client, b *Bucket, opts Options)
 		if len(obj.UserTags) > 0 || obj.UserTagCount > 0 {
 			b.TaggedVersions++
 		}
-		if len(obj.UserMetadata) > 0 {
-			for k := range obj.UserMetadata {
-				if strings.HasPrefix(strings.ToLower(k), "x-amz-meta-") {
-					b.Metadata++
-					break
-				}
+		if hasMetadata(obj.UserMetadata) {
+			b.Metadata++
+		}
+		if sc := obj.StorageClass; sc != "" && sc != "STANDARD" {
+			if b.StorageClasses == nil {
+				b.StorageClasses = map[string]int64{}
 			}
+			b.StorageClasses[sc]++
 		}
 		if b.ObjectLock {
 			if err := countLocks(ctx, c, b, obj); err != nil {
@@ -220,7 +234,21 @@ func countObjects(ctx context.Context, c *minio.Client, b *Bucket, opts Options)
 			}
 		}
 	}
-	return nil
+	// An interrupted listing just ends; never report its partial counts.
+	return ctx.Err()
+}
+
+// hasMetadata reports user metadata or headers beyond Content-Type.
+func hasMetadata(m map[string]string) bool {
+	for k := range m {
+		switch lk := strings.ToLower(k); {
+		case strings.HasPrefix(lk, "x-amz-meta-"),
+			lk == "cache-control", lk == "content-disposition", lk == "content-language",
+			lk == "content-encoding", lk == "expires":
+			return true
+		}
+	}
+	return false
 }
 
 func countLocks(ctx context.Context, c *minio.Client, b *Bucket, obj minio.ObjectInfo) error {

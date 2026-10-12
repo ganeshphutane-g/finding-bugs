@@ -5,6 +5,7 @@ package check
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/ganeshphutane-g/bucketmove/internal/inventory"
 	"github.com/ganeshphutane-g/bucketmove/internal/probe"
@@ -46,11 +47,18 @@ func (r Report) HasLoss() bool {
 	return false
 }
 
-// Compare builds the report. existing names buckets the target already has.
-func Compare(inv []inventory.Bucket, caps probe.Capabilities, existing map[string]bool) Report {
-	r := Report{Target: caps}
+// Existing describes a bucket that is already on the target.
+type Existing struct {
+	ObjectLock bool // created with object lock
+}
+
+// Compare builds the report. existing holds the buckets the target already
+// has.
+func Compare(inv []inventory.Bucket, caps probe.Capabilities, existing map[string]Existing) Report {
+	r := Report{Target: caps, Buckets: []Bucket{}}
 	for _, b := range inv {
-		out := Bucket{Name: b.Name, Losses: []Loss{}, TargetExists: existing[b.Name]}
+		ex, exists := existing[b.Name]
+		out := Bucket{Name: b.Name, Losses: []Loss{}, TargetExists: exists}
 		lose := func(feature, format string, args ...any) {
 			out.Losses = append(out.Losses, Loss{Feature: feature, What: fmt.Sprintf(format, args...)})
 		}
@@ -67,13 +75,21 @@ func Compare(inv []inventory.Bucket, caps probe.Capabilities, existing map[strin
 		} else if b.DeleteMarkers > 0 && without(probe.DeleteMarker) {
 			lose(probe.DeleteMarker, "%s delete %s would be lost", count(b.DeleteMarkers), plural(b.DeleteMarkers, "marker"))
 		}
-		if b.ObjectLock && without(probe.ObjectLock) {
-			lose(probe.ObjectLock, "object lock would be gone: nothing would stop objects being deleted or overwritten")
+		if b.NoVersionListing {
+			lose(probe.Versioning, "the source could not list old versions, so they cannot be copied")
 		}
-		if b.Retained > 0 && (without(probe.ObjectLock) || without(probe.Retention)) {
+		noLock := without(probe.ObjectLock) || (exists && !ex.ObjectLock)
+		if b.ObjectLock && noLock {
+			if exists && !ex.ObjectLock && !without(probe.ObjectLock) {
+				lose(probe.ObjectLock, "the existing target bucket has no object lock, and it cannot be added to a bucket later: nothing would stop objects being deleted or overwritten")
+			} else {
+				lose(probe.ObjectLock, "object lock would be gone: nothing would stop objects being deleted or overwritten")
+			}
+		}
+		if b.Retained > 0 && (noLock || without(probe.Retention)) {
 			lose(probe.Retention, "%s %s under retention would lose it", count(b.Retained), plural(b.Retained, "version"))
 		}
-		if b.LegalHolds > 0 && (without(probe.ObjectLock) || without(probe.LegalHold)) {
+		if b.LegalHolds > 0 && (noLock || without(probe.LegalHold)) {
 			lose(probe.LegalHold, "%s legal %s would be dropped", count(b.LegalHolds), plural(b.LegalHolds, "hold"))
 		}
 		if b.TaggedVersions > 0 && without(probe.ObjectTags) {
@@ -91,6 +107,13 @@ func Compare(inv []inventory.Bucket, caps probe.Capabilities, existing map[strin
 		if b.Policy && without(probe.Policy) {
 			lose(probe.Policy, "the bucket policy would be gone (check who can read and write the bucket)")
 		}
+		if len(b.StorageClasses) > 0 && without(probe.StorageClass) {
+			var n int64
+			for _, c := range b.StorageClasses {
+				n += c
+			}
+			lose(probe.StorageClass, "%s %s would lose their storage class (%s)", count(n), plural(n, "version"), classes(b.StorageClasses))
+		}
 		if b.CORSRules > 0 && without(probe.CORS) {
 			lose(probe.CORS, "CORS rules would be lost (browsers on other sites could not use the bucket)")
 		}
@@ -98,19 +121,39 @@ func Compare(inv []inventory.Bucket, caps probe.Capabilities, existing map[strin
 		if b.Objects+b.OldVersions > 0 && without(probe.ExactType) {
 			out.Changes = append(out.Changes, "objects stored as application/octet-stream may get a Content-Type guessed from their name")
 		}
+		for _, u := range b.Unsupported {
+			if u != "version listing" {
+				out.Changes = append(out.Changes, "the source could not report its "+u+" setting, so it is not checked or copied")
+			}
+		}
+		// bucketmove does not copy these; leaving them behind is a loss
+		// until they are set up on the target by hand.
 		if b.Encryption != "" {
-			out.Manual = append(out.Manual, "default encryption ("+b.Encryption+")")
+			lose("encryption", "default encryption (%s) is not copied: new objects on the target would be stored unencrypted unless you set it up there", b.Encryption)
 		}
 		if b.Notifications > 0 {
-			out.Manual = append(out.Manual, "event notifications")
+			lose("notifications", "event notifications are not copied; set them up on the target")
 		}
 		if b.Replication > 0 {
-			out.Manual = append(out.Manual, "replication rules")
+			lose("replication", "replication rules are not copied; set them up on the target")
 		}
 		r.Buckets = append(r.Buckets, out)
 	}
 	sort.Slice(r.Buckets, func(i, j int) bool { return r.Buckets[i].Name < r.Buckets[j].Name })
 	return r
+}
+
+func classes(m map[string]int64) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s: %s", k, count(m[k]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func plural(n int64, word string) string {

@@ -25,11 +25,13 @@ func copyTargets(t *testing.T) (server, []server) {
 	return src, out
 }
 
-func verifyOptions(caps probe.Capabilities) verify.Options {
+func verifyOptions(caps probe.Capabilities, b inventory.Bucket) verify.Options {
 	return verify.Options{
-		LatestOnly:  !caps.Supports(probe.Versioning),
-		SkipTags:    !caps.Supports(probe.ObjectTags),
-		GuessedType: !caps.Supports(probe.ExactType),
+		LatestOnly:   b.Versioning == "" || !caps.Supports(probe.Versioning) || !caps.Supports(probe.DeleteMarker),
+		SkipTags:     !caps.Supports(probe.ObjectTags),
+		GuessedType:  !caps.Supports(probe.ExactType),
+		Locks:        b.ObjectLock && caps.Supports(probe.ObjectLock),
+		StorageClass: caps.Supports(probe.StorageClass),
 	}
 }
 
@@ -56,7 +58,7 @@ func TestCopyToEveryTarget(t *testing.T) {
 				if err != nil {
 					t.Fatalf("copy %s: %v", b.Name, err)
 				}
-				res, err := verify.Bucket(ctx, src.c, dst.c, b.Name, verifyOptions(caps))
+				res, err := verify.Bucket(ctx, src.c, dst.c, b.Name, verifyOptions(caps, b))
 				if err != nil {
 					t.Fatalf("verify %s: %v", b.Name, err)
 				}
@@ -146,7 +148,7 @@ func TestCopyResumes(t *testing.T) {
 	if st.Skipped < 3 {
 		t.Errorf("the second run should skip the versions already copied: %+v", st)
 	}
-	res, err := verify.Bucket(ctx, src.c, dst.c, b.Name, verifyOptions(caps))
+	res, err := verify.Bucket(ctx, src.c, dst.c, b.Name, verifyOptions(caps, b))
 	if err != nil {
 		t.Fatal(err)
 	}

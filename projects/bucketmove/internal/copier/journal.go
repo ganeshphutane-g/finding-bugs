@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,31 +56,7 @@ func OpenJournal(dir, bucket string) (*Journal, error) {
 	}
 	path := filepath.Join(dir, bucket+".jsonl")
 	j := &Journal{done: map[string]Entry{}, started: map[string]Entry{}, dstByKey: map[string]map[string]bool{}}
-	if data, err := os.ReadFile(path); err == nil {
-		var lines []string
-		for _, l := range strings.Split(string(data), "\n") {
-			if strings.TrimSpace(l) != "" {
-				lines = append(lines, l)
-			}
-		}
-		for i, line := range lines {
-			var e Entry
-			if err := json.Unmarshal([]byte(line), &e); err != nil {
-				if i == len(lines)-1 {
-					break // the last line was cut off by a crash; it is redone
-				}
-				return nil, fmt.Errorf("journal %s line %d is damaged: %w", path, i+1, err)
-			}
-			switch e.State {
-			case "done":
-				j.markDone(e)
-			case "started":
-				j.started[e.id()] = e
-			case "bucket-created":
-				j.createdBucket = true
-			}
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if err := j.load(path); err != nil {
 		return nil, err
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -87,17 +64,59 @@ func OpenJournal(dir, bucket string) (*Journal, error) {
 		return nil, err
 	}
 	j.f, j.w = f, bufio.NewWriter(f)
-	// Start on a fresh line if the last one was cut off.
-	if st, err := f.Stat(); err == nil && st.Size() > 0 {
-		last := make([]byte, 1)
-		if r, err := os.Open(path); err == nil {
-			if _, err := r.ReadAt(last, st.Size()-1); err == nil && last[0] != '\n' {
-				_, _ = j.w.WriteString("\n")
+	return j, nil
+}
+
+// load reads an existing journal line by line. A last line cut off by a
+// crash is removed from the file, so new entries never follow a damaged one;
+// damage anywhere else is reported.
+func (j *Journal) load(path string) error {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 1<<20)
+	var offset, good int64
+	for n := 1; ; n++ {
+		line, err := r.ReadBytes('\n')
+		if len(line) == 0 && err == io.EOF {
+			break
+		}
+		if err != nil && err != io.EOF {
+			return err
+		}
+		offset += int64(len(line))
+		text := strings.TrimSpace(string(line))
+		if text == "" {
+			good = offset
+			continue
+		}
+		var e Entry
+		if jerr := json.Unmarshal([]byte(text), &e); jerr != nil || line[len(line)-1] != '\n' {
+			if err == io.EOF {
+				// The cut-off last line: drop it; that version is redone.
+				return os.Truncate(path, good)
 			}
-			r.Close()
+			return fmt.Errorf("journal %s line %d is damaged: %v", path, n, jerr)
+		}
+		good = offset
+		switch e.State {
+		case "done":
+			j.markDone(e)
+		case "started":
+			j.started[e.id()] = e
+		case "bucket-created":
+			j.createdBucket = true
+		}
+		if err == io.EOF {
+			break
 		}
 	}
-	return j, nil
+	return nil
 }
 
 // Done returns the finished entry for a source version, if any.

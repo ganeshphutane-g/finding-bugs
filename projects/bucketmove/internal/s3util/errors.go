@@ -63,6 +63,11 @@ func NotSupported(err error) bool {
 	if s := status(err); s == http.StatusNotImplemented {
 		return true
 	}
+	// Only errors without an S3 code are judged by their text; a coded
+	// error (InvalidRequest, AccessDenied, ...) is a real failure.
+	if Code(err) != "" {
+		return false
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "not implemented") || strings.Contains(msg, "unimplemented") || strings.Contains(msg, "not supported")
 }

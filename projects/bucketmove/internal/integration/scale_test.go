@@ -67,7 +67,7 @@ func TestCopyAtScale(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := verify.Bucket(ctx, src.c, dst.c, bucket, verifyOptions(caps))
+			res, err := verify.Bucket(ctx, src.c, dst.c, bucket, verifyOptions(caps, b))
 			if err != nil {
 				t.Fatal(err)
 			}

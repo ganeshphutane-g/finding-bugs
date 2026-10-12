@@ -89,3 +89,43 @@ func TestResolveRejectsBadURLs(t *testing.T) {
 		}
 	}
 }
+
+func TestParseErrorsNeverShowSecrets(t *testing.T) {
+	for _, raw := range []string{
+		"http://AKIA:TOPSECRET@127.0.0.1:19x00",
+		"http://AKIA:abc/TOPSECRET@host",
+		"http://AKIA:TOP%zzSECRET@host",
+		"http://AKIA:TOPSECRET@host\n",
+	} {
+		_, err := Resolve(raw, "from", envOf(nil, t.TempDir()))
+		if err != nil && strings.Contains(err.Error(), "TOPSECRET") {
+			t.Errorf("%q: secret in error: %v", raw, err)
+		}
+		_, err = Resolve("x", "from", envOf(map[string]string{"MC_HOST_x": raw}, t.TempDir()))
+		if err != nil && strings.Contains(err.Error(), "TOPSECRET") {
+			t.Errorf("MC_HOST %q: secret in error: %v", raw, err)
+		}
+	}
+}
+
+func TestMCHostSessionToken(t *testing.T) {
+	ep, err := Resolve("tmp", "from", envOf(map[string]string{"MC_HOST_tmp": "https://AK:SK:TOKEN@s3.lan"}, t.TempDir()))
+	if err != nil || ep.SecretKey != "SK" || ep.SessionToken != "TOKEN" {
+		t.Fatalf("got %+v %v", ep, err)
+	}
+}
+
+func TestMCPathStyle(t *testing.T) {
+	cases := []struct {
+		setting, host string
+		want          bool
+	}{
+		{"auto", "minio.lan", true}, {"", "minio.lan", true}, {"auto", "s3.eu-west-1.amazonaws.com", false},
+		{"Off", "minio.lan", false}, {"on", "s3.amazonaws.com", true},
+	}
+	for _, c := range cases {
+		if got := mcPathStyle(c.setting, c.host); got != c.want {
+			t.Errorf("%q %q: got %v", c.setting, c.host, got)
+		}
+	}
+}

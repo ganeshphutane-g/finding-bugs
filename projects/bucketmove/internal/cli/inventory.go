@@ -54,14 +54,14 @@ func runInventory(ctx context.Context, env Env, args []string) error {
 		return err
 	}
 	opts := inventory.Options{Buckets: buckets}
-	if *format == "table" {
+	if *format == "table" && isTerminal(env.Stderr) {
 		opts.Progress = func(bucket string, n int64) {
 			fmt.Fprintf(env.Stderr, "\r%s: %s versions counted...", bucket, count(n))
 		}
 	}
 	inv, err := inventory.Take(ctx, c, opts)
 	if opts.Progress != nil {
-		fmt.Fprint(env.Stderr, "\r\033[K")
+		clearLine(env)
 	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", ep.Name, err)

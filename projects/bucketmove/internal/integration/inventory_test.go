@@ -24,7 +24,7 @@ func TestInventoryOfSeededMinIO(t *testing.T) {
 	}
 
 	plain := by[f.plain]
-	if plain.Objects != 4 || plain.OldVersions != 0 || plain.DeleteMarkers != 0 || plain.Versioning != "" || plain.Metadata != 1 {
+	if plain.Objects != 4 || plain.OldVersions != 0 || plain.DeleteMarkers != 0 || plain.Versioning != "" || plain.Metadata != 1 || plain.StorageClasses["REDUCED_REDUNDANCY"] != 1 {
 		t.Errorf("plain: %+v", plain)
 	}
 

@@ -2,6 +2,7 @@ package s3util
 
 import (
 	"context"
+	"sort"
 
 	"github.com/minio/minio-go/v7"
 )
@@ -45,6 +46,15 @@ func ListVersions(ctx context.Context, c *minio.Client, bucket, prefix string, w
 		}
 	}()
 	return out, func() bool { return usedVersions }
+}
+
+// NewestFirst orders one key's versions newest first by modification time,
+// keeping the server's order for equal times. Servers do not all list
+// versions in that order (RustFS lists delete markers first).
+func NewestFirst(versions []minio.ObjectInfo) {
+	sort.SliceStable(versions, func(i, j int) bool {
+		return versions[i].LastModified.After(versions[j].LastModified)
+	})
 }
 
 func send(ctx context.Context, out chan<- minio.ObjectInfo, obj minio.ObjectInfo) bool {

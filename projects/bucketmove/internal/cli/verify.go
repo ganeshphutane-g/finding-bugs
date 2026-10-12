@@ -55,21 +55,21 @@ func runVerify(ctx context.Context, env Env, args []string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", srcEP.Name, err)
 	}
-	opts := verifyOptionsFor(caps)
-	opts.SkipContent = *quick
-	if *format == "table" {
-		opts.Progress = func(keys int64) {
-			if keys%200 == 0 {
-				fmt.Fprintf(env.Stderr, "\r%s keys compared...\033[K", count(keys))
+	var results []verify.Result
+	bad, partial := 0, false
+	for _, b := range inv {
+		opts := verifyOptionsFor(caps, b)
+		opts.SkipContent = *quick
+		partial = partial || opts.LatestOnly || opts.SkipTags
+		if *format == "table" && isTerminal(env.Stderr) {
+			opts.Progress = func(keys int64) {
+				if keys%200 == 0 {
+					fmt.Fprintf(env.Stderr, "\r%s keys compared...\033[K", count(keys))
+				}
 			}
 		}
-	}
-
-	var results []verify.Result
-	bad := 0
-	for _, b := range inv {
 		res, err := verify.Bucket(ctx, src, dst, b.Name, opts)
-		fmt.Fprint(env.Stderr, "\r\033[K")
+		clearLine(env)
 		if err != nil {
 			return fmt.Errorf("%s: %w", b.Name, err)
 		}
@@ -94,8 +94,8 @@ func runVerify(ctx context.Context, env Env, args []string) error {
 		if err := enc.Encode(results); err != nil {
 			return err
 		}
-	} else if opts.LatestOnly || opts.SkipTags {
-		fmt.Fprintln(env.Stdout, "\nThe target keeps no version history or tags, so only what it can keep was compared.")
+	} else if partial {
+		fmt.Fprintln(env.Stdout, "\nWhere the target keeps no version history or tags, only what it can keep was compared.")
 	}
 	if bad > 0 {
 		return exitCode(1)

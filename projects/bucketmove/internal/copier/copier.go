@@ -72,48 +72,66 @@ func (c *Copier) Bucket(ctx context.Context, b inventory.Bucket) (Stats, error) 
 	}
 	defer j.Close()
 
-	if err := c.prepareBucket(ctx, b, j); err != nil {
+	lockOK, err := c.prepareBucket(ctx, b, j)
+	if err != nil {
 		return st, err
 	}
-	versioned := b.Versioning != "" && c.Caps.Supports(probe.Versioning)
+	// Version history only goes where both versions and delete markers
+	// work; otherwise only the latest version of each key is copied.
+	versioned := b.Versioning != "" && c.Caps.Supports(probe.Versioning) && c.Caps.Supports(probe.DeleteMarker)
 
-	if err := c.copyObjects(ctx, b, j, versioned, &st); err != nil {
+	if err := c.copyObjects(ctx, b, j, versioned, lockOK, &st); err != nil {
 		return st, err
 	}
-	settings, err := c.copySettings(ctx, b)
+	settings, err := c.copySettings(ctx, b, lockOK)
 	st.Settings = settings
 	return st, err
 }
 
-// prepareBucket creates the target bucket (with object lock if needed) and
-// turns on versioning.
-func (c *Copier) prepareBucket(ctx context.Context, b inventory.Bucket, j *Journal) error {
+// prepareBucket creates the target bucket (with object lock if needed),
+// turns on versioning, and reports whether retention and legal holds can be
+// set on the target bucket.
+func (c *Copier) prepareBucket(ctx context.Context, b inventory.Bucket, j *Journal) (lockOK bool, err error) {
 	exists, err := c.Dst.BucketExists(ctx, b.Name)
 	if err != nil {
-		return fmt.Errorf("checking target bucket: %w", err)
+		return false, fmt.Errorf("checking target bucket: %w", err)
 	}
 	lock := b.ObjectLock && c.Caps.Supports(probe.ObjectLock)
+	lockOK = lock
 	switch {
 	case !exists:
 		if err := c.Dst.MakeBucket(ctx, b.Name, minio.MakeBucketOptions{ObjectLocking: lock}); err != nil {
-			return fmt.Errorf("creating target bucket: %w", err)
+			return false, fmt.Errorf("creating target bucket: %w", err)
 		}
-		if err := j.Record(Entry{State: "bucket-created", Key: ""}); err != nil {
-			return err
+		if err := j.Record(Entry{State: "bucket-created"}); err != nil {
+			return false, err
 		}
 	case j.DoneCount() == 0 && !j.CreatedBucket() && !c.Opts.IntoExisting:
-		return fmt.Errorf("the target already has a bucket named %s that this copy did not create; pass --into-existing to copy into it anyway", b.Name)
+		return false, fmt.Errorf("the target already has a bucket named %s that this copy did not create; pass --into-existing to copy into it anyway", b.Name)
 	case lock:
 		if l, _, _, _, err := c.Dst.GetObjectLockConfig(ctx, b.Name); err != nil || l != "Enabled" {
-			c.warn("%s: the existing target bucket has no object lock, so retention and legal holds cannot be set (object lock can only be chosen when a bucket is created)", b.Name)
+			c.warn("%s: the existing target bucket has no object lock, so retention and legal holds are not copied (object lock can only be chosen when a bucket is created)", b.Name)
+			lockOK = false
 		}
 	}
 	if b.Versioning != "" && c.Caps.Supports(probe.Versioning) {
 		if err := c.Dst.EnableVersioning(ctx, b.Name); err != nil {
-			return fmt.Errorf("turning on versioning: %w", err)
+			return false, fmt.Errorf("turning on versioning: %w", err)
 		}
 	}
-	return nil
+	// A default retention set by an earlier run would give newly copied
+	// versions a retention their source versions do not have. Lift it while
+	// copying; copySettings puts it back at the end.
+	if lockOK && exists {
+		_, mode, _, _, err := c.Dst.GetObjectLockConfig(ctx, b.Name)
+		if err == nil && mode != nil {
+			if err := c.Dst.SetObjectLockConfig(ctx, b.Name, nil, nil, nil); err != nil {
+				return false, fmt.Errorf("lifting the target's default retention while copying: %w", err)
+			}
+			c.warn("%s: the target's default retention is lifted while copying and set again at the end", b.Name)
+		}
+	}
+	return lockOK, nil
 }
 
 // keyVersions is every version of one key, oldest first.
@@ -122,7 +140,7 @@ type keyVersions struct {
 	versions []minio.ObjectInfo
 }
 
-func (c *Copier) copyObjects(ctx context.Context, b inventory.Bucket, j *Journal, versioned bool, st *Stats) error {
+func (c *Copier) copyObjects(ctx context.Context, b inventory.Bucket, j *Journal, versioned, lockOK bool, st *Stats) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -149,7 +167,7 @@ func (c *Copier) copyObjects(ctx context.Context, b inventory.Bucket, j *Journal
 		go func() {
 			defer wg.Done()
 			for kv := range jobs {
-				if err := c.copyKey(ctx, b, j, versioned, kv, st, &mu); err != nil {
+				if err := c.copyKey(ctx, b, j, versioned, lockOK, kv, st, &mu); err != nil {
 					fail(fmt.Errorf("%s: %w", kv.key, err))
 				}
 			}
@@ -163,6 +181,7 @@ func (c *Copier) copyObjects(ctx context.Context, b inventory.Bucket, j *Journal
 		if cur.key == "" && len(cur.versions) == 0 {
 			return true
 		}
+		s3util.NewestFirst(cur.versions)
 		for l, r := 0, len(cur.versions)-1; l < r; l, r = l+1, r-1 {
 			cur.versions[l], cur.versions[r] = cur.versions[r], cur.versions[l]
 		}
@@ -207,7 +226,7 @@ func (c *Copier) copyObjects(ctx context.Context, b inventory.Bucket, j *Journal
 	return ctx.Err()
 }
 
-func (c *Copier) copyKey(ctx context.Context, b inventory.Bucket, j *Journal, versioned bool, kv keyVersions, st *Stats, mu *sync.Mutex) error {
+func (c *Copier) copyKey(ctx context.Context, b inventory.Bucket, j *Journal, versioned, lockOK bool, kv keyVersions, st *Stats, mu *sync.Mutex) error {
 	versions := kv.versions
 	if !versioned {
 		// The target keeps one version: copy only the latest, and nothing
@@ -253,7 +272,7 @@ func (c *Copier) copyKey(ctx context.Context, b inventory.Bucket, j *Journal, ve
 		if v.IsDeleteMarker {
 			e.DstVersion, err = c.copyMarker(ctx, b.Name, v.Key)
 		} else {
-			e.DstVersion, e.SHA256, err = c.copyVersion(ctx, b, v)
+			e.DstVersion, e.SHA256, err = c.copyVersion(ctx, b, v, lockOK, j)
 		}
 		if err != nil {
 			return err
@@ -352,12 +371,18 @@ func (c *Copier) copyMarker(ctx context.Context, bucket, key string) (string, er
 
 // copyVersion copies one version, retrying temporary failures. The upload
 // streams straight from the source, so each attempt reads the source again.
-func (c *Copier) copyVersion(ctx context.Context, b inventory.Bucket, v minio.ObjectInfo) (dstVersion, sum string, err error) {
+func (c *Copier) copyVersion(ctx context.Context, b inventory.Bucket, v minio.ObjectInfo, lockOK bool, j *Journal) (dstVersion, sum string, err error) {
 	delay := time.Second
 	for attempt := 1; ; attempt++ {
-		dstVersion, sum, err = c.copyVersionOnce(ctx, b, v)
+		start := time.Now()
+		dstVersion, sum, err = c.copyVersionOnce(ctx, b, v, lockOK)
 		if err == nil || attempt == 4 || !s3util.Transient(err) || ctx.Err() != nil {
 			return dstVersion, sum, err
+		}
+		// The server may have stored the object and only the reply was
+		// lost; uploading again would add a duplicate version.
+		if id, aerr := c.adoptOrphan(ctx, b.Name, Entry{Key: v.Key, SrcETag: v.ETag, Size: v.Size, Time: start}, j); aerr == nil && id != "" {
+			return id, "", nil
 		}
 		c.warn("%s/%s: %v; retrying in %s", b.Name, v.Key, err, delay)
 		select {
@@ -369,7 +394,7 @@ func (c *Copier) copyVersion(ctx context.Context, b inventory.Bucket, v minio.Ob
 	}
 }
 
-func (c *Copier) copyVersionOnce(ctx context.Context, b inventory.Bucket, v minio.ObjectInfo) (dstVersion, sum string, err error) {
+func (c *Copier) copyVersionOnce(ctx context.Context, b inventory.Bucket, v minio.ObjectInfo, lockOK bool) (dstVersion, sum string, err error) {
 	versionID := v.VersionID
 	obj, info, err := s3util.GetVersion(ctx, c.Src, b.Name, v)
 	if err != nil {
@@ -385,6 +410,7 @@ func (c *Copier) copyVersionOnce(ctx context.Context, b inventory.Bucket, v mini
 		ContentLanguage:    info.Metadata.Get("Content-Language"),
 		UserMetadata:       userMetadata(info.Metadata),
 		PartSize:           partSize(info.Size),
+		StorageClass:       storageClass(info, c.Caps),
 		// A plain body with a Content-MD5 the server checks. Streaming
 		// signatures (aws-chunked) are avoided: some servers store
 		// "aws-chunked" as the object's Content-Encoding (SeaweedFS does).
@@ -403,7 +429,7 @@ func (c *Copier) copyVersionOnce(ctx context.Context, b inventory.Bucket, v mini
 		}
 		opts.UserTags = t.ToMap()
 	}
-	if b.ObjectLock && c.Caps.Supports(probe.ObjectLock) {
+	if lockOK {
 		if c.Caps.Supports(probe.Retention) {
 			mode, until, err := c.Src.GetObjectRetention(ctx, b.Name, v.Key, versionID)
 			if err != nil && !s3util.NotConfigured(err) {
@@ -434,6 +460,14 @@ func (c *Copier) copyVersionOnce(ctx context.Context, b inventory.Bucket, v mini
 		return "", "", fmt.Errorf("target stored %d bytes, source has %d", up.Size, info.Size)
 	}
 	return up.VersionID, hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// storageClass keeps a non-standard storage class where the target keeps them.
+func storageClass(info minio.ObjectInfo, caps probe.Capabilities) string {
+	if info.StorageClass == "" || info.StorageClass == "STANDARD" || !caps.Supports(probe.StorageClass) {
+		return ""
+	}
+	return info.StorageClass
 }
 
 // partSize keeps multipart uploads within S3's 10,000-part limit, with
@@ -470,7 +504,7 @@ func tagCount(info minio.ObjectInfo) int {
 
 // copySettings copies the bucket settings the target supports, after the
 // objects so that lifecycle rules do not act on a half-copied bucket.
-func (c *Copier) copySettings(ctx context.Context, b inventory.Bucket) ([]string, error) {
+func (c *Copier) copySettings(ctx context.Context, b inventory.Bucket, lockOK bool) ([]string, error) {
 	var done []string
 	name := b.Name
 	if b.LifecycleRules > 0 && c.Caps.Supports(probe.Lifecycle) {
@@ -515,7 +549,7 @@ func (c *Copier) copySettings(ctx context.Context, b inventory.Bucket) ([]string
 	}
 	// The default retention goes on last, so copied versions keep their own
 	// retention instead of getting a fresh default one.
-	if b.ObjectLock && b.LockDefault != "" && c.Caps.Supports(probe.ObjectLock) {
+	if lockOK && b.LockDefault != "" {
 		_, mode, validity, unit, err := c.Src.GetObjectLockConfig(ctx, name)
 		if err != nil {
 			return done, fmt.Errorf("reading object lock: %w", err)

@@ -169,7 +169,7 @@ func seedInto(t *testing.T, s server, p string) fixture {
 	must(t, c.MakeBucket(ctx, f.plain, minio.MakeBucketOptions{}))
 	put(t, c, f.plain, "docs/readme.txt", []byte("hello\n"), minio.PutObjectOptions{
 		ContentType: "text/plain", UserMetadata: map[string]string{"Owner": "ops"}, CacheControl: "max-age=60"})
-	put(t, c, f.plain, "img/logo.bin", randomBytes(t, 4096), minio.PutObjectOptions{ContentType: "application/octet-stream"})
+	put(t, c, f.plain, "img/logo.bin", randomBytes(t, 4096), minio.PutObjectOptions{ContentType: "application/octet-stream", StorageClass: "REDUCED_REDUNDANCY"})
 	put(t, c, f.plain, "empty", nil, minio.PutObjectOptions{})
 	put(t, c, f.plain, "unicode/ünï cødé + spaces.txt", []byte("ü"), minio.PutObjectOptions{})
 

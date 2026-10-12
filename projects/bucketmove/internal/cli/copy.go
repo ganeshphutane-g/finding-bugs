@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -60,8 +62,8 @@ func runCopy(ctx context.Context, env Env, args []string) error {
 	if err != nil {
 		return err
 	}
-	if srcEP.URL.Host == dstEP.URL.Host {
-		return usagef("copy: source and target are the same server (%s); bucketmove copies buckets under the same names", srcEP.URL.Host)
+	if sameServer(srcEP.URL, dstEP.URL) {
+		return usagef("copy: source and target are the same server (%s and %s); bucketmove copies buckets under the same names", srcEP.URL.Host, dstEP.URL.Host)
 	}
 
 	report, err := buildReport(ctx, env, srcEP, src, dstEP, dst, buckets, true)
@@ -93,6 +95,9 @@ func runCopy(ctx context.Context, env Env, args []string) error {
 		IntoExisting: *intoExisting,
 		Warn:         func(s string) { fmt.Fprintln(env.Stderr, "Warning: "+s) },
 		Progress: func(bucket string, done, bytes int64) {
+			if !isTerminal(env.Stderr) {
+				return
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if time.Since(last) > 500*time.Millisecond {
@@ -107,7 +112,7 @@ func runCopy(ctx context.Context, env Env, args []string) error {
 	for _, b := range inv {
 		start := time.Now()
 		st, err := cp.Bucket(ctx, b)
-		fmt.Fprint(env.Stderr, "\r\033[K")
+		clearLine(env)
 		if err != nil {
 			failed++
 			fmt.Fprintf(env.Stdout, "%s: FAILED after %s versions: %v\n", b.Name, count(st.Versions+st.Markers), err)
@@ -124,7 +129,7 @@ func runCopy(ctx context.Context, env Env, args []string) error {
 		}
 		fmt.Fprintf(env.Stdout, "%s, in %s.\n", line, time.Since(start).Round(100*time.Millisecond))
 		if *doVerify {
-			res, err := verify.Bucket(ctx, src, dst, b.Name, verifyOptionsFor(report.Target))
+			res, err := verify.Bucket(ctx, src, dst, b.Name, verifyOptionsFor(report.Target, b))
 			switch {
 			case err != nil:
 				failed++
@@ -143,6 +148,49 @@ func runCopy(ctx context.Context, env Env, args []string) error {
 	return nil
 }
 
+// sameServer reports whether two endpoints reach the same host and port,
+// looking through names such as localhost and 127.0.0.1.
+func sameServer(a, b *url.URL) bool {
+	if strings.EqualFold(a.Host, b.Host) {
+		return true
+	}
+	if port(a) != port(b) {
+		return false
+	}
+	addrs := func(host string) map[string]bool {
+		out := map[string]bool{}
+		ips, err := net.LookupHost(host)
+		if err != nil {
+			out[host] = true
+			return out
+		}
+		for _, ip := range ips {
+			if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+				ip = "loopback"
+			}
+			out[ip] = true
+		}
+		return out
+	}
+	x, y := addrs(a.Hostname()), addrs(b.Hostname())
+	for ip := range x {
+		if y[ip] {
+			return true
+		}
+	}
+	return false
+}
+
+func port(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
 // stateName is a readable, file-safe name for a source/target pair.
 func stateName(src, dst string) string {
 	clean := func(s string) string {
@@ -158,10 +206,13 @@ func stateName(src, dst string) string {
 	return clean(src) + "-to-" + clean(dst) + "-" + hex.EncodeToString(sum[:4])
 }
 
-func verifyOptionsFor(caps probe.Capabilities) verify.Options {
+// verifyOptionsFor compares what the target can keep for bucket b.
+func verifyOptionsFor(caps probe.Capabilities, b inventory.Bucket) verify.Options {
 	return verify.Options{
-		LatestOnly:  !caps.Supports(probe.Versioning),
-		SkipTags:    !caps.Supports(probe.ObjectTags),
-		GuessedType: !caps.Supports(probe.ExactType),
+		LatestOnly:   b.Versioning == "" || !caps.Supports(probe.Versioning) || !caps.Supports(probe.DeleteMarker),
+		SkipTags:     !caps.Supports(probe.ObjectTags),
+		GuessedType:  !caps.Supports(probe.ExactType),
+		Locks:        b.ObjectLock && caps.Supports(probe.ObjectLock) && caps.Supports(probe.Retention) && caps.Supports(probe.LegalHold),
+		StorageClass: caps.Supports(probe.StorageClass),
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ganeshphutane-g/bucketmove/internal/s3util"
 	"github.com/minio/minio-go/v7"
@@ -30,6 +31,10 @@ type Options struct {
 	// GuessedType accepts a different Content-Type on the target when the
 	// source has application/octet-stream (for servers that guess types).
 	GuessedType bool
+	// Locks compares retention and legal holds.
+	Locks bool
+	// StorageClass compares storage classes.
+	StorageClass bool
 	// MaxDiffs stops after this many differences (0: 1000).
 	MaxDiffs int
 	// Progress, when set, is called after each key.
@@ -54,9 +59,12 @@ type version struct {
 	marker  bool
 	size    int64
 	sha     string
-	headers string
+	ctype   string
+	headers string // headers other than Content-Type
 	meta    string
 	tags    string
+	lock    string
+	class   string
 }
 
 func (v version) String() string {
@@ -91,6 +99,7 @@ func groups(ctx context.Context, c *minio.Client, bucket string) <-chan group {
 			if len(cur.versions) == 0 && cur.err == nil {
 				return true
 			}
+			s3util.NewestFirst(cur.versions)
 			for l, r := 0, len(cur.versions)-1; l < r; l, r = l+1, r-1 {
 				cur.versions[l], cur.versions[r] = cur.versions[r], cur.versions[l]
 			}
@@ -121,7 +130,9 @@ func groups(ctx context.Context, c *minio.Client, bucket string) <-chan group {
 			cur.key = obj.Key
 			cur.versions = append(cur.versions, obj)
 		}
-		emit()
+		if ctx.Err() == nil {
+			emit()
+		}
 	}()
 	return out
 }
@@ -202,7 +213,8 @@ func merge(ctx context.Context, src, dst *minio.Client, bucket string, opts Opti
 			gb, okB = <-b
 		}
 	}
-	return res, nil
+	// An interrupted listing just ends; never report a partial comparison.
+	return res, ctx.Err()
 }
 
 // perKey compares each source key with the target's versions of that key,
@@ -271,7 +283,7 @@ func perKey(ctx context.Context, src, dst *minio.Client, bucket string, opts Opt
 			return res, nil
 		}
 	}
-	return res, nil
+	return res, ctx.Err()
 }
 
 // keyGroup lists one key's versions, oldest first.
@@ -286,11 +298,7 @@ func keyGroup(ctx context.Context, c *minio.Client, bucket, key string) (group, 
 			g.versions = append(g.versions, obj)
 		}
 	}
-	// Newest first in listings; sort oldest first by modification time,
-	// keeping the listing order for equal times.
-	sort.SliceStable(g.versions, func(i, j int) bool {
-		return g.versions[i].LastModified.After(g.versions[j].LastModified)
-	})
+	s3util.NewestFirst(g.versions)
 	for l, r := 0, len(g.versions)-1; l < r; l, r = l+1, r-1 {
 		g.versions[l], g.versions[r] = g.versions[r], g.versions[l]
 	}
@@ -338,8 +346,14 @@ func compareKey(ctx context.Context, src, dst *minio.Client, bucket string, ga, 
 		switch {
 		case x.marker != y.marker || x.size != y.size || x.sha != y.sha:
 			diffs = append(diffs, fmt.Sprintf("%s: source has %s, target has %s", label, x, y))
-		case x.headers != y.headers && !(opts.GuessedType && guessed(x.headers, y.headers)):
+		case x.ctype != y.ctype && !(opts.GuessedType && x.ctype == "application/octet-stream"):
+			diffs = append(diffs, fmt.Sprintf("%s: Content-Type differs: source %s, target %s", label, x.ctype, y.ctype))
+		case x.headers != y.headers:
 			diffs = append(diffs, fmt.Sprintf("%s: headers differ: source %s, target %s", label, x.headers, y.headers))
+		case x.lock != y.lock:
+			diffs = append(diffs, fmt.Sprintf("%s: retention or legal hold differs: source %s, target %s", label, x.lock, y.lock))
+		case x.class != y.class:
+			diffs = append(diffs, fmt.Sprintf("%s: storage class differs: source %s, target %s", label, x.class, y.class))
 		case x.meta != y.meta:
 			diffs = append(diffs, fmt.Sprintf("%s: user metadata differs: source %s, target %s", label, x.meta, y.meta))
 		case x.tags != y.tags:
@@ -349,7 +363,7 @@ func compareKey(ctx context.Context, src, dst *minio.Client, bucket string, ga, 
 	return diffs, int64(n), nil
 }
 
-var comparedHeaders = []string{"Content-Type", "Cache-Control", "Content-Disposition", "Content-Encoding", "Content-Language"}
+var comparedHeaders = []string{"Cache-Control", "Content-Disposition", "Content-Encoding", "Content-Language", "Expires"}
 
 func describe(ctx context.Context, c *minio.Client, bucket string, o minio.ObjectInfo, opts Options) (version, error) {
 	if o.IsDeleteMarker {
@@ -381,8 +395,37 @@ func describe(ctx context.Context, c *minio.Client, bucket string, o minio.Objec
 		}
 		v.size, v.sha = n, hex.EncodeToString(h.Sum(nil))
 	}
+	v.ctype = info.ContentType
+	if v.ctype == "" || v.ctype == "binary/octet-stream" {
+		v.ctype = "application/octet-stream"
+	}
 	v.headers = headerString(info.Metadata)
 	v.meta = metaString(info.Metadata)
+	if opts.StorageClass {
+		v.class = info.StorageClass
+		if v.class == "" {
+			v.class = "STANDARD"
+		}
+	}
+	if opts.Locks {
+		mode, until, err := c.GetObjectRetention(ctx, bucket, o.Key, id)
+		if err != nil && !s3util.NotConfigured(err) {
+			return v, fmt.Errorf("reading retention: %w", err)
+		}
+		if err == nil && mode != nil && until != nil && until.After(time.Now()) {
+			v.lock = fmt.Sprintf("%s until %s", *mode, until.UTC().Format(time.RFC3339))
+		}
+		hold, err := c.GetObjectLegalHold(ctx, bucket, o.Key, minio.GetObjectLegalHoldOptions{VersionID: id})
+		if err != nil && !s3util.NotConfigured(err) {
+			return v, fmt.Errorf("reading legal hold: %w", err)
+		}
+		if err == nil && hold != nil && *hold == minio.LegalHoldEnabled {
+			v.lock += " legal-hold"
+		}
+		if v.lock == "" {
+			v.lock = "none"
+		}
+	}
 	if !opts.SkipTags {
 		t, err := c.GetObjectTagging(ctx, bucket, o.Key, minio.GetObjectTaggingOptions{VersionID: id})
 		if err != nil && !s3util.NotConfigured(err) {
@@ -395,30 +438,10 @@ func describe(ctx context.Context, c *minio.Client, bucket string, o minio.Objec
 	return v, nil
 }
 
-// guessed reports whether two header strings differ only because the target
-// replaced application/octet-stream with another Content-Type.
-func guessed(src, dst string) bool {
-	const generic = "Content-Type=application/octet-stream"
-	if !strings.HasPrefix(src, generic) {
-		return false
-	}
-	rest := strings.TrimPrefix(src, generic)
-	i := strings.Index(dst, ";")
-	if i < 0 {
-		return rest == "" && strings.HasPrefix(dst, "Content-Type=")
-	}
-	// Keep everything after the Content-Type part; the guessed type itself
-	// may contain "; charset=...".
-	return strings.HasPrefix(dst, "Content-Type=") && strings.HasSuffix(dst, rest)
-}
-
 func headerString(h http.Header) string {
 	var parts []string
 	for _, k := range comparedHeaders {
 		val := h.Get(k)
-		if k == "Content-Type" && val == "" {
-			val = "binary/octet-stream"
-		}
 		if val != "" {
 			parts = append(parts, k+"="+val)
 		}

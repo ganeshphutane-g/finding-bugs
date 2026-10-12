@@ -53,6 +53,9 @@ func Run(ctx context.Context, env Env, args []string) int {
 		return 0
 	case errors.As(err, &code):
 		return int(code)
+	case errors.Is(err, context.Canceled):
+		fmt.Fprintln(env.Stderr, "bucketmove: interrupted")
+		return 130
 	case errors.Is(err, errUsage):
 		fmt.Fprintf(env.Stderr, "bucketmove: %v\nRun 'bucketmove help' for usage.\n", err)
 		return 2
@@ -74,8 +77,10 @@ Commands:
   verify      Compare buckets version by version
   version     Show the version; with --from, also test the connection
 
-Endpoints are URLs with credentials (https://KEY:SECRET@host:9000), the
-BUCKETMOVE_FROM / BUCKETMOVE_TO variables, or MinIO client (mc) aliases.
+Endpoints are MinIO client (mc) aliases (from ~/.mc/config.json or MC_HOST_<alias>),
+or URLs such as https://host:9000. Keep keys out of the command line (where other
+users can see them) with BUCKETMOVE_FROM_ACCESS_KEY / BUCKETMOVE_FROM_SECRET_KEY and
+BUCKETMOVE_TO_ACCESS_KEY / BUCKETMOVE_TO_SECRET_KEY; https://KEY:SECRET@host works too.
 
 Run 'bucketmove COMMAND --help' for more information on a command.
 `
@@ -102,6 +107,24 @@ func run(ctx context.Context, env Env, args []string) error {
 		return runVerify(ctx, env, rest)
 	default:
 		return usagef("unknown command %q", cmd)
+	}
+}
+
+// isTerminal reports whether w is a terminal, so progress lines (which
+// redraw themselves) are only written there and never into log files.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	st, err := f.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
+
+// clearLine removes a progress line, if one may have been drawn.
+func clearLine(env Env) {
+	if isTerminal(env.Stderr) {
+		fmt.Fprint(env.Stderr, "\r\033[K")
 	}
 }
 

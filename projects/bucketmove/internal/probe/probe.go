@@ -36,10 +36,12 @@ const (
 	// ExactType: an object stored as application/octet-stream keeps that
 	// type (some servers replace it with a type guessed from the name).
 	ExactType = "exact content type"
+	// StorageClass: a non-standard storage class is kept.
+	StorageClass = "storage classes"
 )
 
 // Order lists every feature in the order reports show them.
-var Order = []string{Versioning, DeleteMarker, ObjectTags, Metadata, ExactType, Multipart, OddKeys,
+var Order = []string{Versioning, DeleteMarker, ObjectTags, Metadata, ExactType, StorageClass, Multipart, OddKeys,
 	BucketTags, Lifecycle, Policy, CORS, ObjectLock, Retention, LegalHold}
 
 // Result is whether a feature works, and if not, what went wrong.
@@ -89,6 +91,7 @@ func Run(ctx context.Context, c *minio.Client) (Capabilities, error) {
 		}
 	}
 	p.objectTags()
+	p.storageClass()
 	p.multipart()
 	p.oddKeys()
 	p.bucketTags()
@@ -225,7 +228,7 @@ func (p prober) metadata() {
 		ContentType:        "text/x-bucketmove",
 		CacheControl:       "max-age=123",
 		ContentDisposition: `attachment; filename="probe.txt"`,
-		ContentEncoding:    "identity",
+		ContentEncoding:    "gzip",
 		ContentLanguage:    "en",
 		UserMetadata:       map[string]string{"Probe-Key": "probe value"},
 	}
@@ -248,6 +251,7 @@ func (p prober) metadata() {
 	check("Cache-Control", opts.CacheControl, st.Metadata.Get("Cache-Control"))
 	check("Content-Disposition", opts.ContentDisposition, st.Metadata.Get("Content-Disposition"))
 	check("Content-Language", opts.ContentLanguage, st.Metadata.Get("Content-Language"))
+	check("Content-Encoding", opts.ContentEncoding, st.Metadata.Get("Content-Encoding"))
 	check("user metadata", "probe value", st.UserMetadata["Probe-Key"])
 	if len(lost) > 0 {
 		p.set(Metadata, nil, "not kept: "+strings.Join(lost, ", "))
@@ -267,6 +271,24 @@ func (p prober) exactType() {
 		return
 	}
 	p.set(ExactType, err, "")
+}
+
+func (p prober) storageClass() {
+	const class = "REDUCED_REDUNDANCY"
+	if _, err := p.put("classy", []byte("c"), minio.PutObjectOptions{StorageClass: class}); err != nil {
+		p.set(StorageClass, err, "")
+		return
+	}
+	st, err := p.c.StatObject(p.ctx, p.bucket, "classy", minio.StatObjectOptions{})
+	if err == nil && st.StorageClass != class {
+		got := st.StorageClass
+		if got == "" {
+			got = "STANDARD"
+		}
+		p.set(StorageClass, nil, "an object stored as "+class+" came back as "+got)
+		return
+	}
+	p.set(StorageClass, err, "")
 }
 
 func (p prober) multipart() {

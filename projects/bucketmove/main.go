@@ -15,6 +15,12 @@ import (
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// After the first Ctrl-C, bucketmove stops cleanly; a second one ends it
+	// at once.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	code := cli.Run(ctx, cli.DefaultEnv(), os.Args[1:])
 	stop()
 	os.Exit(code)

@@ -19,6 +19,13 @@ func TestProbeTargets(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, f := range []string{probe.Metadata, probe.Multipart, probe.OddKeys, probe.Lifecycle} {
+				// SeaweedFS drops Content-Encoding in unversioned buckets.
+				if s.name == "seaweedfs" && f == probe.Metadata {
+					if caps.Supports(f) || !strings.Contains(caps[f].Detail, "Content-Encoding") {
+						t.Errorf("seaweedfs: expected Content-Encoding to be reported as not kept, got %+v", caps[f])
+					}
+					continue
+				}
 				if !caps.Supports(f) {
 					t.Errorf("%s should support %s: %s", s.name, f, caps[f].Detail)
 				}
