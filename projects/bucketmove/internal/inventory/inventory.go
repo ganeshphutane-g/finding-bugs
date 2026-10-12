@@ -181,11 +181,8 @@ func bucket(ctx context.Context, c *minio.Client, info minio.BucketInfo, opts Op
 
 func countObjects(ctx context.Context, c *minio.Client, b *Bucket, opts Options) error {
 	var seen int64
-	for obj := range c.ListObjects(ctx, b.Name, minio.ListObjectsOptions{
-		Recursive:    true,
-		WithVersions: true,
-		WithMetadata: true,
-	}) {
+	objects, _ := s3util.ListVersions(ctx, c, b.Name, "", true)
+	for obj := range objects {
 		if obj.Err != nil {
 			return fmt.Errorf("listing objects: %w", obj.Err)
 		}

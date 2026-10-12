@@ -2,6 +2,20 @@
 
 Newest first.
 
+## 2026-10-13 (IST) — run 2
+
+- Owner has not created the docker-mop repo yet; it stays in projects/docker-mop.
+- Research round 2 (re-validated round-1 runners-up + new signals). Chosen project #2:
+  bucketmove — leave MinIO (archived April 2026, images gone) without losing object
+  versions, tags, locks or policies. Verified no version-preserving migration tool
+  exists and that Garage silently lacks several features.
+- Test servers working locally: MinIO built from source (4 drives), Garage,
+  SeaweedFS, RustFS. Script: projects/bucketmove/scripts/test-servers.sh.
+- Milestones 1–3 done: endpoints (URLs, env, mc aliases, MC_HOST_*), `inventory`,
+  `check` (real feature probe + plain-words loss report, exit 3 on loss). Found on
+  real servers: Garage has no versioning/tags/policy/object lock/ListObjectVersions
+  and silently drops object tags on upload; MinIO has no per-bucket CORS.
+
 ## 2026-10-12 (IST) — run 1
 
 - Research round 1 done (3 parallel searches); 13 candidates scored in IDEAS.md.

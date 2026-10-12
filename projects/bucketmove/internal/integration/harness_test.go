@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/ganeshphutane-g/bucketmove/internal/endpoint"
+	"github.com/ganeshphutane-g/bucketmove/internal/probe"
+	"github.com/ganeshphutane-g/bucketmove/internal/s3util"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/lifecycle"
 	"github.com/minio/minio-go/v7/pkg/tags"
@@ -95,13 +97,12 @@ func removeBuckets(t *testing.T, s server, p string) {
 		if !strings.HasPrefix(b.Name, p) {
 			continue
 		}
-		for obj := range s.c.ListObjects(ctx, b.Name, minio.ListObjectsOptions{Recursive: true, WithVersions: true}) {
+		objects, _ := s3util.ListVersions(ctx, s.c, b.Name, "", false)
+		for obj := range objects {
 			if obj.Err != nil {
-				break
+				continue
 			}
-			off := minio.LegalHoldDisabled
-			_ = s.c.PutObjectLegalHold(ctx, b.Name, obj.Key, minio.PutObjectLegalHoldOptions{VersionID: obj.VersionID, Status: &off})
-			_ = s.c.RemoveObject(ctx, b.Name, obj.Key, minio.RemoveObjectOptions{VersionID: obj.VersionID, GovernanceBypass: true})
+			_ = probe.RemoveVersion(ctx, s.c, b.Name, obj.Key, obj.VersionID)
 		}
 		if err := s.c.RemoveBucket(ctx, b.Name); err != nil {
 			t.Logf("cleanup %s/%s: %v", s.name, b.Name, err)

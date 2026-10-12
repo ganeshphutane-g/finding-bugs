@@ -47,9 +47,12 @@ func usagef(format string, args ...any) error {
 // the exit code.
 func Run(ctx context.Context, env Env, args []string) int {
 	err := run(ctx, env, args)
+	var code exitCode
 	switch {
 	case err == nil:
 		return 0
+	case errors.As(err, &code):
+		return int(code)
 	case errors.Is(err, errUsage):
 		fmt.Fprintf(env.Stderr, "bucketmove: %v\nRun 'bucketmove help' for usage.\n", err)
 		return 2
@@ -66,6 +69,7 @@ settings by accident.
 
 Commands:
   inventory   List buckets, their contents and the features they use
+  check       Test the target and say what a move would lose
   version     Show the version; with --from, also test the connection
 
 Endpoints are URLs with credentials (https://KEY:SECRET@host:9000), the
@@ -88,6 +92,8 @@ func run(ctx context.Context, env Env, args []string) error {
 		return runVersion(ctx, env, rest)
 	case "inventory", "inv":
 		return runInventory(ctx, env, rest)
+	case "check":
+		return runCheck(ctx, env, rest)
 	default:
 		return usagef("unknown command %q", cmd)
 	}

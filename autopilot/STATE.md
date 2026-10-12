@@ -1,14 +1,23 @@
 # State
 
 Current project: #2 bucketmove (leave MinIO safely: inventory, target check, copy all versions, verify)
-Phase: spec
+Phase: build (milestones 1–3 of 6 done)
 Repo: projects/bucketmove/ inside finding-bugs (own repos blocked, see below)
-Spec: projects/bucketmove/SPEC.md (to write)
+Spec: projects/bucketmove/SPEC.md
 
 ## Next step
 
-Write projects/bucketmove/SPEC.md and start milestone 1 (skeleton, endpoint config
-incl. mc aliases, S3 client, integration harness with real servers).
+Milestone 4: `bucketmove copy`. Per bucket: create it on the target (object lock at
+creation if source has it and target supports it), versioning, then copy settings
+(lifecycle, policy, CORS, bucket tags) that the target supports. Copy every key's
+versions oldest first (list versions, group by key, reverse), recreate delete
+markers with a plain DELETE on the versioned target, carry content type, cache and
+disposition headers, user metadata, object tags, retention and legal hold. Stream
+GET→PUT (multipart above 64 MiB). Journal (JSON lines in a state dir) of finished
+source version IDs so a re-run continues; write the old→new version ID map. Refuse
+when check finds a loss unless --accept-loss. Use s3util.ListVersions everywhere
+(Garage has no ListObjectVersions). Integration test: seed MinIO, copy to every
+target, compare version chains (order, content hashes, markers, tags, metadata).
 
 ## Notes for runs
 
@@ -19,6 +28,11 @@ incl. mc aliases, S3 client, integration harness with real servers).
 - The classic image store prunes differently (parent images). To test it, stop
   dockerd and start one with `--feature containerd-snapshotter=false` and a separate
   `--data-root`; the classic-builder tests (DOCKER_BUILDKIT=0) only bite there.
+- bucketmove servers: `scripts/test-servers.sh up /tmp/test-servers.env`, then
+  `set -a; . /tmp/test-servers.env; set +a; BUCKETMOVE_INTEGRATION=1 go test ./...`.
+  MinIO runs with 4 drives (versioning/object lock need erasure coding) and
+  MINIO_CI_CD=1. Garage has no versioning, tags, policy, object lock and no
+  ListObjectVersions; MinIO has no per-bucket CORS. SeaweedFS and RustFS support all.
 - bucketmove test servers: MinIO is not on Docker Hub or reachable registries any
   more; build it with `GOBIN=/tmp/minio-bin go install
   github.com/minio/minio@v0.0.0-20260212201848-7aac2a2c5b7c` (about 2.5 minutes).

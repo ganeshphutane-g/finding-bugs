@@ -61,5 +61,5 @@ func NotSupported(err error) bool {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not implemented") || strings.Contains(msg, "not supported")
+	return strings.Contains(msg, "not implemented") || strings.Contains(msg, "unimplemented") || strings.Contains(msg, "not supported")
 }
