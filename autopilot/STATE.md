@@ -1,17 +1,14 @@
 # State
 
-Current project: #1 docker-mop (Docker CLI plugin: prune preview + volume rename/copy)
-Phase: done (v1.0.0; tag docker-mop/v1.0.0 to be created by the owner, see blockers)
-Repo: building in projects/docker-mop/ inside finding-bugs (own repo blocked, see below)
-Spec: projects/docker-mop/SPEC.md
+Current project: #2 bucketmove (leave MinIO safely: inventory, target check, copy all versions, verify)
+Phase: spec
+Repo: projects/bucketmove/ inside finding-bugs (own repos blocked, see below)
+Spec: projects/bucketmove/SPEC.md (to write)
 
 ## Next step
 
-Start research round 2 for project #2 (see "1. Research" in AUTOPILOT.md). Re-check
-the runners-up in autopilot/IDEAS.md first (the VS Code layered settings composer
-scored highest), then look for new signals. If the owner has created the
-ganeshphutane-g/docker-mop repo, move the project there first with
-`git subtree split --prefix=projects/docker-mop` and push, keeping history.
+Write projects/bucketmove/SPEC.md and start milestone 1 (skeleton, endpoint config
+incl. mc aliases, S3 client, integration harness with real servers).
 
 ## Notes for runs
 
@@ -22,6 +19,11 @@ ganeshphutane-g/docker-mop repo, move the project there first with
 - The classic image store prunes differently (parent images). To test it, stop
   dockerd and start one with `--feature containerd-snapshotter=false` and a separate
   `--data-root`; the classic-builder tests (DOCKER_BUILDKIT=0) only bite there.
+- bucketmove test servers: MinIO is not on Docker Hub or reachable registries any
+  more; build it with `GOBIN=/tmp/minio-bin go install
+  github.com/minio/minio@v0.0.0-20260212201848-7aac2a2c5b7c` (about 2.5 minutes).
+  Garage (dxflrs/garage), SeaweedFS (chrislusf/seaweedfs) and RustFS (rustfs/rustfs)
+  pull from Docker Hub.
 - Docker Hub pulls can fail with 429 (rate limit). Tests must not depend on pulling
   images: build tiny test images locally (e.g. `FROM scratch` with a static file).
 

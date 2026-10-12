@@ -3,6 +3,56 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 2 — 2026-10-13 IST
+
+### Chosen: bucketmove (project #2)
+
+A CLI for leaving MinIO safely. It lists what a MinIO deployment uses (buckets, object
+versions, delete markers, object lock, lifecycle, policies, CORS, tags), probes what
+the target (Garage, SeaweedFS, RustFS, Ceph RGW, AWS S3) really supports and reports
+exactly what would be lost, then copies every bucket **with all object versions in
+order**, and verifies the result.
+
+Scores: demand 5, gap 5, feasibility 4, maintenance 3, fit 5 (total 22).
+
+Evidence:
+- minio/minio (61.3k stars) is archived; maintenance mode from 2025-12-03, archived
+  2026-04-25 (https://pinggy.io/blog/minio_archived_self_hosted_s3_alternatives/).
+  MinIO's images are gone from Docker Hub (checked: `minio/minio` pull denied).
+- Migration questions on the targets: rustfs/rustfs#98 (17 comments), #759, #2283,
+  #1489, #6295 (IAM migration bug, Aug 2026); seaweedfs#7586 (replacing MinIO).
+- Migration guides do it by hand with rclone and lose versions, tags and policies:
+  https://jacar.es/en/migrate-minio-to-garage-with-docker/ (also: Garage has no
+  versioning, object lock, bucket policies or object tags, so users need to be told
+  before they lose them). Tor's TPA-RFC-96 plans MinIO → Garage.
+- Existing tools: rclone (no version history), `mc mirror` (current versions only),
+  repos named minio-migrate with 0–1 stars. GitHub search for version-preserving S3
+  migration tools found nothing established.
+
+Testable here: MinIO builds from source via the Go module proxy (2.5 min); Garage,
+SeaweedFS and RustFS images pull from Docker Hub.
+
+### Runners-up
+
+- **VS Code layered settings composer** (CLI + thin extension). Still open upstream
+  (#15909 ~390+ 👍, last comment 2026-07; #5595, #40233). Community PR #335281 would
+  add per-OS blocks natively. Alternatives tiny/dormant. Scores 5/4/4/3/4 = 20.
+- **Dead image-reference auditor** (compose/k8s/Helm images from removed sources like
+  docker.io/bitnami): bitnami/charts#35256, #35351, #36268. Scores 4/4/4/3/4 = 19.
+- **Ansible-core 2.19 upgrade preflight** (broken conditionals/templating). Evidence
+  thinner (ansible#85849 4 👍, netlab, VyOS). Scores 3/4/4/3/3 = 17.
+- **Format-preserving yq/jq-style editor** (yq#515 156 👍, jq#105 381 👍). Scores
+  4/3/4/3/4 = 18; small competitors exist.
+- **Home Assistant add-on → Compose converter**. Scores 4/4/3/2/3 = 16.
+- **Forgejo/Woodpecker Actions portability linter**: clear gap, weak demand data (16).
+
+### Rejected in round 2
+
+- Terraform visualizer: now crowded with small 2026 tools; big UI effort.
+- termshark successor: too large; Wireshark team may adopt; ownership questions.
+- Already solved: Alertmanager ack (kthxbye), Uptime Kuma config (AutoKuma), Komodo
+  import, Portainer CE, NPM export, Node20 Actions, npm trust, ingress2gateway.
+
 ## Research round 1 — 2026-10-12 IST
 
 ### Chosen: docker-mop (project #1)
