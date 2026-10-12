@@ -20,7 +20,7 @@ type Entry struct {
 	SrcVersion string    `json:"src_version"` // source version ID ("" or "null" when unversioned)
 	SrcETag    string    `json:"src_etag"`
 	Size       int64     `json:"size"`
-	State      string    `json:"state"`                 // "started" or "done"
+	State      string    `json:"state"`                 // "started", "done" or "bucket-created"
 	DstVersion string    `json:"dst_version,omitempty"` // version ID on the target
 	SHA256     string    `json:"sha256,omitempty"`      // content hash, for verify
 	Marker     bool      `json:"delete_marker,omitempty"`
@@ -41,6 +41,11 @@ type Journal struct {
 	w       *bufio.Writer
 	done    map[string]Entry
 	started map[string]Entry
+	// dstByKey holds, per key, the target version IDs already recorded as
+	// done, so an earlier version is never mistaken for a lost upload.
+	dstByKey map[string]map[string]bool
+	// createdBucket is true once this copy has created the target bucket.
+	createdBucket bool
 }
 
 // OpenJournal opens (or creates) the journal for a bucket in dir.
@@ -49,7 +54,7 @@ func OpenJournal(dir, bucket string) (*Journal, error) {
 		return nil, err
 	}
 	path := filepath.Join(dir, bucket+".jsonl")
-	j := &Journal{done: map[string]Entry{}, started: map[string]Entry{}}
+	j := &Journal{done: map[string]Entry{}, started: map[string]Entry{}, dstByKey: map[string]map[string]bool{}}
 	if data, err := os.ReadFile(path); err == nil {
 		var lines []string
 		for _, l := range strings.Split(string(data), "\n") {
@@ -67,10 +72,11 @@ func OpenJournal(dir, bucket string) (*Journal, error) {
 			}
 			switch e.State {
 			case "done":
-				j.done[e.id()] = e
-				delete(j.started, e.id())
+				j.markDone(e)
 			case "started":
 				j.started[e.id()] = e
+			case "bucket-created":
+				j.createdBucket = true
 			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -134,16 +140,45 @@ func (j *Journal) Record(e Entry) error {
 	if err := j.w.Flush(); err != nil {
 		return err
 	}
-	if e.State == "done" {
+	switch e.State {
+	case "done", "bucket-created":
 		if err := j.f.Sync(); err != nil {
 			return err
 		}
-		j.done[e.id()] = e
-		delete(j.started, e.id())
-	} else {
+		if e.State == "done" {
+			j.markDone(e)
+		} else {
+			j.createdBucket = true
+		}
+	default:
 		j.started[e.id()] = e
 	}
 	return nil
+}
+
+func (j *Journal) markDone(e Entry) {
+	j.done[e.id()] = e
+	delete(j.started, e.id())
+	if e.DstVersion != "" {
+		if j.dstByKey[e.Key] == nil {
+			j.dstByKey[e.Key] = map[string]bool{}
+		}
+		j.dstByKey[e.Key][e.DstVersion] = true
+	}
+}
+
+// CreatedBucket reports whether this copy created the target bucket.
+func (j *Journal) CreatedBucket() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.createdBucket
+}
+
+// KnownDst reports whether a target version of key is already recorded.
+func (j *Journal) KnownDst(key, dstVersion string) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.dstByKey[key][dstVersion]
 }
 
 // Close flushes and closes the journal.

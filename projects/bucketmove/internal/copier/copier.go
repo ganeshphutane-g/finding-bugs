@@ -51,6 +51,10 @@ type Copier struct {
 	Src, Dst *minio.Client
 	Caps     probe.Capabilities
 	Opts     Options
+
+	// beforeWrite, when set (tests only), runs after a version is recorded
+	// as started and before it is written; an error simulates a crash.
+	beforeWrite func(Entry) error
 }
 
 func (c *Copier) warn(format string, args ...any) {
@@ -94,7 +98,10 @@ func (c *Copier) prepareBucket(ctx context.Context, b inventory.Bucket, j *Journ
 		if err := c.Dst.MakeBucket(ctx, b.Name, minio.MakeBucketOptions{ObjectLocking: lock}); err != nil {
 			return fmt.Errorf("creating target bucket: %w", err)
 		}
-	case j.DoneCount() == 0 && !c.Opts.IntoExisting:
+		if err := j.Record(Entry{State: "bucket-created", Key: ""}); err != nil {
+			return err
+		}
+	case j.DoneCount() == 0 && !j.CreatedBucket() && !c.Opts.IntoExisting:
 		return fmt.Errorf("the target already has a bucket named %s that this copy did not create; pass --into-existing to copy into it anyway", b.Name)
 	case lock:
 		if l, _, _, _, err := c.Dst.GetObjectLockConfig(ctx, b.Name); err != nil || l != "Enabled" {
@@ -220,7 +227,7 @@ func (c *Copier) copyKey(ctx context.Context, b inventory.Bucket, j *Journal, ve
 			continue
 		}
 		if s, ok := j.Started(e); ok {
-			adopted, err := c.adoptOrphan(ctx, b.Name, s)
+			adopted, err := c.adoptOrphan(ctx, b.Name, s, j)
 			if err != nil {
 				return err
 			}
@@ -235,6 +242,11 @@ func (c *Copier) copyKey(ctx context.Context, b inventory.Bucket, j *Journal, ve
 		e.State = "started"
 		if err := j.Record(e); err != nil {
 			return err
+		}
+		if c.beforeWrite != nil {
+			if err := c.beforeWrite(e); err != nil {
+				return err
+			}
 		}
 
 		var err error
@@ -267,27 +279,59 @@ func (c *Copier) copyKey(ctx context.Context, b inventory.Bucket, j *Journal, ve
 }
 
 // adoptOrphan handles a version an earlier run started but did not record
-// as done: if the target's newest version of the key was written after that
-// start and matches it, it is that upload, and its version ID is returned.
-func (c *Copier) adoptOrphan(ctx context.Context, bucket string, started Entry) (string, error) {
+// as done. The target's newest version of the key is that upload only if it
+// is not a version already recorded, was written after the start, and
+// matches the source version (type, size and, where both are plain MD5
+// ETags, the ETag). Otherwise nothing is adopted and the version is copied
+// again; at worst that leaves an extra version, never a missing one.
+func (c *Copier) adoptOrphan(ctx context.Context, bucket string, started Entry, j *Journal) (string, error) {
 	objects, _ := s3util.ListVersions(ctx, c.Dst, bucket, started.Key, false)
 	var newest *minio.ObjectInfo
 	for obj := range objects {
 		if obj.Err != nil {
 			return "", fmt.Errorf("listing target: %w", obj.Err)
 		}
-		if obj.Key == started.Key && newest == nil {
+		if obj.Key == started.Key && (newest == nil || obj.IsLatest) {
 			o := obj
 			newest = &o
 		}
 	}
-	if newest == nil || newest.LastModified.Before(started.Time.Add(-2*time.Second)) {
+	switch {
+	case newest == nil:
+		return "", nil
+	case started.Marker != newest.IsDeleteMarker:
+		return "", nil
+	case j.KnownDst(started.Key, newest.VersionID):
+		return "", nil
+	case newest.LastModified.Before(started.Time.Add(-2 * time.Minute)):
 		return "", nil
 	}
-	if started.Marker != newest.IsDeleteMarker || (!started.Marker && newest.Size != started.Size) {
+	if started.Marker {
+		// A marker carries no content to compare; a new, unrecorded marker
+		// written after the start is ours.
+		return newest.VersionID, nil
+	}
+	if newest.Size != started.Size {
+		return "", nil
+	}
+	a, b := strings.Trim(started.SrcETag, `"`), strings.Trim(newest.ETag, `"`)
+	if plainMD5(a) && plainMD5(b) && a != b {
+		return "", nil
+	}
+	if newest.VersionID == "" {
+		// Unversioned targets have no version to adopt; rewriting the one
+		// object is harmless.
 		return "", nil
 	}
 	return newest.VersionID, nil
+}
+
+func plainMD5(etag string) bool {
+	if len(etag) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(etag)
+	return err == nil
 }
 
 func (c *Copier) copyMarker(ctx context.Context, bucket, key string) (string, error) {
@@ -295,7 +339,15 @@ func (c *Copier) copyMarker(ctx context.Context, bucket, key string) (string, er
 	if err := c.Dst.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{}); err != nil {
 		return "", fmt.Errorf("adding delete marker: %w", err)
 	}
-	return "", nil
+	// Record the marker's version ID so a later resume knows it is ours.
+	objects, _ := s3util.ListVersions(ctx, c.Dst, bucket, key, false)
+	id := ""
+	for obj := range objects {
+		if obj.Err == nil && obj.Key == key && obj.IsLatest && obj.IsDeleteMarker {
+			id = obj.VersionID
+		}
+	}
+	return id, nil
 }
 
 // copyVersion copies one version, retrying temporary failures. The upload
