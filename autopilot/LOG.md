@@ -23,6 +23,15 @@ Newest first.
   existing-bucket tests pass. Bugs found and fixed: objects written before
   versioning ("null" version) would have been copied as the newest version;
   SeaweedFS quirks (see STATE notes).
+- Milestone 6 done: scale test (2,500 keys, 50-version key, 80 MiB multipart) on all
+  targets; a Ctrl-C test through the CLI found a resume bug (an earlier version was
+  adopted as a lost upload, silently dropping a version) — fixed, with a test that
+  crashes at every point of a key's history. Two independent reviews: fixed secret
+  leaks in URL errors, version order on RustFS, duplicate versions on retry, lock and
+  default-retention handling, storage classes, journal repair, stricter verify,
+  missing losses in check (existing bucket without lock, encryption/notifications/
+  replication, unreadable settings), mc alias details, CLI interrupt handling.
+  README with real output, LICENSE, CHANGELOG, `make dist`. Project #2 done.
 
 ## 2026-10-12 (IST) — run 1
 

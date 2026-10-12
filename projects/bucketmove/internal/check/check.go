@@ -112,7 +112,7 @@ func Compare(inv []inventory.Bucket, caps probe.Capabilities, existing map[strin
 			for _, c := range b.StorageClasses {
 				n += c
 			}
-			lose(probe.StorageClass, "%s %s would lose their storage class (%s)", count(n), plural(n, "version"), classes(b.StorageClasses))
+			lose(probe.StorageClass, "the storage class of %s %s would be lost (%s)", count(n), plural(n, "version"), classes(b.StorageClasses))
 		}
 		if b.CORSRules > 0 && without(probe.CORS) {
 			lose(probe.CORS, "CORS rules would be lost (browsers on other sites could not use the bucket)")

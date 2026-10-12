@@ -1,18 +1,16 @@
 # State
 
-Current project: #2 bucketmove (leave MinIO safely: inventory, target check, copy all versions, verify)
-Phase: build (milestones 1–5 of 6 done)
+Current project: none (bucketmove finished; research round 3 next)
+Phase: research
 Repo: projects/bucketmove/ inside finding-bugs (own repos blocked, see below)
 Spec: projects/bucketmove/SPEC.md
 
 ## Next step
 
-Milestone 6 (release): README with real captured output (inventory, check against
-Garage and RustFS, copy --verify, resume), LICENSE (MIT, Ganesh Phutane), CHANGELOG,
-`make dist`; a large-volume test (a few thousand keys, a >64 MiB object, many
-versions of one key) and a Ctrl-C/resume test through the CLI; then two
-independent full reviews (copier/journal/resume correctness and data-loss paths
-first; endpoint secrets handling) and fix findings; run the suite twice; mark done.
+Research round 3 for project #3 (see "1. Research" in AUTOPILOT.md). Start from the
+round-2 runners-up in IDEAS.md (VS Code layered settings composer; dead image-reference
+auditor) and look for new signals. If the owner has created repos for docker-mop or
+bucketmove, move those projects first (git subtree split, keep history).
 
 ## Notes for runs
 
@@ -49,6 +47,12 @@ first; endpoint secrets handling) and fix findings; run the suite twice; mark do
    owner should: read the README, try `make install` and `docker mop plan` on their
    own machine, check that GitHub Actions ran green on the push, and decide whether
    to give it its own repo (recommended, so `go install` and releases work).
+2. **bucketmove** (projects/bucketmove, v1.0.0). Leave MinIO safely: `inventory`,
+   `check` (real feature probe + loss report), `copy` (all versions in order, delete
+   markers, metadata, tags, locks, settings; crash-safe resume), `verify` (version by
+   version with SHA-256). Tested against MinIO, Garage, SeaweedFS and RustFS; two full
+   reviews fixed. Owner checks before going public: README, try it against their own
+   MinIO with a test bucket, GitHub Actions green.
 
 ## Blockers for the owner
 
