@@ -1,0 +1,65 @@
+// Package s3util holds small helpers shared by the bucketmove packages.
+package s3util
+
+import (
+	"errors"
+	"net/http"
+	"strings"
+
+	"github.com/minio/minio-go/v7"
+)
+
+// Code returns the S3 error code ("NoSuchKey", "NotImplemented", ...), or "".
+func Code(err error) string {
+	var resp minio.ErrorResponse
+	if errors.As(err, &resp) {
+		return resp.Code
+	}
+	return ""
+}
+
+func status(err error) int {
+	var resp minio.ErrorResponse
+	if errors.As(err, &resp) {
+		return resp.StatusCode
+	}
+	return 0
+}
+
+// notConfigured lists the codes servers use for "this setting is not set".
+var notConfigured = map[string]bool{
+	"NoSuchLifecycleConfiguration":                   true,
+	"NoSuchBucketPolicy":                             true,
+	"NoSuchCORSConfiguration":                        true,
+	"NoSuchTagSet":                                   true,
+	"NoSuchTagSetError":                              true,
+	"ServerSideEncryptionConfigurationNotFoundError": true,
+	"ObjectLockConfigurationNotFoundError":           true,
+	"NoSuchObjectLockConfiguration":                  true,
+	"ReplicationConfigurationNotFoundError":          true,
+	"NoSuchWebsiteConfiguration":                     true,
+	"NoSuchObjectLegalHold":                          true,
+	"NoSuchObjectLockRetention":                      true,
+}
+
+// NotConfigured reports whether err means the setting simply is not set.
+func NotConfigured(err error) bool {
+	return err != nil && notConfigured[Code(err)]
+}
+
+// NotSupported reports whether err means the server does not implement the
+// call at all.
+func NotSupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch Code(err) {
+	case "NotImplemented", "MethodNotAllowed", "UnsupportedOperation", "XNotImplemented":
+		return true
+	}
+	if s := status(err); s == http.StatusNotImplemented {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not implemented") || strings.Contains(msg, "not supported")
+}

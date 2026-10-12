@@ -1,0 +1,29 @@
+name: bucketmove
+
+on:
+  push:
+    paths: ["projects/bucketmove/**", ".github/workflows/bucketmove.yml"]
+  pull_request:
+    paths: ["projects/bucketmove/**", ".github/workflows/bucketmove.yml"]
+
+defaults:
+  run:
+    working-directory: projects/bucketmove
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/bucketmove/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: unit tests
+        run: go test -race ./...
+      - name: start MinIO, Garage, SeaweedFS and RustFS
+        run: scripts/test-servers.sh up test-servers.env
+      - name: integration tests
+        run: make integration
