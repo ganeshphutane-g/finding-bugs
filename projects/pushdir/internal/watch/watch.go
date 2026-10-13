@@ -22,8 +22,12 @@ const (
 	Changed Kind = iota
 	// Removed: the path was deleted or moved away.
 	Removed
-	// Overflow: the kernel dropped events; only a full rescan is reliable.
-	Overflow
+	// Rescan: changes may have been missed (the kernel dropped events, or a
+	// new folder could not be watched); only a full check is reliable.
+	Rescan
+	// RootGone: the watched folder itself was removed or moved away. No
+	// further events arrive.
+	RootGone
 )
 
 func (k Kind) String() string {
@@ -32,29 +36,45 @@ func (k Kind) String() string {
 		return "changed"
 	case Removed:
 		return "removed"
+	case Rescan:
+		return "rescan"
 	}
-	return "overflow"
+	return "root gone"
 }
 
 // Event is one change. Path is relative to the watched root, with forward
-// slashes. Dir is true when the path is (or was) a known folder.
+// slashes. Dir is true when the path is (or was) a known folder. Reason says
+// why a Rescan is needed.
 type Event struct {
-	Kind Kind
-	Path string
-	Dir  bool
+	Kind   Kind
+	Path   string
+	Dir    bool
+	Reason string
 }
 
-// Watcher watches a folder tree.
+// maxQueued is the most events held for the reader; beyond it they are
+// replaced by one Rescan, so memory stays bounded however busy the folder.
+const maxQueued = 1 << 20
+
+// Watcher watches a folder tree. Events are queued without limit (up to
+// maxQueued) while the reader is busy, so the kernel's own queue keeps
+// draining during long uploads.
 type Watcher struct {
 	root   string
 	ignore func(rel string, dir bool) bool
 	fw     *fsnotify.Watcher
 
-	mu   sync.Mutex
-	dirs map[string]bool // watched folders, relative
+	mu        sync.Mutex
+	dirs      map[string]bool // watched folders, relative
+	queue     []Event
+	changedAt map[string]int // index in queue of a queued Changed event
+	lastGone  int            // index in queue of the latest Removed event, or -1
 
-	Events chan Event
+	// Ready receives a value when events are waiting to be taken.
+	Ready chan struct{}
+	// Errors receives watch errors; they are dropped if nobody reads them.
 	Errors chan error
+	quit   chan struct{}
 	done   chan struct{}
 }
 
@@ -74,16 +94,19 @@ func New(root string, ignore func(rel string, dir bool) bool) (*Watcher, error) 
 	}
 	fw, err := fsnotify.NewBufferedWatcher(4096)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("starting the file watch: %w (raise fs.inotify.max_user_instances if many programs watch files)", err)
 	}
 	w := &Watcher{
-		root:   abs,
-		ignore: ignore,
-		fw:     fw,
-		dirs:   map[string]bool{},
-		Events: make(chan Event, 1024),
-		Errors: make(chan error, 16),
-		done:   make(chan struct{}),
+		root:      abs,
+		ignore:    ignore,
+		fw:        fw,
+		dirs:      map[string]bool{},
+		changedAt: map[string]int{},
+		lastGone:  -1,
+		Ready:     make(chan struct{}, 1),
+		Errors:    make(chan error, 16),
+		quit:      make(chan struct{}),
+		done:      make(chan struct{}),
 	}
 	if _, err := w.addTree(""); err != nil {
 		fw.Close()
@@ -93,8 +116,13 @@ func New(root string, ignore func(rel string, dir bool) bool) (*Watcher, error) 
 	return w, nil
 }
 
-// Close stops watching and closes the channels.
+// Close stops watching.
 func (w *Watcher) Close() error {
+	select {
+	case <-w.quit:
+	default:
+		close(w.quit)
+	}
 	err := w.fw.Close()
 	<-w.done
 	return err
@@ -105,6 +133,17 @@ func (w *Watcher) Dirs() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.dirs)
+}
+
+// Take returns the queued events, oldest first, and empties the queue.
+func (w *Watcher) Take() []Event {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	q := w.queue
+	w.queue = nil
+	w.changedAt = map[string]int{}
+	w.lastGone = -1
+	return q
 }
 
 func (w *Watcher) rel(abs string) (string, bool) {
@@ -158,45 +197,89 @@ func (w *Watcher) addTree(rel string) ([]string, error) {
 	return files, err
 }
 
+// send queues an event and wakes the reader. It never blocks.
 func (w *Watcher) send(e Event) {
-	w.Events <- e
+	w.mu.Lock()
+	switch {
+	case len(w.queue) >= maxQueued:
+		w.queue = []Event{{Kind: Rescan, Reason: "too many changes queued"}}
+		w.changedAt = map[string]int{}
+		w.lastGone = -1
+	case e.Kind == Changed:
+		// A Changed event already queued after the latest removal covers
+		// this one.
+		if i, ok := w.changedAt[e.Path]; ok && i > w.lastGone {
+			break
+		}
+		w.changedAt[e.Path] = len(w.queue)
+		w.queue = append(w.queue, e)
+	default:
+		if e.Kind == Removed {
+			w.lastGone = len(w.queue)
+		}
+		w.queue = append(w.queue, e)
+	}
+	w.mu.Unlock()
+	select {
+	case w.Ready <- struct{}{}:
+	default:
+	}
+}
+
+func (w *Watcher) report(err error) {
+	select {
+	case w.Errors <- err:
+	default:
+	}
 }
 
 func (w *Watcher) loop() {
 	defer close(w.done)
-	defer close(w.Events)
-	defer close(w.Errors)
 	for {
 		select {
+		case <-w.quit:
+			return
 		case ev, ok := <-w.fw.Events:
 			if !ok {
 				return
 			}
-			w.handle(ev)
+			if !w.handle(ev) {
+				return
+			}
 		case err, ok := <-w.fw.Errors:
 			if !ok {
 				return
 			}
 			if errors.Is(err, fsnotify.ErrEventOverflow) {
-				w.send(Event{Kind: Overflow})
+				w.rescan("the kernel dropped file events")
 				continue
 			}
-			select {
-			case w.Errors <- err:
-			default:
-			}
+			w.report(err)
 		}
 	}
 }
 
-func (w *Watcher) handle(ev fsnotify.Event) {
+// rescan re-adds watches for the whole tree (folders created while events
+// were lost would otherwise stay unwatched) and asks for a full check.
+func (w *Watcher) rescan(reason string) {
+	if _, err := w.addTree(""); err != nil {
+		w.report(err)
+	}
+	w.send(Event{Kind: Rescan, Reason: reason})
+}
+
+// handle processes one event; it returns false once the root is gone.
+func (w *Watcher) handle(ev fsnotify.Event) bool {
 	r, ok := w.rel(ev.Name)
-	if !ok || r == "" {
-		if ok && r == "" && (ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename)) {
-			// The root itself went away.
-			w.send(Event{Kind: Removed, Path: "", Dir: true})
+	if !ok {
+		return true
+	}
+	if r == "" {
+		if ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename) {
+			w.send(Event{Kind: RootGone, Dir: true})
+			return false
 		}
-		return
+		return true
 	}
 	w.mu.Lock()
 	wasDir := w.dirs[r]
@@ -208,39 +291,36 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 			w.forget(r)
 		}
 		if w.ignore != nil && w.ignore(r, wasDir) {
-			return
+			return true
 		}
 		w.send(Event{Kind: Removed, Path: r, Dir: wasDir})
 	case ev.Has(fsnotify.Create) || ev.Has(fsnotify.Write) || ev.Has(fsnotify.Chmod):
 		st, err := os.Lstat(ev.Name)
 		if err != nil {
-			return // already gone; its Remove event follows
+			return true // already gone; its Remove event follows
 		}
 		if st.IsDir() {
 			if !ev.Has(fsnotify.Create) || (w.ignore != nil && w.ignore(r, true)) {
-				return
+				return true
 			}
 			files, err := w.addTree(r)
 			if err != nil {
-				select {
-				case w.Errors <- err:
-				default:
-				}
+				w.report(err)
+				w.send(Event{Kind: Rescan, Reason: fmt.Sprintf("a new folder could not be watched: %v", err)})
 			}
 			for _, f := range files {
 				w.send(Event{Kind: Changed, Path: f})
 			}
-			return
+			return true
 		}
 		if !st.Mode().IsRegular() || (w.ignore != nil && w.ignore(r, false)) {
-			return
+			return true
 		}
-		if ev.Has(fsnotify.Chmod) && !ev.Has(fsnotify.Create) && !ev.Has(fsnotify.Write) {
-			// Attribute changes (touch, chmod) can change mtime; rclone
-			// decides whether anything needs sending.
-		}
+		// Attribute changes (touch, chmod) can change mtime; rclone decides
+		// whether anything needs sending.
 		w.send(Event{Kind: Changed, Path: r})
 	}
+	return true
 }
 
 // forget drops a removed folder and everything below it from the watch set.

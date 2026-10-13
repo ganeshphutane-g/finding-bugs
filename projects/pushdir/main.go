@@ -4,20 +4,26 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/ganeshphutane-g/pushdir/internal/cli"
+	"github.com/ganeshphutane-g/pushdir/internal/rclone"
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(context.Background())
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		<-ctx.Done()
-		stop() // a second Ctrl-C ends pushdir at once
+		<-sigs
+		cancel() // let a running rclone finish cleanly
+		<-sigs
+		fmt.Fprintln(os.Stderr, "pushdir: stopping at once")
+		rclone.KillAll()
+		os.Exit(130)
 	}()
-	code := cli.Run(ctx, cli.DefaultEnv(), os.Args[1:])
-	stop()
-	os.Exit(code)
+	os.Exit(cli.Run(ctx, cli.DefaultEnv(), os.Args[1:]))
 }

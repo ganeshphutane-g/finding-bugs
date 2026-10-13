@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,8 +41,8 @@ Options:
       --delete            Mirror local deletions to the remote
       --backup-dir PATH   Keep deleted and overwritten remote files here instead
                           (an rclone path on the same remote, e.g. remote:old)
-      --max-delete N      Pause deletions if one batch or full check would delete
-                          more than N files (default 100)
+      --max-delete N      Pause deletions if more than N remote files would be
+                          deleted within an hour (default 100)
       --quiet DURATION    Wait this long after the last change (default 2s)
       --max-delay DUR     Never hold changes longer than this (default 30s)
       --settle DURATION   Send a file only after it is unchanged this long (default 2s)
@@ -50,7 +51,9 @@ Options:
       --rclone PATH       The rclone program (default: rclone on PATH)
       --version           Show the version
 
-Everything after -- goes to every rclone call, e.g. filters and limits:
+REMOTE:PATH is an rclone remote ("b2:bucket/photos") or an absolute folder.
+
+Everything after -- goes to rclone, e.g. filters and limits:
   pushdir ~/Photos b2:photos -- --exclude '*.tmp' --bwlimit 5M
 `
 
@@ -79,9 +82,10 @@ func usagef(format string, args ...any) error {
 type config struct {
 	opts   push.Options
 	listen string
+	show   string // "help" or "version": print it and stop
 }
 
-func parse(args []string) (config, bool, error) {
+func parse(args []string) (config, error) {
 	var extra []string
 	for i, a := range args {
 		if a == "--" {
@@ -112,7 +116,7 @@ func parse(args []string) (config, bool, error) {
 	rest := args
 	for {
 		if err := fs.Parse(rest); err != nil {
-			return c, false, usagef("%v", err)
+			return c, usagef("%v", err)
 		}
 		if fs.NArg() == 0 {
 			break
@@ -120,57 +124,138 @@ func parse(args []string) (config, bool, error) {
 		pos = append(pos, fs.Arg(0))
 		rest = fs.Args()[1:]
 	}
-	if help || version {
-		return c, true, nil
+	switch {
+	case version:
+		c.show = "version"
+		return c, nil
+	case help:
+		c.show = "help"
+		return c, nil
 	}
 	if len(pos) != 2 {
-		return c, false, usagef("need LOCAL_DIR and REMOTE:PATH")
+		return c, usagef("need LOCAL_DIR and REMOTE:PATH")
 	}
-	if c.opts.MaxDelete < 0 || c.opts.Quiet <= 0 || c.opts.MaxDelay < c.opts.Quiet || c.opts.Settle < 0 || c.opts.Resync < 0 {
-		return c, false, usagef("durations must be positive, --max-delay at least --quiet, --max-delete not negative")
-	}
-	if r.BackupDir != "" && !c.opts.Delete {
-		// Overwritten files are kept too, so it is still useful.
+	switch {
+	case c.opts.Quiet <= 0 || c.opts.Settle <= 0 || c.opts.Resync < 0:
+		return c, usagef("--quiet and --settle must be more than 0 (e.g. 100ms), --resync 0 or more")
+	case c.opts.MaxDelay < c.opts.Quiet:
+		return c, usagef("--max-delay must be at least --quiet")
+	case c.opts.MaxDelete < 1:
+		return c, usagef("--max-delete must be at least 1 (to delete nothing on the remote, leave out --delete)")
 	}
 	local, err := filepath.Abs(pos[0])
 	if err != nil {
-		return c, false, err
+		return c, err
 	}
 	c.opts.Local, c.opts.Remote, c.opts.Runner = local, pos[1], r
-	if strings.HasPrefix(c.opts.Remote, "-") {
-		return c, false, usagef("REMOTE:PATH looks like an option: %q", c.opts.Remote)
+	for _, dest := range []struct{ flag, path string }{{"REMOTE:PATH", c.opts.Remote}, {"--backup-dir", r.BackupDir}} {
+		if dest.path == "" && dest.flag == "--backup-dir" {
+			continue
+		}
+		if err := checkDest(local, dest.flag, dest.path); err != nil {
+			return c, err
+		}
 	}
-	return c, false, nil
+	return c, nil
+}
+
+// checkDest refuses destinations rclone would take as a relative folder, and
+// local folders that overlap the watched one (pushdir would copy its own
+// output forever).
+func checkDest(local, flag, dest string) error {
+	if dest == "" {
+		return usagef("%s is empty", flag)
+	}
+	if strings.HasPrefix(dest, "-") {
+		return usagef("%s looks like an option: %q", flag, dest)
+	}
+	path, isLocal := localPath(dest)
+	if !isLocal {
+		return nil
+	}
+	if !filepath.IsAbs(path) {
+		return usagef("%s %q is neither a remote (name:path) nor an absolute folder", flag, dest)
+	}
+	resolve := func(p string) string {
+		p = filepath.Clean(p)
+		// Resolve symlinks in the part that exists.
+		for q, rest := p, ""; ; {
+			if real, err := filepath.EvalSymlinks(q); err == nil {
+				return filepath.Join(real, rest)
+			}
+			parent := filepath.Dir(q)
+			if parent == q {
+				return p
+			}
+			rest = filepath.Join(filepath.Base(q), rest)
+			q = parent
+		}
+	}
+	a, b := resolve(local), resolve(path)
+	inside := func(x, y string) bool {
+		return x == y || strings.HasPrefix(x, y+string(filepath.Separator)) || y == "/"
+	}
+	if inside(a, b) || inside(b, a) {
+		return usagef("%s %s overlaps the watched folder %s", flag, dest, local)
+	}
+	return nil
+}
+
+// localPath tells whether rclone takes dest as a local path, and which.
+func localPath(dest string) (string, bool) {
+	if strings.HasPrefix(dest, ":local:") {
+		return strings.TrimPrefix(dest, ":local:"), true
+	}
+	if strings.HasPrefix(dest, ":local,") {
+		if _, after, ok := strings.Cut(dest[1:], ":"); ok {
+			return after, true
+		}
+	}
+	i := strings.IndexByte(dest, ':')
+	if i < 0 || strings.ContainsRune(dest[:i], '/') {
+		return dest, true
+	}
+	return "", false
 }
 
 func run(ctx context.Context, env Env, args []string) error {
-	c, done, err := parse(args)
+	c, err := parse(args)
 	if err != nil {
 		return err
 	}
-	if done {
-		for _, a := range args {
-			if a == "--version" {
-				fmt.Fprintf(env.Stdout, "pushdir %s\n", Version)
-				return nil
-			}
-		}
+	switch c.show {
+	case "version":
+		fmt.Fprintf(env.Stdout, "pushdir %s\n", Version)
+		return nil
+	case "help":
 		fmt.Fprint(env.Stdout, usage)
 		return nil
 	}
 	logger := func(s string) {
 		fmt.Fprintf(env.Stderr, "%s %s\n", time.Now().Format("2006-01-02 15:04:05"), s)
 	}
+	if env.Getenv("JOURNAL_STREAM") != "" {
+		// journald adds its own timestamps.
+		logger = func(s string) { fmt.Fprintln(env.Stderr, s) }
+	}
 	c.opts.Log = logger
 	c.opts.Runner.Log = nil
+	unlock, err := lock(c.opts.Local)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	p := push.New(c.opts)
 	if c.listen != "" {
-		stop, err := serveStatus(c.listen, p)
+		stop, addr, err := serveStatus(c.listen, p)
 		if err != nil {
 			return err
 		}
 		defer stop()
-		logger("status on http://" + c.listen + "/status")
+		logger("status on http://" + addr + "/status")
+		if host, _, _ := net.SplitHostPort(addr); !net.ParseIP(host).IsLoopback() {
+			logger("warning: --listen " + c.listen + " is reachable from other machines, without a password; use 127.0.0.1:PORT to keep it local")
+		}
 	}
 	return p.Run(ctx)
 }

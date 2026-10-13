@@ -12,10 +12,10 @@ import (
 )
 
 // serveStatus serves /status (JSON) and /metrics (Prometheus text format).
-func serveStatus(addr string, p *push.Pusher) (func(), error) {
+func serveStatus(addr string, p *push.Pusher) (func(), string, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("--listen %s: %w", addr, err)
+		return nil, "", fmt.Errorf("--listen %s: %w", addr, err)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
@@ -50,11 +50,11 @@ func serveStatus(addr string, p *push.Pusher) (func(), error) {
 			gauge("pushdir_last_success_timestamp_seconds", "When the last batch or full check succeeded.", float64(s.LastSuccess.Unix()))
 		}
 	})
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: time.Minute}
 	go srv.Serve(ln)
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
-	}, nil
+	}, ln.Addr().String(), nil
 }

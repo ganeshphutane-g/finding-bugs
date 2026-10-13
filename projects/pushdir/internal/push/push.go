@@ -84,6 +84,8 @@ type Pusher struct {
 	retryAt     time.Time
 	backoff     time.Duration
 	rootDev     uint64
+	realLocal   string      // Local with symlinks resolved, as watched
+	fatal       error       // a failure no retry fixes; Run stops with it
 	lastRemoved time.Time   // latest local removal seen
 	deleteLog   []time.Time // when remote deletions happened, for the hourly budget
 
@@ -94,6 +96,32 @@ type Pusher struct {
 type pendingFile struct {
 	first time.Time // first change seen
 	last  time.Time // latest change seen
+	size  int64     // size and modification time when last looked at
+	mod   time.Time
+	sigAt time.Time // when size or modification time last changed
+}
+
+// look records the file's size and modification time, noting when they
+// change.
+func (f *pendingFile) look(st os.FileInfo, now time.Time) {
+	if st.Size() != f.size || !st.ModTime().Equal(f.mod) || f.sigAt.IsZero() {
+		f.size, f.mod, f.sigAt = st.Size(), st.ModTime(), now
+	}
+}
+
+// readyAt is when the file counts as finished: unchanged for settle since
+// both its last event and its last size or time change, or after maxSettle
+// of changing.
+func (f *pendingFile) readyAt(settle, maxSettle time.Duration) time.Time {
+	t := f.last
+	if f.sigAt.After(t) {
+		t = f.sigAt
+	}
+	t = t.Add(settle)
+	if limit := f.first.Add(maxSettle); limit.Before(t) {
+		return limit
+	}
+	return t
 }
 
 // Status is what /status reports.
@@ -124,7 +152,7 @@ func New(opt Options) *Pusher {
 		pending:     map[string]*pendingFile{},
 		removed:     map[string]bool{},
 		removedDirs: map[string]bool{},
-		status:      Status{Local: opt.Local, Remote: opt.Remote, State: "starting", StartedAt: time.Now()},
+		status:      Status{Local: opt.Local, Remote: rclone.Redact(opt.Remote), State: "starting", StartedAt: time.Now()},
 	}
 }
 
@@ -143,29 +171,41 @@ func (p *Pusher) update(f func(*Status)) {
 
 func (p *Pusher) log(format string, args ...any) {
 	if p.opt.Log != nil {
-		p.opt.Log(fmt.Sprintf(format, args...))
+		p.opt.Log(rclone.Redact(fmt.Sprintf(format, args...)))
 	}
 }
 
 func (p *Pusher) fail(err error) {
 	p.log("error: %v", err)
-	p.update(func(s *Status) { s.LastError, s.LastErrorTime = err.Error(), time.Now() })
+	p.update(func(s *Status) { s.LastError, s.LastErrorTime = rclone.Redact(err.Error()), time.Now() })
 }
 
-// Run watches and pushes until ctx is cancelled. It returns an error only
-// when it cannot start (folder missing, rclone missing).
+// Run watches and pushes until ctx is cancelled. It returns an error when
+// it cannot start (folder missing, rclone missing or misconfigured), when
+// the watched folder itself goes away, or on a failure no retry can fix.
 func (p *Pusher) Run(ctx context.Context) error {
 	if _, err := p.opt.Runner.Version(ctx); err != nil {
 		return fmt.Errorf("rclone does not run: %w", err)
 	}
-	dev, err := deviceOf(p.opt.Local)
+	if err := p.opt.Runner.Check(); err != nil {
+		return err
+	}
+	if err := p.checkRemotes(ctx); err != nil {
+		return err
+	}
+	real, err := filepath.EvalSymlinks(p.opt.Local)
+	if err != nil {
+		return err
+	}
+	p.realLocal = real
+	dev, err := deviceOf(real)
 	if err != nil {
 		return err
 	}
 	p.rootDev = dev
 
 	// Watch first, so changes made during the first full copy are not missed.
-	w, err := watch.New(p.opt.Local, p.opt.Ignore)
+	w, err := watch.New(real, p.opt.Ignore)
 	if err != nil {
 		return err
 	}
@@ -189,22 +229,15 @@ func (p *Pusher) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			p.update(func(s *Status) { s.State = "stopped" })
 			return nil
-		case ev, ok := <-w.Events:
-			if !ok {
-				return errors.New("the folder watch stopped")
-			}
-			p.note(ev, time.Now())
-			// Drain whatever else is queued before deciding when to send.
-			for drained := false; !drained; {
-				select {
-				case ev, ok := <-w.Events:
-					if !ok {
-						return errors.New("the folder watch stopped")
-					}
-					p.note(ev, time.Now())
-				default:
-					drained = true
+		case <-w.Ready:
+			now := time.Now()
+			for _, ev := range w.Take() {
+				if ev.Kind == watch.RootGone {
+					p.pauseDeletions("the watched folder itself was removed or moved")
+					p.update(func(s *Status) { s.State = "stopped" })
+					return fmt.Errorf("the watched folder %s was removed or moved away; stopping (nothing was deleted on the remote)", p.opt.Local)
 				}
+				p.note(ev, now)
 			}
 			resetTimer(timer, p.nextFlush(time.Now()))
 		case err := <-w.Errors:
@@ -215,7 +248,14 @@ func (p *Pusher) Run(ctx context.Context) error {
 			p.resync = true
 			resetTimer(timer, 0)
 		case <-timer.C:
+			if ctx.Err() != nil {
+				continue // stopping
+			}
 			p.flush(ctx)
+			if p.fatal != nil {
+				p.update(func(s *Status) { s.State = "stopped" })
+				return p.fatal
+			}
 			p.update(func(s *Status) {
 				s.WatchedFolders = w.Dirs()
 				s.Pending, s.PendingDeletes = len(p.pending), len(p.removed)+len(p.removedDirs)
@@ -225,6 +265,47 @@ func (p *Pusher) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// remoteName returns the configured remote a path names ("b2" for
+// "b2:bucket/dir"), or "" for local paths and on-the-fly remotes
+// (":s3,...:bucket").
+func remoteName(path string) string {
+	i := strings.IndexByte(path, ':')
+	if i <= 0 || strings.ContainsAny(path[:i], "/\\") {
+		return ""
+	}
+	name, _, _ := strings.Cut(path[:i], ",")
+	return name
+}
+
+// checkRemotes makes sure named remotes exist in rclone's configuration, so
+// a typo or a missing config file stops pushdir at start instead of failing
+// every batch.
+func (p *Pusher) checkRemotes(ctx context.Context) error {
+	var names []string
+	for _, path := range []string{p.opt.Remote, p.opt.Runner.BackupDir} {
+		if n := remoteName(path); n != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	have, err := p.opt.Runner.Remotes(ctx)
+	if err != nil {
+		return fmt.Errorf("listing rclone's remotes: %w", err)
+	}
+	for _, n := range names {
+		found := false
+		for _, h := range have {
+			found = found || h == n
+		}
+		if !found {
+			return fmt.Errorf("rclone has no remote called %q (check 'rclone listremotes' as the user pushdir runs as, or pass --config after --)", n)
+		}
+	}
+	return nil
 }
 
 func resetTimer(t *time.Timer, d time.Duration) {
@@ -246,23 +327,22 @@ func (p *Pusher) note(ev watch.Event, now time.Time) {
 		p.batchStart = now
 	}
 	switch ev.Kind {
-	case watch.Overflow:
-		p.log("the kernel dropped file events; a full check follows")
+	case watch.Rescan:
+		p.log("%s; a full check follows", ev.Reason)
 		p.resync = true
 	case watch.Changed:
 		delete(p.removed, ev.Path)
-		if f, ok := p.pending[ev.Path]; ok {
-			f.last = now
-		} else {
-			p.pending[ev.Path] = &pendingFile{first: now, last: now}
+		f, ok := p.pending[ev.Path]
+		if !ok {
+			f = &pendingFile{first: now}
+			p.pending[ev.Path] = f
+		}
+		f.last = now
+		if st, err := os.Stat(p.abs(ev.Path)); err == nil {
+			f.look(st, now)
 		}
 	case watch.Removed:
 		p.lastRemoved = now
-		if ev.Path == "" {
-			p.fail(errors.New("the watched folder itself was removed or moved; nothing will be deleted remotely"))
-			p.resync = true
-			return
-		}
 		delete(p.pending, ev.Path)
 		if ev.Dir {
 			prefix := ev.Path + "/"
@@ -295,6 +375,18 @@ func (p *Pusher) nextFlush(now time.Time) time.Duration {
 	if limit := p.batchStart.Add(p.opt.MaxDelay); limit.Before(at) {
 		at = limit
 	}
+	if len(p.pending) > 0 {
+		// Not before the first file can be finished.
+		first := time.Time{}
+		for _, f := range p.pending {
+			if r := f.readyAt(p.opt.Settle, p.opt.MaxSettle); first.IsZero() || r.Before(first) {
+				first = r
+			}
+		}
+		if first.After(at) {
+			at = first
+		}
+	}
 	if len(p.pending) == 0 && (len(p.removed) > 0 || len(p.removedDirs) > 0) && p.opt.Delete {
 		at = p.lastRemoved.Add(p.opt.DeleteQuiet)
 	}
@@ -313,7 +405,7 @@ func (p *Pusher) nextFlush(now time.Time) time.Duration {
 // flush sends what is ready.
 func (p *Pusher) flush(ctx context.Context) {
 	now := time.Now()
-	if now.Before(p.retryAt) {
+	if now.Before(p.retryAt) || ctx.Err() != nil {
 		return
 	}
 	if p.resync {
@@ -325,28 +417,60 @@ func (p *Pusher) flush(ctx context.Context) {
 	var ready []string
 	settling := false
 	for path, f := range p.pending {
-		st, err := os.Stat(filepath.Join(p.opt.Local, filepath.FromSlash(path)))
+		if !rclone.Listable(path) {
+			delete(p.pending, path)
+			p.log("%q cannot be sent on its own (unusual characters); a full check follows", path)
+			p.resync = true
+			continue
+		}
+		st, err := os.Stat(p.abs(path))
 		switch {
+		case errors.Is(err, os.ErrNotExist):
+			delete(p.pending, path)
+			p.removed[path] = true
 		case err != nil:
 			delete(p.pending, path)
-			if errors.Is(err, os.ErrNotExist) {
-				p.removed[path] = true
-			}
+			p.fail(fmt.Errorf("cannot read %s: %w", path, err))
 		case !st.Mode().IsRegular():
 			delete(p.pending, path)
-		case now.Sub(st.ModTime()) < p.opt.Settle && now.Sub(f.first) < p.opt.MaxSettle:
-			settling = true
 		default:
-			ready = append(ready, path)
+			f.look(st, now)
+			if now.Before(f.readyAt(p.opt.Settle, p.opt.MaxSettle)) {
+				settling = true
+			} else {
+				ready = append(ready, path)
+			}
 		}
+	}
+	if p.resync {
+		p.fullSync(ctx)
+		return
 	}
 	sort.Strings(ready)
 	p.update(func(s *Status) { s.State = "sending" })
 	ready = p.renames(ctx, ready)
+	if len(ready) > 0 && p.opt.Runner.Filtered() {
+		// Leave out what the user's rclone filters exclude.
+		sel, err := p.opt.Runner.Select(ctx, p.realLocal, ready)
+		if err != nil {
+			p.retry(fmt.Errorf("applying filters: %w", err))
+			return
+		}
+		keep := map[string]bool{}
+		for _, f := range sel {
+			keep[f] = true
+		}
+		for _, f := range ready {
+			if !keep[f] {
+				delete(p.pending, f)
+			}
+		}
+		ready = sel
+	}
 
 	ok := true
 	if len(ready) > 0 {
-		err := p.opt.Runner.CopyFiles(ctx, p.opt.Local, p.opt.Remote, ready)
+		err := p.opt.Runner.CopyFiles(ctx, p.realLocal, p.opt.Remote, ready)
 		if err != nil {
 			ok = false
 			p.retry(fmt.Errorf("sending %d %s: %w", len(ready), plural(len(ready), "file"), err))
@@ -380,10 +504,12 @@ func (p *Pusher) flush(ctx context.Context) {
 const renameMin = 1 << 20
 
 // renames finds large new files that are a removed file under a new name
-// (same size and modification time as the removed file has on the remote)
 // and moves or copies them on the remote instead of uploading them again.
-// Without --delete the old name is kept (a remote-side copy). It returns the
-// files still to upload.
+// A match needs the same size and modification time as the removed file has
+// on the remote, and then the same content hash, so a different file that
+// happens to look alike is uploaded, never put in its place. Without
+// --delete the old name is kept (a remote-side copy). It returns the files
+// still to upload.
 func (p *Pusher) renames(ctx context.Context, ready []string) []string {
 	if len(p.removed) == 0 || len(ready) == 0 {
 		return ready
@@ -395,7 +521,7 @@ func (p *Pusher) renames(ctx context.Context, ready []string) []string {
 	var big []string
 	local := map[string]key{}
 	for _, f := range ready {
-		st, err := os.Stat(filepath.Join(p.opt.Local, filepath.FromSlash(f)))
+		st, err := os.Stat(p.abs(f))
 		if err == nil && st.Size() >= renameMin {
 			big = append(big, f)
 			local[f] = key{st.Size(), st.ModTime().Unix()}
@@ -406,7 +532,17 @@ func (p *Pusher) renames(ctx context.Context, ready []string) []string {
 	}
 	var gone []string
 	for f := range p.removed {
-		gone = append(gone, f)
+		if rclone.Listable(f) {
+			gone = append(gone, f)
+		}
+	}
+	sort.Strings(gone)
+	if p.opt.Runner.Filtered() {
+		// A remote file the filters exclude is not pushdir's to move.
+		var err error
+		if gone, err = p.opt.Runner.Select(ctx, p.opt.Remote, gone); err != nil {
+			return ready
+		}
 	}
 	infos, err := p.opt.Runner.Stat(ctx, p.opt.Remote, gone)
 	if err != nil {
@@ -424,6 +560,9 @@ func (p *Pusher) renames(ctx context.Context, ready []string) []string {
 			continue // none, or ambiguous
 		}
 		old := cands[0]
+		if !p.sameContent(ctx, old, f) {
+			continue
+		}
 		from, to := rclone.Join(p.opt.Remote, old), rclone.Join(p.opt.Remote, f)
 		var err error
 		if p.opt.Delete && p.deletionsAllowed() {
@@ -454,6 +593,45 @@ func (p *Pusher) renames(ctx context.Context, ready []string) []string {
 	return rest
 }
 
+// sameContent compares the remote file old with the local file f by a hash
+// the remote has (md5 or sha1 preferred). Without a usable hash the answer
+// is no, and the file is simply uploaded.
+func (p *Pusher) sameContent(ctx context.Context, old, f string) bool {
+	rinfo, err := p.opt.Runner.Stat(ctx, p.opt.Remote, []string{old}, "all")
+	if err != nil || len(rinfo) != 1 {
+		return false
+	}
+	var types []string
+	for t, v := range rinfo[0].Hashes {
+		if v != "" {
+			types = append(types, t)
+		}
+	}
+	sort.Slice(types, func(i, j int) bool { return hashRank(types[i]) < hashRank(types[j]) })
+	if len(types) == 0 {
+		return false
+	}
+	t := types[0]
+	linfo, err := p.opt.Runner.Stat(ctx, p.realLocal, []string{f}, t)
+	if err != nil || len(linfo) != 1 {
+		return false
+	}
+	lh, rh := linfo[0].Hashes[t], rinfo[0].Hashes[t]
+	return lh != "" && strings.EqualFold(lh, rh)
+}
+
+func hashRank(t string) string {
+	switch t {
+	case "md5":
+		return "0"
+	case "sha1":
+		return "1"
+	case "sha256":
+		return "2"
+	}
+	return "3" + t
+}
+
 // retry schedules the next attempt with exponential backoff.
 func (p *Pusher) retry(err error) {
 	if errors.Is(err, context.Canceled) {
@@ -469,6 +647,11 @@ func (p *Pusher) retry(err error) {
 	}
 	p.retryAt = time.Now().Add(p.backoff)
 	var re *rclone.Error
+	if errors.As(err, &re) && re.Permanent() {
+		p.fatal = fmt.Errorf("%w (this needs fixing before pushdir can work)", err)
+		p.fail(p.fatal)
+		return
+	}
 	if errors.As(err, &re) && !re.Retryable() {
 		// A permanent-looking failure in a batch: a full check finds out
 		// which files really still need sending.
@@ -488,13 +671,15 @@ func (p *Pusher) fullSync(ctx context.Context) {
 		// count first and refuse the whole sync instead.
 		var n int
 		n, err = p.countRemoteOnly(ctx)
+		left := p.opt.MaxDelete - p.deletedLastHour()
 		switch {
 		case err != nil:
-		case n+p.deletedLastHour() > p.opt.MaxDelete:
-			p.pauseDeletions(fmt.Sprintf("a full sync would delete %d files on the remote (more than --max-delete %d)", n, p.opt.MaxDelete))
-			err = p.opt.Runner.CopyAll(ctx, p.opt.Local, p.opt.Remote)
+		case n > left:
+			p.pauseDeletions(fmt.Sprintf("a full sync would delete %d files on the remote (%d more allowed within the hour by --max-delete %d)", n, left, p.opt.MaxDelete))
+			err = p.opt.Runner.CopyAll(ctx, p.realLocal, p.opt.Remote)
 		default:
-			err = p.opt.Runner.SyncAll(ctx, p.opt.Local, p.opt.Remote, p.opt.MaxDelete)
+			// rclone stops at the budget even if more files vanish meanwhile.
+			err = p.opt.Runner.SyncAll(ctx, p.realLocal, p.opt.Remote, left)
 			if err == nil {
 				for i := 0; i < n; i++ {
 					p.deleteLog = append(p.deleteLog, time.Now())
@@ -502,7 +687,7 @@ func (p *Pusher) fullSync(ctx context.Context) {
 			}
 		}
 	} else {
-		err = p.opt.Runner.CopyAll(ctx, p.opt.Local, p.opt.Remote)
+		err = p.opt.Runner.CopyAll(ctx, p.realLocal, p.opt.Remote)
 	}
 	if err != nil {
 		if ctx.Err() == nil {
@@ -534,7 +719,7 @@ func (p *Pusher) deletedLastHour() int {
 
 // countRemoteOnly counts remote files that a sync would delete.
 func (p *Pusher) countRemoteOnly(ctx context.Context) (int, error) {
-	local, err := p.opt.Runner.ListFiles(ctx, p.opt.Local)
+	local, err := p.opt.Runner.ListFiles(ctx, p.realLocal)
 	if err != nil {
 		return 0, fmt.Errorf("listing the folder: %w", err)
 	}
@@ -564,8 +749,12 @@ func (p *Pusher) deletionsAllowed() bool {
 	if paused != "" {
 		return false
 	}
-	dev, err := deviceOf(p.opt.Local)
+	real, rerr := filepath.EvalSymlinks(p.opt.Local)
+	dev, err := deviceOf(p.realLocal)
 	switch {
+	case rerr == nil && real != p.realLocal:
+		p.pauseDeletions(fmt.Sprintf("%s now points to %s, not %s", p.opt.Local, real, p.realLocal))
+		return false
 	case err != nil:
 		p.pauseDeletions(fmt.Sprintf("the watched folder cannot be read (%v)", err))
 		return false
@@ -573,7 +762,7 @@ func (p *Pusher) deletionsAllowed() bool {
 		p.pauseDeletions("the watched folder is now on a different disk (unmounted or remounted?)")
 		return false
 	}
-	entries, err := os.ReadDir(p.opt.Local)
+	entries, err := os.ReadDir(p.realLocal)
 	if err == nil && len(entries) == 0 {
 		p.pauseDeletions("the watched folder is empty (unmounted?)")
 		return false
@@ -598,13 +787,34 @@ func (p *Pusher) applyDeletes(ctx context.Context) bool {
 	// A file deleted and created again is in pending, not removed.
 	var files []string
 	for f := range p.removed {
-		if _, back := os.Lstat(filepath.Join(p.opt.Local, filepath.FromSlash(f))); back == nil {
+		if _, back := os.Lstat(p.abs(f)); back == nil {
 			delete(p.removed, f)
+			continue
+		}
+		if !rclone.Listable(f) {
+			delete(p.removed, f)
+			p.resync = true // a full sync removes it
 			continue
 		}
 		files = append(files, f)
 	}
 	sort.Strings(files)
+	// Only files that are on the remote (and inside the user's filters)
+	// count: temporary files of an atomic save never reached it.
+	files, err := p.opt.Runner.Select(ctx, p.opt.Remote, files)
+	if err != nil {
+		p.retry(fmt.Errorf("checking files to delete: %w", err))
+		return false
+	}
+	onRemote := map[string]bool{}
+	for _, f := range files {
+		onRemote[f] = true
+	}
+	for f := range p.removed {
+		if !onRemote[f] {
+			delete(p.removed, f)
+		}
+	}
 	if used := p.deletedLastHour(); used+len(files) > p.opt.MaxDelete {
 		p.pauseDeletions(fmt.Sprintf("%d files were deleted locally (%d more within the last hour), more than --max-delete %d", len(files), used, p.opt.MaxDelete))
 		p.removed, p.removedDirs = map[string]bool{}, map[string]bool{}
@@ -629,6 +839,10 @@ func (p *Pusher) applyDeletes(ctx context.Context) bool {
 		p.removedDirs = map[string]bool{}
 	}
 	return true
+}
+
+func (p *Pusher) abs(rel string) string {
+	return filepath.Join(p.realLocal, filepath.FromSlash(rel))
 }
 
 // deviceOf returns the device ID of a path, to notice unmounts.
