@@ -22,6 +22,11 @@ Newest first.
   passwords in connection strings were logged and served on /status; overlapping or
   relative destinations were accepted; unknown remotes retried forever; a second
   Ctrl-C orphaned rclone. Docker image checked end to end; systemd unit untested.
+- Research round 4 (two parallel searches; key counts re-checked on GitHub). Chosen
+  project #4: pgcarry, a Compose-aware PostgreSQL major-version upgrader
+  (docker-library/postgres#37, 278 👍, open since 2014; the 18 image's own error
+  points there). SPEC.md written; Postgres image layouts verified on real images.
+  Runner-up for round 5: restic pull-mode orchestrator (restic#299, 333 👍).
 
 ## 2026-10-13 (IST) — run 2
 

@@ -1,19 +1,26 @@
 # State
 
-Current project: #4, Compose-aware PostgreSQL major-version upgrader (name to
-be decided in the spec; "pgshift" is taken)
-Phase: spec
-Repo: projects/<name>/ inside finding-bugs until the owner creates repos.
-Research: IDEAS.md, round 4.
+Current project: #4 pgcarry (safe major-version upgrades of Postgres in Docker Compose)
+Phase: build, milestone 1 of 5 next
+Repo: projects/pgcarry/ inside finding-bugs (own repos blocked, see below)
+Spec: projects/pgcarry/SPEC.md. Research: IDEAS.md round 4.
 
 ## Next step
 
-Write SPEC.md. Verify on real images (Docker Hub) before relying on any fact:
-- the Postgres 18 image's PGDATA / volume layout change;
-- what pg_upgrade needs (both versions' binaries; tianon images);
-- the alpine vs debian collation/locale difference (dump/restore is the safe default
-  across them);
-- the PostgreSQL 14 end-of-life date on postgresql.org.
+Milestone 1: Go module github.com/ganeshphutane-g/pgcarry. Reuse docker-mop's Engine
+API client (our own code). Compose discovery via `docker compose config --format
+json`. `pgcarry plan`: PG_VERSION, databases and sizes, extensions, roles, encoding,
+locale, collation provider, checksums, auth; probe the target image (extensions, and
+its defaults); verdict. Tests with real images.
+
+Facts checked on real images (2026-10-14): the 14 and 17 images use PGDATA
+/var/lib/postgresql/data (VOLUME the same); 18 and 18-alpine use
+/var/lib/postgresql/18/docker (VOLUME /var/lib/postgresql). Running 18 on an old
+/var/lib/postgresql/data mount refuses and points to docker-library/postgres#37;
+running 17 on 14 data fails "database files are incompatible". The
+tianon/postgres-upgrade:14-to-18 image has both binaries (Debian only, no extensions),
+so dump/restore with the user's own images is the v1 method. Docker 29.8.2 and
+Compose v5.6.0 are available here; postgres images pull from Docker Hub.
 
 ## Notes for runs
 
