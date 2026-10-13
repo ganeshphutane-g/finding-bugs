@@ -56,7 +56,7 @@ sources each.
    reviews fixed. Owner checks before going public: README, try it against their own
    MinIO with a test bucket, GitHub Actions green.
 
-3. **pushdir** (projects/pushdir, v1.0.0). Watch a folder and push every change to
+3. **pushdir** (projects/pushdir, v1.0.0 at commit 9d521f9). Watch a folder and push every change to
    any rclone remote within seconds (rclone#249). Batches with settle checks, filters
    applied by rclone's own rules, opt-in deletions with an hourly budget and
    unmount/empty/replaced-folder guards, hash-checked remote-side renames, retries,
