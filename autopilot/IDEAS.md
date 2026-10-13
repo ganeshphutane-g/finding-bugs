@@ -3,6 +3,48 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 3 — 2026-10-14 IST
+
+### Chosen: pushdir (project #3)
+
+A small daemon that watches local folders and pushes every change to any rclone
+remote within seconds: debounced batches, renames and deletes handled, a periodic
+full check to catch missed events, a retry queue, and a status/metrics endpoint.
+
+Scores: demand 4, gap 5, feasibility 5, maintenance 4, fit 5 (total 23).
+
+Evidence:
+- rclone/rclone#249 "watch local folder and sync on change": 213 👍, 51 comments,
+  open since 2015-12, labelled IMPORTANT, milestone "Help Wanted"; blocked upstream
+  since 2021 on backend change notifications. https://github.com/rclone/rclone/issues/249
+- rclone/rclone#4152 (change notifications for local filesystems, 10 👍) and #7474
+  (bisync status and notifications, 7 👍).
+- People build one-off watchers: dx8ug/rclone-watch (shell, 1 star),
+  ninjaxtools/rclonewatch (0 stars, 2026-09), mstarczewski/RcloneFileWatcherCore
+  (C#, 10 stars), mhavo/gdrive-sync (shell, 2026-09). None is established.
+
+Why it is worth it: rclone has a very large user base, the request is a decade old
+and labelled important, and the workarounds are cron jobs. Evergreen (not tied to
+one shutdown). rclone builds here from the Go module proxy (v1.75.2), so it can be
+tested end to end.
+
+### Runners-up
+
+- **Dead image-reference auditor** (Bitnami moved versioned tags to bitnamilegacy on
+  2025-08-28; bitnami/charts#36309 "My website went down" 40 👍; ~14k compose files
+  reference bitnami images, ~42k reference minio/minio, ~62k reference k8s.gcr.io
+  per GitHub code search). Tools: kubernetes-sigs/community-images (k8s.gcr.io only),
+  disdetta (1 star, created 2026-10-12). Scores 4/4/4/2/4 = 18: the rules list needs
+  constant curation and the Bitnami peak was a year ago.
+- **Self-hosted stand-in for Google's Custom Search JSON API** (closed to new users,
+  existing users lose it 2027-01-01). Scores 4/4/3/3/3 = 17; ToS risks with backends.
+- **Gitea/Forgejo issue mover** (go-gitea/gitea#453, 79 👍, open since 2016). 3/5/4/4/4 = 20.
+- **Init-script → systemd unit converter after systemd 260** (demand expected, not
+  observed). 3/4/4/4/3 = 18.
+- **HCP Terraform bulk export** (free plan changes, 2026-03-31). 2/4/3/3/3 = 15.
+- **VS Code layered settings**: PR #335281 still open (Copilot reviews only); a
+  competitor merges shared/local settings. Dropped to 17.
+
 ## Research round 2 — 2026-10-13 IST
 
 ### Chosen: bucketmove (project #2)

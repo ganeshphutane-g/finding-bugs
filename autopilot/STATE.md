@@ -1,16 +1,14 @@
 # State
 
-Current project: none (bucketmove finished; research round 3 next)
-Phase: research
-Repo: projects/bucketmove/ inside finding-bugs (own repos blocked, see below)
-Spec: projects/bucketmove/SPEC.md
+Current project: #3 pushdir (watch folders, push changes to any rclone remote)
+Phase: spec
+Repo: projects/pushdir/ inside finding-bugs (own repos blocked, see below)
+Spec: projects/pushdir/SPEC.md (to write)
 
 ## Next step
 
-Research round 3 for project #3 (see "1. Research" in AUTOPILOT.md). Start from the
-round-2 runners-up in IDEAS.md (VS Code layered settings composer; dead image-reference
-auditor) and look for new signals. If the owner has created repos for docker-mop or
-bucketmove, move those projects first (git subtree split, keep history).
+Write projects/pushdir/SPEC.md and start milestone 1. Build rclone for tests with
+`GOBIN=/tmp/rclone-bin go install github.com/rclone/rclone@v1.75.2`.
 
 ## Notes for runs
 
