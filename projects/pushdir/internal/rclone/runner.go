@@ -6,6 +6,7 @@ package rclone
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -209,6 +210,44 @@ func (r *Runner) DeleteFiles(ctx context.Context, remote string, paths []string)
 		return err
 	}
 	_, err = r.run(ctx, "delete", remote, "--files-from-raw", list, "--no-traverse")
+	return err
+}
+
+// FileInfo is what rclone reports about one file.
+type FileInfo struct {
+	Path    string    `json:"Path"`
+	Size    int64     `json:"Size"`
+	ModTime time.Time `json:"ModTime"`
+}
+
+// Stat lists the given files (relative to path) that exist there.
+func (r *Runner) Stat(ctx context.Context, path string, paths []string) ([]FileInfo, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	list, done, err := listFile(paths)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	out, err := r.run(ctx, "lsjson", "-R", path, "--files-from-raw", list, "--no-traverse", "--files-only")
+	if err != nil {
+		return nil, err
+	}
+	start := strings.IndexByte(out, '[')
+	if start < 0 {
+		return nil, fmt.Errorf("unexpected lsjson output")
+	}
+	var files []FileInfo
+	if err := json.Unmarshal([]byte(out[start:]), &files); err != nil {
+		return nil, fmt.Errorf("reading lsjson output: %w", err)
+	}
+	return files, nil
+}
+
+// CopyFile copies one file on the remote (server-side where supported).
+func (r *Runner) CopyFile(ctx context.Context, from, to string) error {
+	_, err := r.run(ctx, "copyto", from, to)
 	return err
 }
 

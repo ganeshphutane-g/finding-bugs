@@ -396,3 +396,25 @@ func waitPort(t *testing.T, port string) {
 	}
 	t.Fatal("server did not start")
 }
+
+// TestRenameOfLargeFileIsAMoveNotAnUpload renames a large file and checks it
+// was moved on the remote (no second upload), keeping the old name without
+// --delete.
+func TestRenameOfLargeFileIsAMoveNotAnUpload(t *testing.T) {
+	for _, del := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delete=%v", del), func(t *testing.T) {
+			h := newHarness(t, func(o *Options) { o.Delete = del; o.DeleteQuiet = 200 * time.Millisecond })
+			big := strings.Repeat("0123456789abcdef", 1<<17) // 2 MiB
+			h.write("video/raw.mp4", big)
+			h.start()
+			must(t, os.Rename(filepath.Join(h.local, "video/raw.mp4"), filepath.Join(h.local, "video/final.mp4")))
+			h.waitFor("the renamed file", func() bool { return h.remoteHas("video/final.mp4", big) })
+			h.waitFor("the rename to be handled", func() bool { return strings.Contains(h.log.String(), "renamed video/raw.mp4 to video/final.mp4") })
+			if del {
+				h.waitFor("the old name gone", func() bool { return h.remoteMissing("video/raw.mp4") })
+			} else if !h.remoteHas("video/raw.mp4", big) {
+				t.Fatal("without --delete the old name must stay")
+			}
+		})
+	}
+}

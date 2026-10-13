@@ -283,7 +283,9 @@ func (p *Pusher) nextFlush(now time.Time) time.Duration {
 	if len(p.pending) == 0 && len(p.removed) == 0 && len(p.removedDirs) == 0 && !p.resync {
 		return -1
 	}
-	var latest time.Time
+	// The quiet period counts from the latest change of any kind, so a
+	// removal and the new name of a rename land in the same batch.
+	latest := p.lastRemoved
 	for _, f := range p.pending {
 		if f.last.After(latest) {
 			latest = f.last
@@ -339,8 +341,9 @@ func (p *Pusher) flush(ctx context.Context) {
 		}
 	}
 	sort.Strings(ready)
-
 	p.update(func(s *Status) { s.State = "sending" })
+	ready = p.renames(ctx, ready)
+
 	ok := true
 	if len(ready) > 0 {
 		err := p.opt.Runner.CopyFiles(ctx, p.opt.Local, p.opt.Remote, ready)
@@ -373,8 +376,89 @@ func (p *Pusher) flush(ctx context.Context) {
 	p.batchStart = time.Now()
 }
 
+// renameMin is the smallest file worth turning into a remote-side move.
+const renameMin = 1 << 20
+
+// renames finds large new files that are a removed file under a new name
+// (same size and modification time as the removed file has on the remote)
+// and moves or copies them on the remote instead of uploading them again.
+// Without --delete the old name is kept (a remote-side copy). It returns the
+// files still to upload.
+func (p *Pusher) renames(ctx context.Context, ready []string) []string {
+	if len(p.removed) == 0 || len(ready) == 0 {
+		return ready
+	}
+	type key struct {
+		size int64
+		mod  int64
+	}
+	var big []string
+	local := map[string]key{}
+	for _, f := range ready {
+		st, err := os.Stat(filepath.Join(p.opt.Local, filepath.FromSlash(f)))
+		if err == nil && st.Size() >= renameMin {
+			big = append(big, f)
+			local[f] = key{st.Size(), st.ModTime().Unix()}
+		}
+	}
+	if len(big) == 0 {
+		return ready
+	}
+	var gone []string
+	for f := range p.removed {
+		gone = append(gone, f)
+	}
+	infos, err := p.opt.Runner.Stat(ctx, p.opt.Remote, gone)
+	if err != nil {
+		return ready // just upload
+	}
+	byKey := map[key][]string{}
+	for _, in := range infos {
+		k := key{in.Size, in.ModTime.Unix()}
+		byKey[k] = append(byKey[k], in.Path)
+	}
+	moved := map[string]bool{}
+	for _, f := range big {
+		cands := byKey[local[f]]
+		if len(cands) != 1 {
+			continue // none, or ambiguous
+		}
+		old := cands[0]
+		from, to := rclone.Join(p.opt.Remote, old), rclone.Join(p.opt.Remote, f)
+		var err error
+		if p.opt.Delete && p.deletionsAllowed() {
+			err = p.opt.Runner.MoveFile(ctx, from, to)
+		} else {
+			err = p.opt.Runner.CopyFile(ctx, from, to)
+		}
+		if err != nil {
+			continue // upload it normally instead
+		}
+		delete(byKey, local[f])
+		delete(p.removed, old)
+		moved[f] = true
+		p.log("renamed %s to %s on the remote", old, f)
+	}
+	if len(moved) == 0 {
+		return ready
+	}
+	var rest []string
+	for _, f := range ready {
+		if moved[f] {
+			delete(p.pending, f)
+			p.update(func(s *Status) { s.Sent++ })
+			continue
+		}
+		rest = append(rest, f)
+	}
+	return rest
+}
+
 // retry schedules the next attempt with exponential backoff.
 func (p *Pusher) retry(err error) {
+	if errors.Is(err, context.Canceled) {
+		return // shutting down; the next start does a full check
+	}
 	if p.backoff == 0 {
 		p.backoff = time.Second
 	} else {
