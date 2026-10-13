@@ -11,6 +11,17 @@ Newest first.
   and fixed while testing: rclone's --max-delete deletes up to the limit before
   stopping (so pushdir pre-counts), and a per-batch delete cap let slow mass
   deletions through (now a quiet period plus an hourly budget).
+- pushdir finished (v1.0.0). Two independent reviews found real bugs, all fixed
+  with tests: any rclone filter after `--` broke every batch (rclone refuses filters
+  with --files-from-raw; batches are now chosen by an rclone listing with the user's
+  rules in rclone's order, checked against `rclone copy` for 14 combinations);
+  replacing the watched folder wiped the remote (now pushdir stops); a look-alike
+  file could be "renamed" over (now hash-checked); renames skipped --backup-dir;
+  atomic saves used up the delete budget; a blocked event queue could hang shutdown
+  and lose new folders after an overflow; files with future timestamps spun the CPU;
+  passwords in connection strings were logged and served on /status; overlapping or
+  relative destinations were accepted; unknown remotes retried forever; a second
+  Ctrl-C orphaned rclone. Docker image checked end to end; systemd unit untested.
 
 ## 2026-10-13 (IST) — run 2
 

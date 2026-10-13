@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -119,6 +120,7 @@ func KillAll() {
 	running.Lock()
 	defer running.Unlock()
 	for p := range running.procs {
+		_ = syscall.Kill(-p.Pid, syscall.SIGKILL) // its process group
 		_ = p.Kill()
 	}
 }
@@ -167,7 +169,10 @@ func (r *Runner) run(ctx context.Context, flags []string, wantOut bool, args ...
 		cmd.Stdout = errs
 	}
 	cmd.Stderr = errs
-	// Let rclone finish cleanly on cancel instead of being killed mid-upload.
+	// rclone gets its own process group, so pushdir alone decides how it
+	// stops: on cancel it is asked to finish cleanly instead of being killed
+	// mid-upload, and KillAll takes anything it started with it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 30 * time.Second
 	start := time.Now()

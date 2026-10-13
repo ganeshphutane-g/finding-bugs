@@ -1,24 +1,14 @@
 # State
 
-Current project: #3 pushdir (watch folders, push changes to any rclone remote)
-Phase: build (milestones 1–2 done, most of 3–4)
-Repo: projects/pushdir/ inside finding-bugs (own repos blocked, see below)
-Spec: projects/pushdir/SPEC.md
+Current project: #4, not chosen yet
+Phase: research (round 4). Start from the round-3 runners-up in IDEAS.md and fresh
+signals; re-check demand and existing tools before choosing.
+Repo: will be projects/<name>/ inside finding-bugs until the owner creates repos.
 
 ## Next step
 
-Done so far: CLI, rclone runner, first full copy, recursive watcher, batching,
-settle check, --delete with DeleteQuiet + hourly --max-delete budget (pre-counted
-for full syncs, because rclone's own --max-delete deletes up to the limit first),
-empty/unmounted-root guard, --backup-dir, retries with backoff, periodic resync,
-/status and /metrics. Tests with real rclone (incl. WebDAV outage) pass under -race.
-
-Remaining: (1) rename detection → `rclone moveto` for large files; (2) a test for
-kernel event overflow (sudo sysctl fs.inotify.max_queued_events=16, burst of files,
-expect a full check and all files on the remote; restore the value); (3) a test that
-Ctrl-C mid-upload leaves nothing broken and a restart completes; (4) CLI tests;
-(5) release: README with real output, systemd unit, Dockerfile, LICENSE, CHANGELOG,
-two full reviews, fix findings.
+Research round 4 (AUTOPILOT.md phase 1): 5+ candidates, scored, at least 3 demand
+sources each.
 
 ## Notes for runs
 
@@ -44,8 +34,10 @@ two full reviews, fix findings.
   github.com/minio/minio@v0.0.0-20260212201848-7aac2a2c5b7c` (about 2.5 minutes).
   Garage (dxflrs/garage), SeaweedFS (chrislusf/seaweedfs) and RustFS (rustfs/rustfs)
   pull from Docker Hub.
-- pushdir tests need rclone: `GOBIN=/tmp/rclone-bin go install
-  github.com/rclone/rclone@v1.75.2` then `RCLONE_BIN=/tmp/rclone-bin/rclone make test`.
+- pushdir tests need rclone: `GOBIN=/tmp/claude-0/rclone-bin go install
+  github.com/rclone/rclone@v1.75.2` then `RCLONE_BIN=/tmp/claude-0/rclone-bin/rclone
+  make test`. Docker builds here cannot reach the Go proxy: to check the image, copy
+  the project to a temp folder, run `go mod vendor`, and build with `-mod=vendor`.
 - Docker Hub pulls can fail with 429 (rate limit). Tests must not depend on pulling
   images: build tiny test images locally (e.g. `FROM scratch` with a static file).
 
@@ -64,6 +56,15 @@ two full reviews, fix findings.
    reviews fixed. Owner checks before going public: README, try it against their own
    MinIO with a test bucket, GitHub Actions green.
 
+3. **pushdir** (projects/pushdir, v1.0.0). Watch a folder and push every change to
+   any rclone remote within seconds (rclone#249). Batches with settle checks, filters
+   applied by rclone's own rules, opt-in deletions with an hourly budget and
+   unmount/empty/replaced-folder guards, hash-checked remote-side renames, retries,
+   /status and /metrics, systemd unit, Docker image (checked end to end). Two full
+   reviews (data loss; ops/security): 9 + 12 confirmed findings fixed, each with a
+   test. Owner checks before going public: README, run it on a real folder for a day,
+   try the systemd unit (not tested on a real systemd host), GitHub Actions green.
+
 ## Blockers for the owner
 
 - Creating new repos fails: the Claude GitHub app gets "403 Resource not accessible
@@ -71,6 +72,9 @@ two full reviews, fix findings.
   `ganeshphutane-g/docker-mop` on GitHub and give the Claude GitHub app access to it
   (GitHub settings > Applications > Claude > Repository access). The next run will
   move the project there with its history.
+- Same for pushdir: an empty private repo `ganeshphutane-g/pushdir` with the Claude
+  app given access lets the next run move it there (its README already uses that
+  module path for `go install`).
 - Pushing git tags is refused by this environment's git proxy (branch pushes work).
   To mark the release, create tag `docker-mop/v1.0.0` on commit 50c1a1e from the
   GitHub web UI (Releases > Draft a new release), or let the run tag it in the new

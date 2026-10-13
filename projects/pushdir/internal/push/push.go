@@ -137,9 +137,9 @@ type Status struct {
 	Batches         int64     `json:"batches"`
 	FailedBatches   int64     `json:"failed_batches"`
 	Resyncs         int64     `json:"full_resyncs"`
-	LastSuccess     time.Time `json:"last_success,omitempty"`
+	LastSuccess     time.Time `json:"last_success,omitzero"`
 	LastError       string    `json:"last_error,omitempty"`
-	LastErrorTime   time.Time `json:"last_error_time,omitempty"`
+	LastErrorTime   time.Time `json:"last_error_time,omitzero"`
 	DeletionsPaused string    `json:"deletions_paused,omitempty"`
 	StartedAt       time.Time `json:"started_at"`
 }
@@ -448,7 +448,6 @@ func (p *Pusher) flush(ctx context.Context) {
 	}
 	sort.Strings(ready)
 	p.update(func(s *Status) { s.State = "sending" })
-	ready = p.renames(ctx, ready)
 	if len(ready) > 0 && p.opt.Runner.Filtered() {
 		// Leave out what the user's rclone filters exclude.
 		sel, err := p.opt.Runner.Select(ctx, p.realLocal, ready)
@@ -467,6 +466,7 @@ func (p *Pusher) flush(ctx context.Context) {
 		}
 		ready = sel
 	}
+	ready = p.renames(ctx, ready)
 
 	ok := true
 	if len(ready) > 0 {
