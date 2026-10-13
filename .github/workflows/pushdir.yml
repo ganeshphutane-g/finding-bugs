@@ -1,0 +1,26 @@
+name: pushdir
+
+on:
+  push:
+    paths: ["projects/pushdir/**", ".github/workflows/pushdir.yml"]
+  pull_request:
+    paths: ["projects/pushdir/**", ".github/workflows/pushdir.yml"]
+
+defaults:
+  run:
+    working-directory: projects/pushdir
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/pushdir/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: build rclone for the tests
+        run: GOBIN=$PWD/.bin go install github.com/rclone/rclone@v1.75.2
+      - name: tests (real rclone)
+        run: RCLONE_BIN=$PWD/.bin/rclone make test

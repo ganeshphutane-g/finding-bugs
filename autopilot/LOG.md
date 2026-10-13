@@ -2,6 +2,16 @@
 
 Newest first.
 
+## 2026-10-14 (IST) — run 3
+
+- Owner has not created the docker-mop or bucketmove repos yet.
+- Research round 3: chose pushdir (rclone watch mode; rclone#249, 213 👍, open since
+  2015, labelled IMPORTANT; existing watchers have 0–10 stars). Runners-up recorded.
+- pushdir milestones 1–2 and most of 3–4 built and tested with real rclone. Found
+  and fixed while testing: rclone's --max-delete deletes up to the limit before
+  stopping (so pushdir pre-counts), and a per-batch delete cap let slow mass
+  deletions through (now a quiet period plus an hourly budget).
+
 ## 2026-10-13 (IST) — run 2
 
 - Owner has not created the docker-mop repo yet; it stays in projects/docker-mop.

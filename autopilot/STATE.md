@@ -1,14 +1,24 @@
 # State
 
 Current project: #3 pushdir (watch folders, push changes to any rclone remote)
-Phase: spec
+Phase: build (milestones 1–2 done, most of 3–4)
 Repo: projects/pushdir/ inside finding-bugs (own repos blocked, see below)
-Spec: projects/pushdir/SPEC.md (to write)
+Spec: projects/pushdir/SPEC.md
 
 ## Next step
 
-Write projects/pushdir/SPEC.md and start milestone 1. Build rclone for tests with
-`GOBIN=/tmp/rclone-bin go install github.com/rclone/rclone@v1.75.2`.
+Done so far: CLI, rclone runner, first full copy, recursive watcher, batching,
+settle check, --delete with DeleteQuiet + hourly --max-delete budget (pre-counted
+for full syncs, because rclone's own --max-delete deletes up to the limit first),
+empty/unmounted-root guard, --backup-dir, retries with backoff, periodic resync,
+/status and /metrics. Tests with real rclone (incl. WebDAV outage) pass under -race.
+
+Remaining: (1) rename detection → `rclone moveto` for large files; (2) a test for
+kernel event overflow (sudo sysctl fs.inotify.max_queued_events=16, burst of files,
+expect a full check and all files on the remote; restore the value); (3) a test that
+Ctrl-C mid-upload leaves nothing broken and a restart completes; (4) CLI tests;
+(5) release: README with real output, systemd unit, Dockerfile, LICENSE, CHANGELOG,
+two full reviews, fix findings.
 
 ## Notes for runs
 
@@ -34,6 +44,8 @@ Write projects/pushdir/SPEC.md and start milestone 1. Build rclone for tests wit
   github.com/minio/minio@v0.0.0-20260212201848-7aac2a2c5b7c` (about 2.5 minutes).
   Garage (dxflrs/garage), SeaweedFS (chrislusf/seaweedfs) and RustFS (rustfs/rustfs)
   pull from Docker Hub.
+- pushdir tests need rclone: `GOBIN=/tmp/rclone-bin go install
+  github.com/rclone/rclone@v1.75.2` then `RCLONE_BIN=/tmp/rclone-bin/rclone make test`.
 - Docker Hub pulls can fail with 429 (rate limit). Tests must not depend on pulling
   images: build tiny test images locally (e.g. `FROM scratch` with a static file).
 
