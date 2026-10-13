@@ -1,0 +1,36 @@
+# pushdir as a systemd service, one instance per watched folder.
+#
+# 1. Put the settings for an instance in /etc/pushdir/NAME.env, for example
+#    /etc/pushdir/photos.env:
+#
+#      PUSHDIR_LOCAL=/srv/photos
+#      PUSHDIR_REMOTE=b2:my-photos
+#      PUSHDIR_OPTIONS=--delete --backup-dir b2:my-photos-deleted
+#      PUSHDIR_RCLONE_FLAGS=--bwlimit 10M
+#
+# 2. Make sure the service user can use rclone's config (the default is
+#    ~/.config/rclone/rclone.conf of that user), or add --config to
+#    PUSHDIR_RCLONE_FLAGS.
+#
+# 3. systemctl enable --now pushdir@photos
+[Unit]
+Description=pushdir: push changes in %i to an rclone remote
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/pushdir/%i.env
+ExecStart=/usr/local/bin/pushdir $PUSHDIR_OPTIONS ${PUSHDIR_LOCAL} ${PUSHDIR_REMOTE} -- $PUSHDIR_RCLONE_FLAGS
+Restart=on-failure
+RestartSec=10
+# Give a running upload time to stop cleanly.
+TimeoutStopSec=60
+User=pushdir
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pushdir
+# pushdir only reads the watched folder; rclone may write its cache here.
+Environment=XDG_CACHE_HOME=/var/lib/pushdir/cache
+
+[Install]
+WantedBy=multi-user.target
