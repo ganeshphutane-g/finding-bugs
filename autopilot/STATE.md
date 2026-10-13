@@ -1,14 +1,19 @@
 # State
 
-Current project: #4, not chosen yet
-Phase: research (round 4). Start from the round-3 runners-up in IDEAS.md and fresh
-signals; re-check demand and existing tools before choosing.
-Repo: will be projects/<name>/ inside finding-bugs until the owner creates repos.
+Current project: #4, Compose-aware PostgreSQL major-version upgrader (name to
+be decided in the spec; "pgshift" is taken)
+Phase: spec
+Repo: projects/<name>/ inside finding-bugs until the owner creates repos.
+Research: IDEAS.md, round 4.
 
 ## Next step
 
-Research round 4 (AUTOPILOT.md phase 1): 5+ candidates, scored, at least 3 demand
-sources each.
+Write SPEC.md. Verify on real images (Docker Hub) before relying on any fact:
+- the Postgres 18 image's PGDATA / volume layout change;
+- what pg_upgrade needs (both versions' binaries; tianon images);
+- the alpine vs debian collation/locale difference (dump/restore is the safe default
+  across them);
+- the PostgreSQL 14 end-of-life date on postgresql.org.
 
 ## Notes for runs
 

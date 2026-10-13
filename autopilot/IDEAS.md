@@ -3,6 +3,72 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 4 — 2026-10-14 IST
+
+Two parallel searches: re-validation of earlier runners-up, and fresh signals.
+Counts marked (checked) were read from GitHub search on 2026-10-14; forum and news
+items came through web search summaries (pages not opened).
+
+### Chosen: Compose-aware PostgreSQL major-version upgrader (project #4)
+
+Upgrade the Postgres service of a Docker Compose project (or a plain container) to a
+new major version safely: find it, read PG_VERSION / extensions / checksums / image
+variant, take and verify a dump, upgrade into a NEW volume (pg_upgrade where both
+versions' binaries are available, dump/restore otherwise), verify the result, switch
+the service over, and keep the old volume untouched for rollback.
+
+- Demand:
+  - docker-library/postgres#37 "Upgrading between major versions?": 278 👍,
+    140 comments, open since 2014-11, updated 2026-08-28 (checked).
+  - tianon/docker-postgres-upgrade: 1,386★, describes itself as "a PoC … don't
+    expect it to work as-is" (checked).
+  - pgautoupgrade/docker-pgautoupgrade: 1,191★, 32 open issues (checked). Failure
+    reports include #210, cross-device link with tablespaces on separate volumes
+    (open, checked), and #157, 17→18 with checksums off (closed, checked).
+  - PostgreSQL 14 end of life 2026-11-12. This comes from a web source and matches the
+    5-year policy for 14.0 (2021-09); verify on postgresql.org before quoting.
+  - 2026 upgrade guides for the Postgres 18 data-directory change: nite07, rezhajul,
+    the Pinepods docs and the AFFiNE docs (web search).
+- Gap: the existing tools are a proof of concept, an in-place image swap, or 0–2★
+  scripts (bastidest/upgrade-postgres-docker-compose, 0★, 2024). None of them finds
+  the Compose service, verifies a backup first, writes to a new volume, checks the
+  result and offers rollback.
+- Scores: demand 5, gap 4, feasibility 4, maintenance 3, fit 5 = **21**.
+- Risks: this is data-loss territory. The old volume must never be written, every
+  step must be checked, and there must be tests for each version pair and image
+  variant (official, alpine, postgis, pgvector). Docker Hub pulls can hit rate
+  limits (429).
+
+### Runners-up
+
+- **restic pull-mode orchestrator**: restic#299, 333 👍, open since 2015 (checked);
+  backrest#944, 20 👍; restic forum threads. Existing: kaya (17★, last update
+  2025-08), gdmn/bkp-restic (20★, shell). Scores 4/5/4/4/5 = 22 on paper, ranked
+  second because an append-only rest-server already covers the main security worry
+  of push backups. First candidate for round 5.
+- **VS Code layered settings composer**: #15909 1,366 👍, #5595 1,150 👍, #40233
+  1,040 👍, all open; PR #335281 (per-OS settings only) still open. 21. Needs a
+  TypeScript extension shell; Microsoft may merge parts of it.
+- **Gitea/Forgejo issue mover**: gitea#453 open, 79 👍; new duplicate #39227. 20.
+- **Tailnet DNS server for custom records**: tailscale#1543, 926 👍. 19. High risk:
+  Tailscale's alpha extraDNSRecords feature.
+- **Docker published-port exposure auditor**: moby#22054, 90 👍. 19. Many firewall
+  back ends; a false "safe" verdict would be dangerous.
+- **Autoheal successor**: moby#28400, 324 👍. 19. Existing tools work.
+- **Terraform exclude targeting**: still not shipped (#2253, 1,539 👍); OpenTofu has
+  -exclude. 18.
+- **Nextcloud storage auditor**: server#5539, 212 👍. 17.
+- **Format-preserving yq editor**: 17. **Dead image-reference auditor**: 17.
+- **Google CSE stand-in**: 15, already a drop-in (cse-bridge). **GoAlert
+  migrator**: 15, no user-side demand found.
+
+### Rejected in round 4
+
+- Watchtower successor (an active fork has 4.6k★), File Browser successor (the
+  Quantum fork), CDKTF→HCL (`cdktf synth --hcl`), OpenTofu linter (being built in),
+  terraformer (Terraform `query`), Docker Content Trust (tiny usage), Cirrus CI
+  (already shut down), whole-org mirroring for Gitea (scripts exist).
+
 ## Research round 3 — 2026-10-14 IST
 
 ### Chosen: pushdir (project #3)
