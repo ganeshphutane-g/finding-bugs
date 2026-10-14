@@ -1,17 +1,37 @@
 # State
 
 Current project: #4 pgcarry (safe major-version upgrades of Postgres in Docker Compose)
-Phase: build, milestone 1 of 5 next
+Phase: build, milestone 2 of 5 next
 Repo: projects/pgcarry/ inside finding-bugs (own repos blocked, see below)
 Spec: projects/pgcarry/SPEC.md. Research: IDEAS.md round 4.
 
 ## Next step
 
-Milestone 1: Go module github.com/ganeshphutane-g/pgcarry. Reuse docker-mop's Engine
-API client (our own code). Compose discovery via `docker compose config --format
-json`. `pgcarry plan`: PG_VERSION, databases and sizes, extensions, roles, encoding,
-locale, collation provider, checksums, auth; probe the target image (extensions, and
-its defaults); verdict. Tests with real images.
+Milestone 1 is done: `pgcarry plan` covers
+- finding the database service and its data mount (named volume or bind mount);
+- reading the cluster (databases, sizes, extensions, locales, roles, checksums, md5
+  passwords, slots, tablespaces, settings from the data folder, custom pg_hba
+  rules);
+- the target image (per-family tag rules, a probe with tmpfs, the extensions it
+  has, locales tested by CREATE DATABASE);
+- the disk check and the blockers.
+
+The tests use real images (PGCARRY_INTEGRATION=1; about 60 s).
+
+Milestone 2: `upgrade --no-switch`:
+- stop the dependent services;
+- pg_dumpall --globals-only, then pg_dump -Fc per database, using the new image's
+  client against the old server, through a temporary container on the service's
+  network or `docker exec` into a helper;
+- check the dumps (pg_restore --list) and write checksums to a backup folder;
+- stop the old service;
+- create the new volume (or folder) with Compose labels;
+- initdb through the image with the same encoding, locale and provider as
+  template1, with the checksums choice;
+- restore the globals, then each database;
+- carry the custom settings and pg_hba rules;
+- verify row counts, sequences and object lists, writing a journal so it can be
+  resumed.
 
 Facts checked on real images (2026-10-14): the 14 and 17 images use PGDATA
 /var/lib/postgresql/data (VOLUME the same); 18 and 18-alpine use
@@ -78,6 +98,11 @@ Compose v5.6.0 are available here; postgres images pull from Docker Hub.
    try the systemd unit (not tested on a real systemd host), GitHub Actions green.
 
 ## Blockers for the owner
+
+- The finding-bugs repo itself is PUBLIC (seen 2026-10-15). Everything in it
+  (projects, logs, research notes) is visible to anyone. The playbook rules forbid
+  changing visibility, so the owner decides: make it private (GitHub > Settings >
+  Danger Zone), or keep it public knowingly.
 
 - Creating new repos fails: the Claude GitHub app gets "403 Resource not accessible
   by integration". To give docker-mop its own repo, create an empty private repo

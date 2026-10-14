@@ -1,0 +1,26 @@
+name: pgcarry
+
+on:
+  push:
+    paths: ["projects/pgcarry/**", ".github/workflows/pgcarry.yml"]
+  pull_request:
+    paths: ["projects/pgcarry/**", ".github/workflows/pgcarry.yml"]
+
+defaults:
+  run:
+    working-directory: projects/pgcarry
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/pgcarry/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet ./...
+      - name: tests (real Postgres images in Docker)
+        run: PGCARRY_INTEGRATION=1 go test -race -timeout 30m ./...

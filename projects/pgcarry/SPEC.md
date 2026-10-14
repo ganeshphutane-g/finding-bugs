@@ -100,8 +100,9 @@ Every step is logged, and an interrupted run can be resumed or rolled back.
 
 ## Tech choices
 
-- **Go**, talking to the Docker Engine API directly; the client is our own, from
-  docker-mop. Compose files are read with `docker compose config --format json`.
+- **Go**, running the `docker` command-line tool (which Compose users always have),
+  so Docker contexts, remote hosts and streaming large dumps work as they do for the
+  user. Compose files are read with `docker compose config --format json`.
   They are edited by position, using gopkg.in/yaml.v3 nodes, so comments and
   formatting stay intact.
 - **All Postgres work runs inside containers** of the user's own images: no Postgres
