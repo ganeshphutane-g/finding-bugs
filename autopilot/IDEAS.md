@@ -3,6 +3,56 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 5 — 2026-10-15 IST
+
+One research pass. Counts marked (checked) were read from GitHub search that day;
+web items come from search summaries (pages not opened).
+
+### Chosen: Gitea/Forgejo issue mover (project #5)
+
+Move (or copy) issues between repositories on a Gitea or Forgejo instance, or between
+instances. It carries the title, body, comments, labels, milestones and attachments,
+with original authors where admin access allows (Sudo) and original dates kept as
+text. It then cross-links and closes the source issue. Dry run first.
+
+- Demand:
+  - go-gitea/gitea#453: open since 2016, 79 👍, 37 comments, updated 2026-04-09
+    (checked);
+  - gitea#39227: a new duplicate, 2026-09, 3 👍 (round 4);
+  - gitea#2991: same-org moves, closed, 15 👍 (checked);
+  - a Gitea forum thread on transferring issues (round 4);
+  - a Fedora Forge investigation calling it impossible without the API (round 4).
+- Gap: no tool on GitHub (checked), only ad-hoc scripts. Gitea's "reference in new
+  issue" is a partial workaround.
+- Scores 3/5/4/4/4 = **20**.
+- Risks:
+  - upstream may build it (open PRs were not checkable);
+  - original timestamps cannot be set through the normal API, so check whether the
+    migration code path or Sudo can help;
+  - Forgejo's tracker on Codeberg was not checked.
+
+### Runners-up
+
+- **restic pull-mode orchestrator**, now 19 (was 22): restic#299 is open with
+  333 👍. But Zerobyte (7,044★) backs up remote SFTP/NFS/SMB sources, and Backrest
+  1.13 has a multihost hub. Pulling adds little security over push to an
+  append-only rest-server (no credentials stored on the host, but the server holds
+  root SSH keys to every host). If built, present it as "agentless central restic".
+- **Docker published-port exposure auditor**, 19: moby#22054 is open with 90 👍;
+  ufw-docker (6,823★) fixes rather than audits. Risk: a wrong "safe" verdict.
+- **Per-container bandwidth limiter** (a docker-tc successor), 18: moby#26767
+  (88 👍), moby#4763 (58 👍); docker-tc (757★) has open bugs and is stale.
+- **Gitea ≥1.23 → Forgejo migrator**, 16. **Heroku exit bundler**, 15.
+
+### Rejected in round 5
+
+- A multi-registry pull-through cache (rpardini/docker-registry-proxy and zot cover
+  it).
+- A Valkey RDB downgrade (7 👍).
+- Debian trixie SHA1 keys (the fix belongs to each repository's maintainer).
+- The Dockhand licence change (free alternatives exist).
+- Syncthing shared ignores (`#include` already does it).
+
 ## Research round 4 — 2026-10-14 IST
 
 Two parallel searches: re-validation of earlier runners-up, and fresh signals.

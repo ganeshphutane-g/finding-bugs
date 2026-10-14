@@ -1,17 +1,24 @@
 # State
 
-Current project: #5, not chosen yet
-Phase: research (round 5). A research agent was started on 2026-10-15 ~02:45 IST;
-if its results are not in IDEAS.md, redo the round. The first candidate to
-re-validate is the restic pull-mode orchestrator (IDEAS.md round 4).
-Repo: will be projects/<name>/ inside finding-bugs until the owner creates repos.
+Current project: #5 Gitea/Forgejo issue mover (name to pick in the spec)
+Phase: spec
+Repo: projects/<name>/ inside finding-bugs until the owner creates repos.
+Research: IDEAS.md round 5.
 
 ## Next step
 
-1. Check that CI is green on df3dbb4, the last pgcarry commit (the pgcarry.yml
-   workflow). If it is red, fix it before anything else.
-2. Research round 5: 5+ candidates, scored, 3+ demand sources each; choose; write
-   SPEC.md.
+1. Check that CI is green on df3dbb4 (pgcarry.yml; it was still running at the end
+   of run 4). Fix it if it is red.
+2. Write SPEC.md for the issue mover. First verify against real gitea/gitea and
+   codeberg.org/forgejo/forgejo containers (Docker Hub / codeberg images; check they
+   pull):
+   - which API fields can be set (issue and comment create, labels, milestones,
+     attachments, closing);
+   - whether the Sudo header keeps authors;
+   - whether timestamps can be kept (the migration API or the admin paths);
+   - how cross-repo and cross-instance references look;
+   - rate limits.
+   Then build in milestones, as for earlier projects.
 
 ## Notes for runs
 
