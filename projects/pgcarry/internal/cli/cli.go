@@ -231,7 +231,11 @@ func doUpgrade(ctx context.Context, stdin io.Reader, stdout io.Writer, o options
 	if o.noSwitch {
 		fmt.Fprintf(stdout, "\nRehearsal: this stops %s while the data is copied (the old data is not changed), then starts them again on the old data.\n", strings.Join(stops, ", "))
 	} else {
-		fmt.Fprintf(stdout, "\nThis stops %s while the data is copied (the old data is not changed), changes the Compose file as shown, and starts them on PostgreSQL %d.\n", strings.Join(stops, ", "), rep.Target.Major())
+		fmt.Fprintf(stdout, "\nThis stops %s while the data is copied (the old data is not changed), changes the Compose file as shown, and starts %s on PostgreSQL %d", strings.Join(stops, ", "), rep.Service, rep.Target.Major())
+		if len(rep.Dependents) > 0 {
+			fmt.Fprintf(stdout, " and the apps again")
+		}
+		fmt.Fprintln(stdout, ".")
 	}
 	fmt.Fprintf(stdout, "Dumps go to %s.\n", backup)
 	if !o.yes && !confirm(stdin, stdout, "Go ahead?") {
