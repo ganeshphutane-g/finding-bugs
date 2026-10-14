@@ -7,8 +7,7 @@ Research: IDEAS.md round 5.
 
 ## Next step
 
-1. Check that CI is green on df3dbb4 (pgcarry.yml; it was still running at the end
-   of run 4). Fix it if it is red.
+1. (pgcarry CI is green on df3dbb4, checked at the end of run 4.)
 2. Write SPEC.md for the issue mover. First verify against real gitea/gitea and
    codeberg.org/forgejo/forgejo containers (Docker Hub / codeberg images; check they
    pull):

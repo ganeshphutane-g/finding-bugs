@@ -47,7 +47,12 @@ Newest first.
   Also fixed: a lock for two commands on one upgrade, the Created flag being
   recorded late, env files, temp files and a hint's SQL.
 - pgcarry v1.0.0 finished at df3dbb4; the full suite with -race is green locally.
-- Research round 5 started (restic pull-mode first).
+- CI green on df3dbb4.
+- Research round 5 done. Chosen project #5: a Gitea/Forgejo issue mover (gitea#453,
+  open since 2016, no tool exists). The restic pull orchestrator dropped to 19/25:
+  Zerobyte now backs up SFTP sources, and pull adds little over append-only.
+- Next run: verify the Gitea/Forgejo API facts on real containers, write SPEC.md,
+  start building.
 
 ## 2026-10-14 (IST) — run 3
 
