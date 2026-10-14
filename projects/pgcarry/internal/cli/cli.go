@@ -31,9 +31,12 @@ version, keeping the old data untouched until the new copy is verified.
 Commands:
   plan       Show what an upgrade would do and what stands in the way
              (changes nothing)
-  upgrade    Copy the data into the new version and verify it. With
-             --no-switch (a rehearsal) the old service is started again
-             afterwards and the new copy is kept for inspection.
+  upgrade    Copy the data into the new version, verify it, then switch the
+             service over (the Compose file is changed; the old data is kept).
+             With --no-switch it is a rehearsal: the old service is started
+             again afterwards and the new copy is kept for inspection.
+  rollback   Go back to the old version and its untouched data
+  cleanup    Remove the old data once you are happy with the upgrade
   version    Show the version
 
 Options:
@@ -144,7 +147,7 @@ func run(ctx context.Context, stdin io.Reader, stdout io.Writer, args []string) 
 	case "version", "--version":
 		fmt.Fprintf(stdout, "pgcarry %s\n", Version)
 		return nil
-	case "plan", "upgrade":
+	case "plan", "upgrade", "rollback", "cleanup":
 	default:
 		return usagef("unknown command %q", cmd)
 	}
@@ -152,10 +155,18 @@ func run(ctx context.Context, stdin io.Reader, stdout io.Writer, args []string) 
 	if err != nil {
 		return err
 	}
+	if err := absolute(&o.compose); err != nil {
+		return err
+	}
+	cli0 := &docker.CLI{Bin: os.Getenv("PGCARRY_DOCKER")}
+	switch cmd {
+	case "rollback", "cleanup":
+		return after(ctx, stdin, stdout, cmd, o, cli0)
+	}
 	if o.to == 0 && o.image == "" {
 		return usagef("say which version to move to (--to 18) or give the image (--image)")
 	}
-	cli := &docker.CLI{Bin: os.Getenv("PGCARRY_DOCKER")}
+	cli := cli0
 	proj, err := compose.Load(ctx, cli, o.compose)
 	if err != nil {
 		return err
@@ -183,8 +194,8 @@ func run(ctx context.Context, stdin io.Reader, stdout io.Writer, args []string) 
 }
 
 func doUpgrade(ctx context.Context, stdin io.Reader, stdout io.Writer, o options, cli *docker.CLI, proj *compose.Project, rep *plan.Report) error {
-	if !o.noSwitch {
-		return usagef("switching the service over is not built yet; run with --no-switch to rehearse the copy")
+	if !o.noSwitch && rep.SwitchProblem != "" {
+		return fmt.Errorf("the Compose file cannot be changed automatically: %s\nRehearse with --no-switch, then make the change by hand", rep.SwitchProblem)
 	}
 	backup := o.backup
 	if backup == "" {
@@ -199,14 +210,29 @@ func doUpgrade(ctx context.Context, stdin io.Reader, stdout io.Writer, o options
 		return err
 	}
 	stops := append([]string{rep.Service}, rep.Dependents...)
-	fmt.Fprintf(stdout, "\nThis stops %s while the data is copied (the old data is not changed), then starts them again.\nDumps go to %s.\n", strings.Join(stops, ", "), backup)
+	if o.noSwitch {
+		fmt.Fprintf(stdout, "\nRehearsal: this stops %s while the data is copied (the old data is not changed), then starts them again on the old data.\n", strings.Join(stops, ", "))
+	} else {
+		fmt.Fprintf(stdout, "\nThis stops %s while the data is copied (the old data is not changed), changes the Compose file as shown, and starts them on PostgreSQL %d.\n", strings.Join(stops, ", "), rep.Target.Major())
+	}
+	fmt.Fprintf(stdout, "Dumps go to %s.\n", backup)
 	if !o.yes && !confirm(stdin, stdout, "Go ahead?") {
 		return errors.New("stopped; nothing was changed")
 	}
 	m, err := upgrade.Run(ctx, upgrade.Options{CLI: cli, Project: proj, Plan: rep, BackupDir: backup,
-		Log: func(s string) { fmt.Fprintln(stdout, s) }})
+		Switch: !o.noSwitch, Log: func(s string) { fmt.Fprintln(stdout, s) }})
 	if err != nil {
 		return err
+	}
+	if m.Switched {
+		fmt.Fprintf(stdout, "\nDone: %s now runs PostgreSQL %s on %s.\n", rep.Service, m.NewVersion, m.NewData)
+		if len(m.Stopped) > 0 {
+			fmt.Fprintf(stdout, "Started again: %s.\n", strings.Join(m.Stopped, ", "))
+		}
+		fmt.Fprintf(stdout, "The old data (%s) is kept unchanged, and the original Compose file is saved in %s.\n", m.OldData, backup)
+		fmt.Fprintf(stdout, "To go back:           pgcarry rollback --backup-dir %s\n", backup)
+		fmt.Fprintf(stdout, "When you are happy:   pgcarry cleanup --backup-dir %s  (removes the old data)\n", backup)
+		return nil
 	}
 	fmt.Fprintf(stdout, "\nRehearsal passed: PostgreSQL %s holds an exact copy (every table's row count, every sequence, roles and object counts match).\n", m.NewVersion)
 	fmt.Fprintf(stdout, "The new data is in %s %s; %s run as before on the old data.\n", rep.MountType, m.NewData, strings.Join(stops, ", "))
@@ -222,4 +248,69 @@ func confirm(in io.Reader, out io.Writer, q string) bool {
 		return true
 	}
 	return false
+}
+
+// absolute makes the project folder and files absolute, so rollback and
+// cleanup work from anywhere later.
+func absolute(o *compose.Options) error {
+	dir := o.Dir
+	if dir == "" {
+		dir = "."
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	o.Dir = abs
+	for i, f := range o.Files {
+		if !filepath.IsAbs(f) {
+			o.Files[i] = filepath.Join(abs, f)
+		}
+	}
+	return nil
+}
+
+func after(ctx context.Context, stdin io.Reader, stdout io.Writer, cmd string, o options, cli *docker.CLI) error {
+	dir := o.backup
+	if dir == "" {
+		var err error
+		if dir, err = upgrade.LatestBackup(o.compose.Dir); err != nil {
+			return err
+		}
+	}
+	m, err := upgrade.LoadManifest(dir)
+	if err != nil {
+		return err
+	}
+	switch cmd {
+	case "rollback":
+		if err := upgrade.CanRollback(m); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "This puts back the original Compose file and starts %s on PostgreSQL %s with the old data (%s).\n", m.Service, m.OldVersion, m.OldData)
+		fmt.Fprintf(stdout, "Anything written to the database since the upgrade is not carried back.\n")
+		if !o.yes && !confirm(stdin, stdout, "Roll back?") {
+			return errors.New("stopped; nothing was changed")
+		}
+		if err := upgrade.Rollback(ctx, cli, dir); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Rolled back: %s runs PostgreSQL %s on %s again. The new data (%s) is kept.\n", m.Service, m.OldVersion, m.OldData, m.NewData)
+	case "cleanup":
+		if err := upgrade.CanCleanup(m); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "This removes the old data %s %s for good. %s keeps running on %s; the dumps stay in %s.\n", m.MountType, m.OldData, m.Service, m.NewData, dir)
+		if !o.yes && !confirm(stdin, stdout, "Remove the old data?") {
+			return errors.New("stopped; nothing was changed")
+		}
+		if err := upgrade.Cleanup(ctx, cli, dir); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Removed %s.\n", m.OldData)
+		if m.MountType == "volume" {
+			fmt.Fprintf(stdout, "The old volume's entry under volumes: in the Compose file is no longer used; you can delete it.\n")
+		}
+	}
+	return nil
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ganeshphutane-g/pgcarry/internal/compose"
 	"github.com/ganeshphutane-g/pgcarry/internal/docker"
+	"github.com/ganeshphutane-g/pgcarry/internal/edit"
 	"github.com/ganeshphutane-g/pgcarry/internal/images"
 	"github.com/ganeshphutane-g/pgcarry/internal/pg"
 )
@@ -54,6 +55,13 @@ type Report struct {
 
 	CustomSettings []pg.Setting `json:"custom_settings,omitempty"`
 	CustomHBA      []string     `json:"custom_hba_rules,omitempty"`
+
+	ComposeFiles []string    `json:"compose_files,omitempty"`
+	Edits        []edit.File `json:"-"`
+	EditDiff     string      `json:"compose_diff,omitempty"`
+	// SwitchProblem says why the Compose file cannot be edited
+	// automatically (a rehearsal still works).
+	SwitchProblem string `json:"switch_problem,omitempty"`
 
 	Blockers []string `json:"blockers"`
 	Warnings []string `json:"warnings"`
@@ -250,7 +258,46 @@ func Build(ctx context.Context, in Input) (*Report, error) {
 	if r.Cluster != nil {
 		check(ctx, r, srv, in)
 	}
+	if r.Running && r.Target != nil && r.MountType != "" {
+		prepareEdit(ctx, r, in)
+	}
 	return r, nil
+}
+
+// composeFiles are the files Compose read for the running service, from
+// the container's labels (or the options given).
+func composeFiles(ctx context.Context, cli *docker.CLI, container string, opt compose.Options) []string {
+	out, err := cli.Run(ctx, "inspect", "-f", `{{index .Config.Labels "com.docker.compose.project.config_files"}}`, container)
+	if err == nil {
+		if v := strings.TrimSpace(out); v != "" && v != "<no value>" {
+			return strings.Split(v, ",")
+		}
+	}
+	return nil
+}
+
+func prepareEdit(ctx context.Context, r *Report, in Input) {
+	r.ComposeFiles = composeFiles(ctx, in.CLI, r.Container, in.Project.Options)
+	if len(r.ComposeFiles) == 0 {
+		r.SwitchProblem = "pgcarry could not tell which Compose files the service was started from"
+		return
+	}
+	major := r.Target.Major()
+	req := edit.Request{Files: r.ComposeFiles, Service: r.Service, Image: r.TargetImage,
+		MountTarget: r.MountPoint, NewTarget: r.TargetMount, Kind: r.MountType,
+		VolumeKey: r.MountKey, NewKey: fmt.Sprintf("%s_pg%d", r.MountKey, major),
+		NewName: NewVolumeName(r.MountName, major), BindSuffix: fmt.Sprintf("-pg%d", major)}
+	files, err := edit.Prepare(req)
+	if err != nil {
+		r.SwitchProblem = err.Error()
+		return
+	}
+	r.Edits = files
+	var b strings.Builder
+	for _, f := range files {
+		b.WriteString(edit.Diff(f))
+	}
+	r.EditDiff = b.String()
 }
 
 func check(ctx context.Context, r *Report, srv *pg.Server, in Input) {

@@ -1,50 +1,47 @@
 # State
 
 Current project: #4 pgcarry (safe major-version upgrades of Postgres in Docker Compose)
-Phase: build, milestone 3 of 5 next
+Phase: build, milestone 4 of 5 next
 Repo: projects/pgcarry/ inside finding-bugs (own repos blocked, see below)
 Spec: projects/pgcarry/SPEC.md. Research: IDEAS.md round 4.
 
 ## Next step
 
-Milestones 1–2 are done.
+Milestones 1–3 are done and CI is green.
 
-`pgcarry plan` covers service discovery and the cluster facts, then a target probe
-that tests extensions and locales, and finally the blockers.
+- **plan:** discovery, cluster facts, target probe (extensions, locales), blockers,
+  and the Compose diff for the switch (or the reason it needs a manual edit).
+- **upgrade:**
+  - stops the apps, records an inventory (rows, sequences, objects, role
+    signatures with password hashes), dumps with the new client and checks the
+    dumps;
+  - re-counts to catch writes, makes a new volume with Compose labels (or a
+    folder), runs initdb through the entrypoint with template1's locale;
+  - carries pg_hba/pg_ident/postgresql.auto.conf and the conf settings, restores,
+    verifies;
+  - then switches: an edit by position with yaml.v3 (image, mount, new top-level
+    key); `compose config` must read the new image and mount; `up -d --no-deps`
+    and a version check, then the apps start.
+- **--no-switch** rehearses and starts the old service again.
+- **rollback** refuses if the file changed since; **cleanup** checks the service
+  serves the new version first.
+- **Failures:** any failure puts back the file, the old service, the apps, removes
+  the half-made copy and leaves no helpers.
+- **Tests (all real Docker, about 7 min with -race):** the official image,
+  Alpine+locale+bind, pgvector, failure after every step, writes during the dump,
+  an interrupt, switch/rollback/cleanup, an override file with a bind, a failed
+  switch, an image from a variable, and the editor unit tests.
 
-`pgcarry upgrade --no-switch` is a rehearsal:
-- stop the apps;
-- record an inventory (row counts, sequences, objects, role signatures);
-- dump with the new image's client in the old container's network namespace;
-- check the dumps, and re-count to catch writes during the dump;
-- stop the old database, make a new volume (with Compose labels) or folder;
-- init through the image's entrypoint with template1's locale;
-- carry pg_hba/pg_ident/postgresql.auto.conf and the postgresql.conf settings;
-- restore, verify, then start everything again.
-
-On failure or Ctrl-C it puts everything back. The tests cover:
-- an official 14→18 run with many object kinds;
-- a bind mount on Alpine with a de_DE locale;
-- pgvector;
-- a failure after every step;
-- writes during the dump;
-- an interrupt.
-
-Found while testing: 18 catalogs NOT NULL constraints (left out of the
-comparison); pending ALTER SYSTEM settings live only in postgresql.auto.conf
-(copied as a file).
-
-Milestone 3 (switch):
-- `pgcarry upgrade` without --no-switch does the same, then edits the Compose
-  file by position with yaml.v3 nodes (the image line; the volume line to the new
-  key and mount point; a new top-level volume key with the same options), keeping
-  a backup copy;
-- it shows a diff and asks, runs `docker compose up -d SERVICE`, waits for health,
-  then starts the apps;
-- `pgcarry rollback` restores the file and starts the old service; `pgcarry
-  cleanup` removes the old volume and the dumps after asking;
-- when the image or volume comes from a variable, an override file or `extends`,
-  it prints the manual edit instead.
+Milestone 4 (matrix and hardening):
+- versions 13→17, 15→18, 17→18;
+- POSTGRES_PASSWORD_FILE/secrets, POSTGRES_HOST_AUTH_METHOD=trust;
+- ICU locale databases (15+);
+- timescale or another shared_preload_libraries case if pullable;
+- a database of about 1 GB (timing, disk);
+- a project started with -f files from another folder;
+- Ctrl-C through the real CLI during the dump and the restore;
+- a non-root CI user (bind cleanup);
+- the README with real output; two full reviews (data loss; ops/UX).
 
 Facts checked on real images (2026-10-14): the 14 and 17 images use PGDATA
 /var/lib/postgresql/data (VOLUME the same); 18 and 18-alpine use

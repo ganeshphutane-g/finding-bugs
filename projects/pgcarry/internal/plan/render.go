@@ -65,6 +65,15 @@ func (r *Report) Render(w io.Writer) {
 	section("Blocked", r.Blockers)
 	section("Warnings", r.Warnings)
 	section("What changes", r.Changes)
+	if r.EditDiff != "" {
+		p("")
+		p("The Compose file change for the switch:")
+		fmt.Fprint(w, indent(r.EditDiff, "  "))
+	}
+	if r.SwitchProblem != "" {
+		p("")
+		p("The switch needs a manual Compose edit: %s", r.SwitchProblem)
+	}
 	p("")
 	if r.OK() {
 		p("Nothing blocks the upgrade. Nothing has been changed.")
@@ -88,4 +97,12 @@ func onOff(b bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+func indent(s, prefix string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n") + "\n"
 }

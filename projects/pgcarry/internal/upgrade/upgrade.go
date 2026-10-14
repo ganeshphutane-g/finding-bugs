@@ -35,6 +35,9 @@ type Options struct {
 	Plan      *plan.Report
 	BackupDir string       // where dumps and the manifest go
 	Log       func(string) // progress lines
+	// Switch edits the Compose file and starts the service on the new data;
+	// without it the run is a rehearsal and the old service starts again.
+	Switch bool
 
 	// hook, in tests, runs after each step and can fail it.
 	hook func(step string) error
@@ -62,6 +65,20 @@ type Manifest struct {
 	Verified    bool              `json:"verified"`
 	ConfigFiles []string          `json:"config_files,omitempty"`
 	Settings    []pg.Setting      `json:"settings,omitempty"`
+
+	User       string          `json:"user"`
+	Compose    compose.Options `json:"compose"`
+	Files      []ComposeFile   `json:"compose_files,omitempty"`
+	Switched   bool            `json:"switched"`
+	RolledBack bool            `json:"rolled_back,omitempty"`
+	CleanedUp  bool            `json:"cleaned_up,omitempty"`
+}
+
+// ComposeFile is a Compose file pgcarry changed, and its saved original.
+type ComposeFile struct {
+	Path      string `json:"path"`
+	Backup    string `json:"backup"`     // file in the backup folder
+	NewSHA256 string `json:"new_sha256"` // what pgcarry wrote
 }
 
 // File is a file in the backup folder.
@@ -91,6 +108,7 @@ type run struct {
 	helpers int    // helper containers started so far
 	newCtr  string // name of the container running the new server
 	created bool   // the new volume or folder was made by this run
+	edited  bool   // the Compose files were changed by this run
 	old     *pg.Server
 	new     *pg.Server
 }
@@ -109,6 +127,9 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 	if !r.OK() {
 		return nil, fmt.Errorf("the plan has problems to solve first: %s", strings.Join(r.Blockers, "; "))
 	}
+	if o.Switch && (r.SwitchProblem != "" || len(r.Edits) == 0) {
+		return nil, fmt.Errorf("the Compose file cannot be changed automatically (%s); rehearse with --no-switch and edit it by hand", r.SwitchProblem)
+	}
 	u := &run{o: o, cli: o.CLI, r: r, svc: o.Project.Services[r.Service]}
 	u.user = u.svc.Env("POSTGRES_USER")
 	if u.user == "" {
@@ -120,7 +141,7 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 	u.newCtr = fmt.Sprintf("pgcarry-%s-%s-new", r.Project, r.Service)
 	u.m = Manifest{Project: r.Project, Service: r.Service, OldImage: r.Image, NewImage: r.TargetImage,
 		OldVersion: r.Cluster.Version, MountType: r.MountType, OldData: r.MountName,
-		NewMount: r.TargetMount, Started: time.Now().UTC()}
+		NewMount: r.TargetMount, Started: time.Now().UTC(), Compose: o.Project.Options, User: u.user}
 	switch r.MountType {
 	case "volume":
 		u.m.NewData = plan.NewVolumeName(r.MountName, r.Target.Major())
@@ -138,6 +159,11 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 		defer cancel()
 		u.removeContainers(bg)
+		if err != nil && u.edited {
+			if rerr := u.restoreCompose(bg); rerr != nil {
+				err = errors.Join(err, rerr)
+			}
+		}
 		if err != nil && u.created {
 			u.removeNewData(bg)
 		}
@@ -168,6 +194,12 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 		{"verifying the copy", u.verify},
 		{"stopping the new database", u.stopNew},
 	}
+	if o.Switch {
+		steps = append(steps, struct {
+			name string
+			fn   func(context.Context) error
+		}{"switching the service to the new data", u.switchOver})
+	}
 	for _, s := range steps {
 		start := time.Now()
 		u.log("%s ...", s.name)
@@ -189,11 +221,8 @@ func (u *run) prepare(ctx context.Context) error {
 	if entries, err := os.ReadDir(u.o.BackupDir); err == nil && len(entries) > 0 {
 		return fmt.Errorf("the backup folder %s is not empty", u.o.BackupDir)
 	}
-	if err := os.MkdirAll(u.o.BackupDir, 0o700); err != nil {
-		return err
-	}
 	var st syscall.Statfs_t
-	if err := syscall.Statfs(u.o.BackupDir, &st); err == nil {
+	if err := syscall.Statfs(existingParent(u.o.BackupDir), &st); err == nil {
 		free := int64(st.Bavail) * int64(st.Bsize)
 		if free < u.r.Cluster.TotalSizeBytes {
 			return fmt.Errorf("the backup folder %s has %d MiB free; the dumps may need up to %d MiB", u.o.BackupDir, free>>20, u.r.Cluster.TotalSizeBytes>>20)
@@ -205,12 +234,16 @@ func (u *run) prepare(ctx context.Context) error {
 	switch u.r.MountType {
 	case "volume":
 		if _, err := u.cli.Run(ctx, "volume", "inspect", u.m.NewData); err == nil {
-			return fmt.Errorf("volume %s already exists; pgcarry will not write into it (remove it if it is a leftover)", u.m.NewData)
+			return fmt.Errorf("volume %s already exists, perhaps from an earlier upgrade that was rolled back; pgcarry will not write into it. If you do not need it: docker volume rm %s", u.m.NewData, u.m.NewData)
 		}
 	case "bind":
 		if entries, err := os.ReadDir(u.m.NewData); err == nil && len(entries) > 0 {
 			return fmt.Errorf("folder %s already exists and is not empty", u.m.NewData)
 		}
+	}
+	// Everything checked: only now make the backup folder.
+	if err := os.MkdirAll(u.o.BackupDir, 0o700); err != nil {
+		return err
 	}
 	// The password, for servers that ask for one over TCP.
 	u.pass = u.svc.Env("POSTGRES_PASSWORD")
@@ -223,7 +256,10 @@ func (u *run) prepare(ctx context.Context) error {
 }
 
 func (u *run) compose(ctx context.Context, args ...string) error {
-	opt := u.o.Project.Options
+	return runCompose(ctx, u.cli, u.o.Project.Options, u.r.Project, args...)
+}
+
+func runCompose(ctx context.Context, cli *docker.CLI, opt compose.Options, project string, args ...string) error {
 	full := []string{"compose"}
 	if opt.Dir != "" {
 		full = append(full, "--project-directory", opt.Dir)
@@ -231,8 +267,8 @@ func (u *run) compose(ctx context.Context, args ...string) error {
 	for _, f := range opt.Files {
 		full = append(full, "-f", f)
 	}
-	full = append(full, "-p", u.r.Project)
-	_, err := u.cli.Run(ctx, append(full, args...)...)
+	full = append(full, "-p", project)
+	_, err := cli.Run(ctx, append(full, args...)...)
 	return err
 }
 
@@ -686,3 +722,17 @@ var settingName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
 func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
 func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+// existingParent is path or its nearest existing parent.
+func existingParent(path string) string {
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return path
+		}
+		path = parent
+	}
+}
