@@ -15,10 +15,14 @@ import (
 
 // Options select a project, as docker compose's own flags do.
 type Options struct {
-	Dir   string   // --project-directory
-	Files []string // -f
-	Name  string   // -p
+	Dir      string   `json:"dir,omitempty"`       // --project-directory
+	Files    []string `json:"files,omitempty"`     // -f
+	Name     string   `json:"name,omitempty"`      // -p
+	EnvFiles []string `json:"env_files,omitempty"` // --env-file
 }
+
+// Args are the docker compose flags selecting the project.
+func (o Options) Args() []string { return o.args() }
 
 func (o Options) args() []string {
 	var a []string
@@ -30,6 +34,9 @@ func (o Options) args() []string {
 	}
 	if o.Name != "" {
 		a = append(a, "-p", o.Name)
+	}
+	for _, f := range o.EnvFiles {
+		a = append(a, "--env-file", f)
 	}
 	return a
 }

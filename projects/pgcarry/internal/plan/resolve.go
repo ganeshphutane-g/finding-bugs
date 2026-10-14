@@ -126,5 +126,8 @@ func startedWith(ctx context.Context, cli *docker.CLI, id string) (compose.Optio
 	if f := labels["com.docker.compose.project.config_files"]; f != "" {
 		started.Files = strings.Split(f, ",")
 	}
+	if f := labels["com.docker.compose.project.environment_file"]; f != "" {
+		started.EnvFiles = strings.Split(f, ",")
+	}
 	return started, started.Dir != "" && len(started.Files) > 0
 }

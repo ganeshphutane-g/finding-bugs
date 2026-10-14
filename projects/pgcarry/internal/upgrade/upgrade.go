@@ -66,19 +66,20 @@ type Manifest struct {
 	ConfigFiles []string          `json:"config_files,omitempty"`
 	Settings    []pg.Setting      `json:"settings,omitempty"`
 
-	User       string          `json:"user"`
-	RunID      string          `json:"run_id"`
-	Step       string          `json:"step,omitempty"` // the step under way, while running
-	Created    bool            `json:"created_new_data,omitempty"`
-	OldSysID   string          `json:"old_system_identifier,omitempty"`
-	NewSysID   string          `json:"new_system_identifier,omitempty"`
-	T1Settings [][2]string     `json:"template1_settings,omitempty"` // role ("" for all), name=value
-	T1Comment  string          `json:"template1_comment,omitempty"`
-	Compose    compose.Options `json:"compose"`
-	Files      []ComposeFile   `json:"compose_files,omitempty"`
-	Switched   bool            `json:"switched"`
-	RolledBack bool            `json:"rolled_back,omitempty"`
-	CleanedUp  bool            `json:"cleaned_up,omitempty"`
+	User          string          `json:"user"`
+	RunID         string          `json:"run_id"`
+	Step          string          `json:"step,omitempty"` // the step under way, while running
+	Created       bool            `json:"created_new_data,omitempty"`
+	OldSysID      string          `json:"old_system_identifier,omitempty"`
+	NewSysID      string          `json:"new_system_identifier,omitempty"`
+	NewCheckpoint string          `json:"new_checkpoint,omitempty"`     // latest checkpoint of the copy when the run ended
+	T1Settings    [][2]string     `json:"template1_settings,omitempty"` // role ("" for all), name=value
+	T1Comment     string          `json:"template1_comment,omitempty"`
+	Compose       compose.Options `json:"compose"`
+	Files         []ComposeFile   `json:"compose_files,omitempty"`
+	Switched      bool            `json:"switched"`
+	RolledBack    bool            `json:"rolled_back,omitempty"`
+	CleanedUp     bool            `json:"cleaned_up,omitempty"`
 }
 
 // ComposeFile is a Compose file pgcarry changed, and its saved original.
@@ -117,6 +118,7 @@ type run struct {
 	oldCtr  string // the old server, restarted without a network for the dump
 	created bool   // the new volume or folder was made by this run
 	edited  bool   // the Compose files were changed by this run
+	unlock  func() // releases the backup folder's lock
 	old     *pg.Server
 	new     *pg.Server
 }
@@ -192,6 +194,7 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 		if err == nil {
 			m = &u.m
 		}
+		u.unlock()
 	}()
 
 	steps := []struct {
@@ -258,10 +261,10 @@ func (u *run) prepare(ctx context.Context) error {
 	switch u.r.MountType {
 	case "volume":
 		if out, err := u.cli.Run(ctx, "volume", "inspect", "-f", `{{index .Labels "pgcarry.rehearsal"}}`, u.m.NewData); err == nil && strings.TrimSpace(out) == "1" {
-			// A copy from an earlier rehearsal, stale by now; replace it
-			// unless something uses it.
-			if users, _ := u.cli.Run(ctx, "ps", "-aq", "--filter", "volume="+u.m.NewData); strings.TrimSpace(users) == "" {
-				u.log("removing the copy left by an earlier rehearsal (%s)", u.m.NewData)
+			// A copy from an earlier rehearsal: replace it only if no server
+			// has run on it since (same cluster, same last checkpoint).
+			if u.untouchedRehearsal(ctx) {
+				u.log("removing the copy left by an earlier rehearsal (%s); nothing has run on it since", u.m.NewData)
 				if _, err := u.cli.Run(ctx, "volume", "rm", u.m.NewData); err != nil {
 					return err
 				}
@@ -275,18 +278,23 @@ func (u *run) prepare(ctx context.Context) error {
 		// look through a container.
 		parent, base := filepath.Dir(u.m.NewData), filepath.Base(u.m.NewData)
 		out, err := u.cli.Run(ctx, append(u.helperArgs(), "--user", "0", "--entrypoint", "sh", "-v", parent+":/parent",
-			u.r.TargetImage, "-c", `ls -A "/parent/$1" 2>/dev/null | head -1`, "sh", base)...)
+			u.r.TargetImage, "-c", `[ -e "/parent/$1" ] && echo exists; true`, "sh", base)...)
 		if err != nil {
 			return fmt.Errorf("checking %s: %w", u.m.NewData, err)
 		}
 		if strings.TrimSpace(out) != "" {
-			return fmt.Errorf("folder %s already exists and is not empty", u.m.NewData)
+			return fmt.Errorf("%s already exists; pgcarry only writes into a folder it creates (move or remove it first)", u.m.NewData)
 		}
 	}
 	// Everything checked: only now make the backup folder.
 	if err := os.MkdirAll(u.o.BackupDir, 0o700); err != nil {
 		return err
 	}
+	unlock, err := lockDir(u.o.BackupDir)
+	if err != nil {
+		return err
+	}
+	u.unlock = unlock
 	// The folder holds dumps and password hashes; keep it out of git.
 	os.WriteFile(filepath.Join(u.o.BackupDir, ".gitignore"), []byte("*\n"), 0o600)
 	// The password, for servers that ask for one over TCP.
@@ -304,14 +312,8 @@ func (u *run) compose(ctx context.Context, args ...string) error {
 }
 
 func runCompose(ctx context.Context, cli *docker.CLI, opt compose.Options, project string, args ...string) error {
-	full := []string{"compose"}
-	if opt.Dir != "" {
-		full = append(full, "--project-directory", opt.Dir)
-	}
-	for _, f := range opt.Files {
-		full = append(full, "-f", f)
-	}
-	full = append(full, "-p", project)
+	opt.Name = project
+	full := append([]string{"compose"}, opt.Args()...)
 	_, err := cli.Run(ctx, append(full, args...)...)
 	return err
 }
@@ -425,7 +427,7 @@ func (u *run) helper(ctx context.Context, stdout io.Writer, tool ...string) erro
 	args := append(u.helperArgs(), "--network", "container:"+u.oldCtr, "--entrypoint", tool[0])
 	if u.pass != "" {
 		// From a private file, so it is not on any command line.
-		f, done, err := privateFile("PGPASSWORD=" + u.pass + "\n")
+		f, done, err := privateFile(u.o.BackupDir, "PGPASSWORD="+u.pass+"\n")
 		if err != nil {
 			return err
 		}
@@ -493,6 +495,9 @@ func (u *run) dump(ctx context.Context) error {
 			}
 		}
 		u.log("  %s: %d MiB, %d entries", d.Name, d.Dump.Bytes>>20, d.Entries)
+		if err := u.serviceStillDown(ctx); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -542,8 +547,10 @@ func (u *run) startIsolated(ctx context.Context) error {
 }
 
 // privateFile writes content to a temporary file only the user can read.
-func privateFile(content string) (string, func(), error) {
-	f, err := os.CreateTemp("", "pgcarry-env-*")
+// The file goes in the private backup folder, so a leftover after a crash
+// is not in a shared temporary folder (rollback removes it).
+func privateFile(dir, content string) (string, func(), error) {
+	f, err := os.CreateTemp(dir, "pgcarry-env-*")
 	if err != nil {
 		return "", nil, err
 	}
@@ -561,7 +568,7 @@ func privateFile(content string) (string, func(), error) {
 // envFile writes the service's environment (the keys keep allows) to a
 // private temporary file, so values stay off command lines.
 func (u *run) envFile(keep func(string) bool) (string, func(), error) {
-	f, err := os.CreateTemp("", "pgcarry-env-*")
+	f, err := os.CreateTemp(u.o.BackupDir, "pgcarry-env-*")
 	if err != nil {
 		return "", nil, err
 	}
@@ -578,7 +585,27 @@ func (u *run) envFile(keep func(string) bool) (string, func(), error) {
 	return f.Name(), func() { os.Remove(f.Name()) }, nil
 }
 
+// serviceStillDown fails if the service was started (by the user, a script
+// or a restart policy) while pgcarry has the old data open in its own
+// container: two servers on one data folder can corrupt it.
+func (u *run) serviceStillDown(ctx context.Context) error {
+	cs, err := compose.Containers(ctx, u.cli, u.o.Project.Options)
+	if err != nil {
+		return err
+	}
+	for _, c := range cs {
+		if c.Service == u.r.Service && c.State == "running" {
+			u.cli.Run(context.WithoutCancel(ctx), "stop", "-t", "60", u.oldCtr)
+			return fmt.Errorf("the %s service was started while pgcarry had its data open; pgcarry stopped its own copy at once. Do not start the service during an upgrade. Check the database with the old version before trying again", u.r.Service)
+		}
+	}
+	return nil
+}
+
 func (u *run) stopIsolated(ctx context.Context) error {
+	if err := u.serviceStillDown(ctx); err != nil {
+		return err
+	}
 	if _, err := u.cli.Run(ctx, "stop", "-t", "60", u.oldCtr); err != nil {
 		return err
 	}
@@ -616,6 +643,10 @@ func (u *run) makeNewData(ctx context.Context) error {
 		}
 	}
 	u.created = true
+	u.m.Created = true
+	if err := u.writeManifest(); err != nil {
+		return err
+	}
 	// A service running as its own user needs the data to belong to it.
 	if u.svc.User != "" {
 		if _, err := u.cli.Run(ctx, append(u.helperArgs(), "--user", "0", "--entrypoint", "chown", "-v", u.mountArg(),
@@ -678,7 +709,7 @@ func (u *run) startNew(ctx context.Context) error {
 	if v := u.svc.Env("POSTGRES_HOST_AUTH_METHOD"); v != "" {
 		env += "POSTGRES_HOST_AUTH_METHOD=" + v + "\n"
 	}
-	envFile, done, err := privateFile(env)
+	envFile, done, err := privateFile(u.o.BackupDir, env)
 	if err != nil {
 		return err
 	}
@@ -898,8 +929,60 @@ func (u *run) stopNew(ctx context.Context) error {
 	if _, err := u.cli.Run(ctx, "stop", "-t", "60", u.newCtr); err != nil {
 		return err
 	}
-	_, err := u.cli.Run(ctx, "rm", u.newCtr)
-	return err
+	if _, err := u.cli.Run(ctx, "rm", u.newCtr); err != nil {
+		return err
+	}
+	cd, err := u.controlData(ctx)
+	if err != nil {
+		return err
+	}
+	u.m.NewCheckpoint = cd["Latest checkpoint location"]
+	return nil
+}
+
+// controlData runs pg_controldata on the new data (read-only).
+func (u *run) controlData(ctx context.Context) (map[string]string, error) {
+	return controlData(ctx, u.cli, u.r.TargetImage, u.m.NewData+":"+u.r.TargetMount+":ro", u.r.TargetData)
+}
+
+func controlData(ctx context.Context, cli *docker.CLI, image, mount, pgdata string) (map[string]string, error) {
+	out, err := cli.Run(ctx, "run", "--rm", "--network", "none", "--user", "0", "--entrypoint", "pg_controldata",
+		"-v", mount, image, pgdata)
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(line, ":"); ok {
+			m[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	return m, nil
+}
+
+// untouchedRehearsal reports whether the existing new volume is a copy from
+// an earlier rehearsal of this service that no server has run on since.
+func (u *run) untouchedRehearsal(ctx context.Context) bool {
+	matches, _ := filepath.Glob(filepath.Join(StateDir(), u.r.Project, "*", "manifest.json"))
+	for _, f := range matches {
+		m, err := LoadManifest(filepath.Dir(f))
+		if err != nil || m.NewData != u.m.NewData || m.Switched || !m.Verified || m.NewCheckpoint == "" {
+			continue
+		}
+		cd, err := u.controlData(ctx)
+		if err != nil {
+			return false
+		}
+		// Any server start marks the cluster "in production" until a clean
+		// shutdown, which writes a new checkpoint: both must be as left.
+		if cd["Database system identifier"] == m.NewSysID && cd["Latest checkpoint location"] == m.NewCheckpoint &&
+			cd["Database cluster state"] == "shut down" {
+			if users, _ := u.cli.Run(ctx, "ps", "-aq", "--filter", "volume="+u.m.NewData); strings.TrimSpace(users) == "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // startAgain starts the old service and the apps pgcarry stopped.

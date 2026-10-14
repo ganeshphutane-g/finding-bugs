@@ -21,6 +21,9 @@ func (r *Report) Render(w io.Writer) {
 	if where != "" {
 		p("Data: %s, mounted at %s", where, r.MountPoint)
 	}
+	if len(r.ComposeFiles) > 0 {
+		p("Compose files (as the service was started): %s", strings.Join(r.ComposeFiles, ", "))
+	}
 	if c := r.Cluster; c != nil {
 		p("Now: PostgreSQL %s, %s in %d database(s), data checksums %s", c.Version, human(c.TotalSizeBytes), userDatabases(c), onOff(c.DataChecksums))
 		for _, d := range c.Databases {

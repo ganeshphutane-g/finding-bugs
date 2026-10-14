@@ -197,7 +197,16 @@ Exit codes: 0 done, 1 error, 2 usage, 3 blocked by the plan, 130 interrupted
   - the image tag comes from a variable (you then get the manual step instead).
 - **Interruptions are safe.** Ctrl-C, a closed terminal or any failure puts
   everything back. Even after `kill -9` or a power cut, `pgcarry rollback` finds the
-  interrupted run and recovers it. `plan` notices such leftovers too.
+  interrupted run and recovers it. `plan` notices such leftovers too. Recovery never
+  removes a copy that any container still uses, and two pgcarry commands never work
+  on the same upgrade at once.
+- **Do not start the database by hand during an upgrade.** If the service is started
+  while pgcarry has the old data open (for the dump), pgcarry notices, stops its own
+  copy at once and refuses to go on.
+- **A rehearsal copy is reused only if nothing has run on it.** A second rehearsal or
+  the real upgrade replaces an earlier rehearsal's copy only when its cluster ID and
+  last checkpoint show no server has run on it since. Otherwise pgcarry refuses and
+  you decide.
 
 ## Limits
 

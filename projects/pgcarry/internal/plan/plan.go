@@ -185,6 +185,17 @@ func Build(ctx context.Context, in Input) (*Report, error) {
 		r.block("the data folder is on a %s mount, which does not keep data", m.Type)
 	}
 
+	// Leftovers of an interrupted run come first: starting the service by
+	// hand now could put two servers on one data folder.
+	leftover := false
+	for _, c := range []string{"old", "new"} {
+		name := fmt.Sprintf("pgcarry-%s-%s-%s", in.Project.Name, svc.Name, c)
+		if _, err := cli.Run(ctx, "inspect", "--type", "container", name); err == nil && !leftover {
+			leftover = true
+			r.block("an earlier pgcarry run was interrupted (container %s is left); run pgcarry rollback first, and do not start %s by hand until then", name, svc.Name)
+		}
+	}
+
 	// The running container, if any.
 	cs, err := compose.Containers(ctx, cli, in.Project.Options)
 	if err != nil {
@@ -198,7 +209,9 @@ func Build(ctx context.Context, in Input) (*Report, error) {
 	}
 	switch len(running) {
 	case 0:
-		r.block("the %s service is not running; start it (docker compose up -d %s) so pgcarry can read the database", svc.Name, svc.Name)
+		if !leftover {
+			r.block("the %s service is not running; start it so pgcarry can read the database", svc.Name)
+		}
 	case 1:
 		r.Container, r.Running = running[0].Name, true
 	default:
@@ -214,14 +227,6 @@ func Build(ctx context.Context, in Input) (*Report, error) {
 			if driver != "local" || (opts != "null" && opts != "{}" && opts != "") {
 				r.block("volume %s uses driver %s with options %s; pgcarry cannot yet make a matching new volume, so it does not upgrade this one (move the data to a plain named volume first, or upgrade by hand)", r.MountName, driver, opts)
 			}
-		}
-	}
-
-	// Leftovers of an interrupted run.
-	for _, c := range []string{"new", "old"} {
-		name := fmt.Sprintf("pgcarry-%s-%s-%s", in.Project.Name, svc.Name, c)
-		if _, err := cli.Run(ctx, "inspect", "--type", "container", name); err == nil {
-			r.block("container %s is left from an interrupted pgcarry run; run pgcarry rollback to put things back first", name)
 		}
 	}
 
@@ -338,7 +343,7 @@ func check(ctx context.Context, r *Report, srv *pg.Server, in Input) {
 	c := r.Cluster
 	for _, d := range c.Databases {
 		if !d.AllowConn && d.Name != "template0" {
-			r.block("database %s does not accept connections, so it cannot be dumped; allow them first (ALTER DATABASE %s ALLOW_CONNECTIONS true) or drop it if it is not needed", d.Name, quote(d.Name))
+			r.block("database %s does not accept connections, so it cannot be dumped; allow them first (ALTER DATABASE \"%s\" ALLOW_CONNECTIONS true) or drop it if it is not needed", d.Name, strings.ReplaceAll(d.Name, `"`, `""`))
 		}
 	}
 	if u := in.Project.Services[r.Service].User; u != "" && !numericUser.MatchString(u) {

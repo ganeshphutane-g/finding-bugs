@@ -106,6 +106,11 @@ func CanCleanup(m *Manifest) error {
 // its old data, which pgcarry never changed. Anything written to the new
 // server since the switch is not carried back.
 func Rollback(ctx context.Context, cli *docker.CLI, dir string) error {
+	unlock, err := lockDir(dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m, err := LoadManifest(dir)
 	if err != nil {
 		return err
@@ -154,6 +159,11 @@ func Rollback(ctx context.Context, cli *docker.CLI, dir string) error {
 // Cleanup removes the old data once the service runs on the new data. The
 // dumps stay in the backup folder.
 func Cleanup(ctx context.Context, cli *docker.CLI, dir string) error {
+	unlock, err := lockDir(dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m, err := LoadManifest(dir)
 	if err != nil {
 		return err
@@ -218,24 +228,69 @@ func recoverRun(ctx context.Context, cli *docker.CLI, dir string, m *Manifest) e
 			return err
 		}
 	}
-	if m.Created {
-		switch m.MountType {
-		case "volume":
-			if users, _ := cli.Run(ctx, "ps", "-aq", "--filter", "volume="+m.NewData); strings.TrimSpace(users) == "" {
-				cli.Run(ctx, "volume", "rm", m.NewData)
-			}
-		case "bind":
-			parent, base := filepath.Dir(m.NewData), filepath.Base(m.NewData)
-			cli.Run(ctx, "run", "--rm", "--user", "0", "--entrypoint", "rm", "-v", parent+":/parent", m.NewImage, "-rf", "/parent/"+base)
-		}
-	}
 	if err := runCompose(ctx, cli, m.Compose, m.Project, append([]string{"start", m.Service}, m.Stopped...)...); err != nil {
 		return err
 	}
 	if err := serving(ctx, cli, m.Compose, m.Service, m.User, majorOf(m.OldVersion), m.OldSysID); err != nil {
-		return err
+		return fmt.Errorf("%w; the new data %s was left in place", err, m.NewData)
+	}
+	// The half-made copy goes only when the old service serves again and
+	// no container (the service included) uses it.
+	if m.Created {
+		users, err := containersUsing(ctx, cli, m.MountType, m.NewData)
+		switch {
+		case err != nil:
+			return err
+		case len(users) > 0:
+			return fmt.Errorf("the new data %s is still used by %s; it was left in place", m.NewData, strings.Join(users, ", "))
+		}
+		switch m.MountType {
+		case "volume":
+			if _, err := cli.Run(ctx, "volume", "rm", m.NewData); err != nil {
+				return err
+			}
+		case "bind":
+			parent, base := filepath.Dir(m.NewData), filepath.Base(m.NewData)
+			if _, err := cli.Run(ctx, "run", "--rm", "--user", "0", "--entrypoint", "rm", "-v", parent+":/parent", m.NewImage, "-rf", "/parent/"+base); err != nil {
+				return err
+			}
+		}
+	}
+	// Temporary files a killed run left in the folder.
+	if leftovers, _ := filepath.Glob(filepath.Join(dir, "pgcarry-env-*")); len(leftovers) > 0 {
+		for _, f := range leftovers {
+			os.Remove(f)
+		}
 	}
 	m.RolledBack = true
 	m.Finished = time.Now().UTC()
 	return saveManifest(dir, m)
+}
+
+// containersUsing lists the containers (running or not) that mount a
+// volume (by name) or a host folder (by path).
+func containersUsing(ctx context.Context, cli *docker.CLI, kind, data string) ([]string, error) {
+	out, err := cli.Run(ctx, "ps", "-aq")
+	if err != nil {
+		return nil, err
+	}
+	ids := strings.Fields(out)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out, err = cli.Run(ctx, append([]string{"inspect", "-f", `{{.Name}}{{range .Mounts}}|{{.Type}}={{if eq .Type "volume"}}{{.Name}}{{else}}{{.Source}}{{end}}{{end}}`}, ids...)...)
+	if err != nil {
+		return nil, err
+	}
+	var users []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		parts := strings.Split(line, "|")
+		for _, mnt := range parts[1:] {
+			t, src, _ := strings.Cut(mnt, "=")
+			if t == kind && filepath.Clean(src) == filepath.Clean(data) {
+				users = append(users, strings.TrimPrefix(parts[0], "/"))
+			}
+		}
+	}
+	return users, nil
 }
