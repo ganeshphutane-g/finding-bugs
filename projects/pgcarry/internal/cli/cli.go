@@ -67,6 +67,9 @@ func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []
 		return 2
 	case errors.Is(err, errBlocked):
 		return 3
+	case errors.Is(err, context.Canceled):
+		fmt.Fprintln(stderr, "pgcarry: interrupted; everything pgcarry had changed was put back")
+		return 130
 	default:
 		fmt.Fprintf(stderr, "pgcarry: %v\n", err)
 		return 1
@@ -235,7 +238,7 @@ func doUpgrade(ctx context.Context, stdin io.Reader, stdout io.Writer, o options
 		return nil
 	}
 	fmt.Fprintf(stdout, "\nRehearsal passed: PostgreSQL %s holds an exact copy (every table's row count, every sequence, roles and object counts match).\n", m.NewVersion)
-	fmt.Fprintf(stdout, "The new data is in %s %s; %s run as before on the old data.\n", rep.MountType, m.NewData, strings.Join(stops, ", "))
+	fmt.Fprintf(stdout, "The new data is in %s %s. Running again on the old data: %s.\n", rep.MountType, m.NewData, strings.Join(stops, ", "))
 	fmt.Fprintf(stdout, "Dumps and a manifest are in %s.\n", backup)
 	return nil
 }
