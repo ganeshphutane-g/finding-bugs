@@ -107,6 +107,7 @@ type run struct {
 	runID   string // labels every container this run starts
 	helpers int    // helper containers started so far
 	newCtr  string // name of the container running the new server
+	oldCtr  string // the old server, restarted without a network for the dump
 	created bool   // the new volume or folder was made by this run
 	edited  bool   // the Compose files were changed by this run
 	old     *pg.Server
@@ -139,6 +140,7 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 	rand.Read(id)
 	u.runID = hex.EncodeToString(id)
 	u.newCtr = fmt.Sprintf("pgcarry-%s-%s-new", r.Project, r.Service)
+	u.oldCtr = fmt.Sprintf("pgcarry-%s-%s-old", r.Project, r.Service)
 	u.m = Manifest{Project: r.Project, Service: r.Service, OldImage: r.Image, NewImage: r.TargetImage,
 		OldVersion: r.Cluster.Version, MountType: r.MountType, OldData: r.MountName,
 		NewMount: r.TargetMount, Started: time.Now().UTC(), Compose: o.Project.Options, User: u.user}
@@ -148,7 +150,7 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 	case "bind":
 		u.m.NewData = plan.NewBindPath(r.MountName, r.Target.Major())
 	}
-	u.old = &pg.Server{CLI: u.cli, Container: r.Container, User: u.user}
+	u.old = &pg.Server{CLI: u.cli, Container: u.oldCtr, User: u.user}
 
 	if err := u.prepare(ctx); err != nil {
 		return nil, err
@@ -184,10 +186,11 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 		fn   func(context.Context) error
 	}{
 		{"stopping the apps that use the database", u.stopApps},
+		{"stopping the database", u.stopOld},
+		{"starting the old database without a network, so nothing else can write to it", u.startIsolated},
 		{"recording what the database holds", u.recordBefore},
 		{"dumping roles and databases", u.dump},
-		{"checking nothing changed during the dump", u.checkUnchanged},
-		{"stopping the old database", u.stopOld},
+		{"stopping the old database again", u.stopIsolated},
 		{"creating the new data " + r.MountType, u.makeNewData},
 		{"starting PostgreSQL " + fmt.Sprint(r.Target.Major()) + " on it", u.startNew},
 		{"restoring roles and databases", u.restore},
@@ -228,8 +231,10 @@ func (u *run) prepare(ctx context.Context) error {
 			return fmt.Errorf("the backup folder %s has %d MiB free; the dumps may need up to %d MiB", u.o.BackupDir, free>>20, u.r.Cluster.TotalSizeBytes>>20)
 		}
 	}
-	if _, err := u.cli.Run(ctx, "inspect", "--type", "container", u.newCtr); err == nil {
-		return fmt.Errorf("container %s is left over from an earlier run; remove it (docker rm -f %s) and try again", u.newCtr, u.newCtr)
+	for _, c := range []string{u.newCtr, u.oldCtr} {
+		if _, err := u.cli.Run(ctx, "inspect", "--type", "container", c); err == nil {
+			return fmt.Errorf("container %s is left over from an earlier run; remove it (docker rm -f %s) and try again", c, c)
+		}
 	}
 	switch u.r.MountType {
 	case "volume":
@@ -367,7 +372,7 @@ func (u *run) removeContainers(ctx context.Context) {
 // helper runs a client tool of the new image inside the old server's
 // network namespace, so it reaches the server at 127.0.0.1.
 func (u *run) helper(ctx context.Context, stdout io.Writer, tool ...string) error {
-	args := append(u.helperArgs(), "--network", "container:"+u.r.Container, "--entrypoint", tool[0])
+	args := append(u.helperArgs(), "--network", "container:"+u.oldCtr, "--entrypoint", tool[0])
 	if u.pass != "" {
 		args = append(args, "-e", "PGPASSWORD="+u.pass)
 	}
@@ -436,19 +441,76 @@ func (u *run) dump(ctx context.Context) error {
 	return nil
 }
 
-// checkUnchanged counts again: a change means something still writes to
-// the database (an app pgcarry did not stop), and the dump may miss it.
-func (u *run) checkUnchanged(ctx context.Context) error {
-	for _, d := range u.m.Databases {
-		now, err := u.old.Inventory(ctx, d.Name)
-		if err != nil {
-			return err
-		}
-		if diff := d.Inventory.Diff(now); len(diff) > 0 {
-			return fmt.Errorf("database %s changed while it was dumped (%s); stop whatever writes to it and try again", d.Name, diff[0])
+// startIsolated runs the old image on the old data with the service's own
+// mounts, environment and command, but no network: no app, declared or not,
+// can write while the dump is taken, so the dump holds every write the old
+// server ever accepted.
+func (u *run) startIsolated(ctx context.Context) error {
+	args := []string{"run", "-d", "--name", u.oldCtr, "--label", "pgcarry.run=" + u.runID, "--network", "none"}
+	if u.svc.User != "" {
+		args = append(args, "--user", u.svc.User)
+	}
+	for _, m := range u.svc.Volumes {
+		switch m.Type {
+		case "volume":
+			src := u.o.Project.VolumeName(m)
+			if src == "" {
+				continue // anonymous: not data pgcarry is moving
+			}
+			spec := src + ":" + m.Target
+			if m.ReadOnly {
+				spec += ":ro"
+			}
+			args = append(args, "-v", spec)
+		case "bind":
+			spec := m.Source + ":" + m.Target
+			if m.ReadOnly {
+				spec += ":ro"
+			}
+			args = append(args, "-v", spec)
+		case "tmpfs":
+			args = append(args, "--tmpfs", m.Target)
 		}
 	}
-	return nil
+	envFile, done, err := u.envFile(func(k string) bool { return !strings.HasSuffix(k, "_FILE") })
+	if err != nil {
+		return err
+	}
+	defer done()
+	args = append(args, "--env-file", envFile, u.r.Image)
+	args = append(args, commandArgs(u.svc.Command)...)
+	if _, err := u.cli.Run(ctx, args...); err != nil {
+		return err
+	}
+	return images.WaitReady(ctx, u.cli, u.oldCtr, 5*time.Minute)
+}
+
+// envFile writes the service's environment (the keys keep allows) to a
+// private temporary file, so values stay off command lines.
+func (u *run) envFile(keep func(string) bool) (string, func(), error) {
+	f, err := os.CreateTemp("", "pgcarry-env-*")
+	if err != nil {
+		return "", nil, err
+	}
+	for k, v := range u.svc.Environment {
+		if v == nil || !keep(k) || strings.ContainsAny(*v, "\n\r") {
+			continue
+		}
+		fmt.Fprintf(f, "%s=%s\n", k, *v)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", nil, err
+	}
+	return f.Name(), func() { os.Remove(f.Name()) }, nil
+}
+
+func (u *run) stopIsolated(ctx context.Context) error {
+	if _, err := u.cli.Run(ctx, "stop", "-t", "60", u.oldCtr); err != nil {
+		return err
+	}
+	_, err := u.cli.Run(ctx, "rm", u.oldCtr)
+	return err
 }
 
 func (u *run) stopOld(ctx context.Context) error {

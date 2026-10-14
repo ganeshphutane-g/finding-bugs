@@ -3,9 +3,9 @@ package upgrade
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -220,8 +220,9 @@ volumes:
 `)
 	p.Up("db")
 	p.SQL("db", "postgres", "postgres", "create table t as select g from generate_series(1, 100) g")
-	steps := []string{"stopping the apps", "recording", "dumping", "checking nothing", "stopping the old",
-		"creating the new", "starting PostgreSQL", "restoring", "verifying", "stopping the new"}
+	steps := []string{"stopping the apps", "stopping the database", "starting the old database", "recording",
+		"dumping", "stopping the old database again", "creating the new", "starting PostgreSQL", "restoring",
+		"verifying", "stopping the new"}
 	for _, step := range steps {
 		t.Run(step, func(t *testing.T) {
 			_, _, err := rehearse(t, p, "db", 18, "", func(s string) error {
@@ -250,29 +251,47 @@ volumes:
 	}
 }
 
-// TestWritesDuringTheDumpAreCaught makes a row appear after the first count;
-// the run must stop rather than copy a stale dump.
-func TestWritesDuringTheDumpAreCaught(t *testing.T) {
+// TestUndeclaredWriterLosesNothing runs an app that keeps inserting rows
+// but is not declared as depending on the database, so pgcarry does not stop
+// it. Every row the old server accepted must be in the new one.
+func TestUndeclaredWriterLosesNothing(t *testing.T) {
 	p := testkit.New(t, `
 services:
   db:
     image: postgres:16
     environment: {POSTGRES_PASSWORD: pw}
     volumes: [data:/var/lib/postgresql/data]
+  writer:
+    image: postgres:16
+    environment: {PGPASSWORD: pw}
+    stop_grace_period: 1s
+    entrypoint: ["sh", "-c", "while true; do psql -q -h db -U postgres -c 'insert into w default values' 2>/dev/null; sleep 0.05; done"]
 volumes:
   data:
 `)
 	p.Up("db")
-	p.SQL("db", "postgres", "postgres", "create table t (x int)")
-	var once sync.Once
-	_, _, err := rehearse(t, p, "db", 18, "", func(s string) error {
-		if strings.HasPrefix(s, "dumping") {
-			once.Do(func() { p.SQL("db", "postgres", "postgres", "insert into t values (1)") })
-		}
-		return nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "changed while it was dumped") {
-		t.Fatalf("got %v", err)
+	p.SQL("db", "postgres", "postgres", "create table w (id serial primary key, at timestamptz default now())")
+	time.Sleep(2 * time.Second)
+	m, _, err := upgradeNow(t, p, "db", 18, nil)
+	testkit.Must(t, err)
+	// What the old data holds at the end.
+	ctx := context.Background()
+	name := "pgcarry-oldcheck-" + p.Opt.Name
+	_, err = p.CLI.Run(ctx, "run", "-d", "--name", name, "--network", "none", "-v", m.OldData+":/var/lib/postgresql/data", "postgres:16")
+	testkit.Must(t, err)
+	defer p.CLI.Run(ctx, "rm", "-f", name)
+	testkit.Must(t, images.WaitReady(ctx, p.CLI, name, time.Minute))
+	old := &pg.Server{CLI: p.CLI, Container: name, User: "postgres"}
+	last, err := old.Query(ctx, "postgres", "select max(id) || ' ' || count(*) from w")
+	testkit.Must(t, err)
+	var maxID, count int
+	fmt.Sscan(last, &maxID, &count)
+	if count < 5 {
+		t.Fatalf("the writer barely wrote (%s)", last)
+	}
+	got := scalar(t, p, "db", "postgres", "postgres", fmt.Sprintf("select count(*) from w where id <= %d", maxID))
+	if got != fmt.Sprint(count) {
+		t.Fatalf("the new server has %s of the %d rows the old one accepted", got, count)
 	}
 }
 
