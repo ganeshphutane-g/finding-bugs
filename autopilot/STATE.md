@@ -1,42 +1,17 @@
 # State
 
-Current project: #4 pgcarry (safe major-version upgrades of Postgres in Docker Compose)
-Phase: finish (milestone 5): README, changelog and fixes are done; a verification
-review of the fixes is running
-Repo: projects/pgcarry/ inside finding-bugs (own repos blocked, see below)
-Spec: projects/pgcarry/SPEC.md. Research: IDEAS.md round 4.
+Current project: #5, not chosen yet
+Phase: research (round 5). A research agent was started on 2026-10-15 ~02:45 IST;
+if its results are not in IDEAS.md, redo the round. The first candidate to
+re-validate is the restic pull-mode orchestrator (IDEAS.md round 4).
+Repo: will be projects/<name>/ inside finding-bugs until the owner creates repos.
 
 ## Next step
 
-pgcarry is feature complete for v1:
-- plan / upgrade (switch) / --no-switch / rollback (including recovery of a killed
-  run) / cleanup;
-- two full reviews (data loss; ops/security/UX) and every confirmed finding fixed
-  with a test;
-- README with real output (/srv/demo/notes demo), CHANGELOG, LICENSE;
-- the full suite with -race is green locally (about 10 min); CI was green up to
-  0a164b7, and runs 6–7 (20f5918, 9465f3b) were in progress when this was written.
-
-Left to finish v1:
-1. Read the verification review's findings (if the run ended before it reported:
-   re-run a short check of the fixes listed in the 20f5918 commit message). Fix
-   anything confirmed, with tests.
-2. Confirm CI is green on the final commit.
-3. Mark pgcarry v1.0.0 done in "Finished projects" with the commit, then start
-   research round 5 (first candidate: restic pull-mode orchestrator, see IDEAS.md).
-
-Known v1 limits, written in the README: dump/restore (not pg_upgrade); counts not
-content hashes; no tablespaces, separate WAL folder, replicas or volume drivers with
-options.
-
-Facts checked on real images (2026-10-14): the 14 and 17 images use PGDATA
-/var/lib/postgresql/data (VOLUME the same); 18 and 18-alpine use
-/var/lib/postgresql/18/docker (VOLUME /var/lib/postgresql). Running 18 on an old
-/var/lib/postgresql/data mount refuses and points to docker-library/postgres#37;
-running 17 on 14 data fails "database files are incompatible". The
-tianon/postgres-upgrade:14-to-18 image has both binaries (Debian only, no extensions),
-so dump/restore with the user's own images is the v1 method. Docker 29.8.2 and
-Compose v5.6.0 are available here; postgres images pull from Docker Hub.
+1. Check that CI is green on df3dbb4, the last pgcarry commit (the pgcarry.yml
+   workflow). If it is red, fix it before anything else.
+2. Research round 5: 5+ candidates, scored, 3+ demand sources each; choose; write
+   SPEC.md.
 
 ## Notes for runs
 
@@ -92,6 +67,20 @@ Compose v5.6.0 are available here; postgres images pull from Docker Hub.
    reviews (data loss; ops/security): 9 + 12 confirmed findings fixed, each with a
    test. Owner checks before going public: README, run it on a real folder for a day,
    try the systemd unit (not tested on a real systemd host), GitHub Actions green.
+
+4. **pgcarry** (projects/pgcarry, v1.0.0 at commit df3dbb4). Safe major-version
+   upgrades of Postgres in Docker Compose (docker-library/postgres#37).
+   - **Commands:** plan; upgrade (dump from the old server restarted without a
+     network, a matching new cluster in a new volume or folder, verified
+     inventories, Compose edit by position, a cluster-identity check);
+     `--no-switch` rehearsal; rollback (including recovery of a killed run);
+     cleanup.
+   - **Reviews:** two full reviews and one verification review; 19 + 7 findings
+     fixed with tests.
+   - **Tests:** Postgres 13–18, Debian/Alpine, pgvector, ICU, binds, user:,
+     override files, and interrupts at every step.
+   - **Owner checks before going public:** read the README; rehearse on a copy of a
+     real app (`--no-switch`); CI green.
 
 ## Blockers for the owner
 

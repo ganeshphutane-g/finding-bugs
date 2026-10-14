@@ -33,8 +33,21 @@ Newest first.
   - the wrong backup was picked by name.
 - Measured: a 1.1 GB database rehearses in 51 s (dump 14 s, restore 21 s, verify
   2 s).
-- Next: the verification review of the fixes, green CI, then mark v1.0.0 and start
-  research round 5.
+- A verification review confirmed all 11 fixes. It found 3 new high-severity
+  issues in the new code, now fixed with tests:
+  - starting the service by hand during the dump put two servers on one data folder
+    (now detected and stopped, and the plan puts "run pgcarry rollback" first after
+    a crash);
+  - a rehearsal copy the user had switched to could be deleted (now it is replaced
+    only if its cluster ID, last checkpoint and clean-shutdown state are
+    unchanged);
+  - recovery could remove a bind copy in use (now it checks every container's
+    mounts and only acts after the old service serves).
+
+  Also fixed: a lock for two commands on one upgrade, the Created flag being
+  recorded late, env files, temp files and a hint's SQL.
+- pgcarry v1.0.0 finished at df3dbb4; the full suite with -race is green locally.
+- Research round 5 started (restic pull-mode first).
 
 ## 2026-10-14 (IST) — run 3
 
