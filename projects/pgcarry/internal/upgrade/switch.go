@@ -73,15 +73,16 @@ func (u *run) switchOver(ctx context.Context) error {
 	if err := u.compose(ctx, "up", "-d", "--no-deps", u.r.Service); err != nil {
 		return err
 	}
-	if err := serving(ctx, u.cli, u.o.Project.Options, u.r.Service, u.user, u.r.Target.Major()); err != nil {
+	if err := serving(ctx, u.cli, u.o.Project.Options, u.r.Service, u.user, u.r.Target.Major(), u.m.NewSysID); err != nil {
 		return err
 	}
 	u.m.Switched = true
 	return u.writeManifest()
 }
 
-// serving waits for the service and checks the major version it runs.
-func serving(ctx context.Context, cli *docker.CLI, opt compose.Options, service, user string, major int) error {
+// serving waits for the service and checks it runs the given major version
+// on the given cluster (system identifier), not some other data.
+func serving(ctx context.Context, cli *docker.CLI, opt compose.Options, service, user string, major int, sysID string) error {
 	cs, err := compose.Containers(ctx, cli, opt)
 	if err != nil {
 		return err
@@ -107,6 +108,15 @@ func serving(ctx context.Context, cli *docker.CLI, opt compose.Options, service,
 	fmt.Sscan(v, &n)
 	if n/10000 != major {
 		return fmt.Errorf("the service runs PostgreSQL %d, expected %d", n/10000, major)
+	}
+	if sysID != "" {
+		got, err := srv.Query(ctx, "postgres", "select system_identifier from pg_control_system()")
+		if err != nil {
+			return err
+		}
+		if got != sysID {
+			return fmt.Errorf("the service runs on a different cluster (system identifier %s, expected %s): not the data pgcarry prepared", got, sysID)
+		}
 	}
 	return nil
 }

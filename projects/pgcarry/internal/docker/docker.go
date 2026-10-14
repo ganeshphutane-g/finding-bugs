@@ -33,7 +33,7 @@ func (e *Error) Error() string {
 	if msg == "" {
 		msg = fmt.Sprintf("exit status %d", e.Code)
 	}
-	return fmt.Sprintf("docker %s: %s", strings.Join(e.Args, " "), msg)
+	return fmt.Sprintf("docker %s: %s", strings.Join(redact(e.Args), " "), msg)
 }
 
 func (c *CLI) bin() string {
@@ -102,4 +102,19 @@ func IsNotFound(err error) bool {
 	}
 	s := strings.ToLower(de.Stderr)
 	return strings.Contains(s, "no such") || strings.Contains(s, "not found")
+}
+
+// redact hides the values of -e NAME=value arguments, which may be
+// passwords.
+func redact(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i := 0; i+1 < len(out); i++ {
+		if out[i] == "-e" || out[i] == "--env" {
+			if k, _, ok := strings.Cut(out[i+1], "="); ok {
+				out[i+1] = k + "=***"
+			}
+		}
+	}
+	return out
 }

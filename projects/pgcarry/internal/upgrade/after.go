@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
+	"time"
 
 	"github.com/ganeshphutane-g/pgcarry/internal/docker"
 )
@@ -36,18 +36,38 @@ func saveManifest(dir string, m *Manifest) error {
 	return writeAtomic(filepath.Join(dir, "manifest.json"), append(data, '\n'))
 }
 
-// LatestBackup finds the newest backup folder of a switched upgrade under
-// dir (pgcarry-backup-*).
-func LatestBackup(dir string) (string, error) {
-	matches, _ := filepath.Glob(filepath.Join(dir, "pgcarry-backup-*", "manifest.json"))
-	sort.Strings(matches) // the names carry the time
-	for i := len(matches) - 1; i >= 0; i-- {
-		d := filepath.Dir(matches[i])
-		if m, err := LoadManifest(d); err == nil && m.Switched && !m.RolledBack && !m.CleanedUp {
-			return d, nil
+// StateDir is where pgcarry keeps backups by default:
+// $XDG_STATE_HOME/pgcarry, or ~/.local/state/pgcarry.
+func StateDir() string {
+	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
+		return filepath.Join(d, "pgcarry")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "pgcarry")
+	}
+	return filepath.Join(home, ".local", "state", "pgcarry")
+}
+
+// LatestBackup finds the most recent upgrade of a project (and service, if
+// given) in the default backup location, by the time it started.
+func LatestBackup(project, service string) (string, error) {
+	matches, _ := filepath.Glob(filepath.Join(StateDir(), project, "*", "manifest.json"))
+	best, bestDir := time.Time{}, ""
+	for _, f := range matches {
+		d := filepath.Dir(f)
+		m, err := LoadManifest(d)
+		if err != nil || m.Project != project || (service != "" && m.Service != service) {
+			continue
+		}
+		if m.Started.After(best) {
+			best, bestDir = m.Started, d
 		}
 	}
-	return "", fmt.Errorf("no backup folder of a switched upgrade in %s; give it with --backup-dir", dir)
+	if bestDir == "" {
+		return "", fmt.Errorf("no pgcarry upgrade of project %s found in %s; give its folder with --backup-dir", project, filepath.Join(StateDir(), project))
+	}
+	return bestDir, nil
 }
 
 func majorOf(version string) int {
@@ -59,6 +79,8 @@ func majorOf(version string) int {
 // CanRollback says why a rollback is not possible (nil if it is).
 func CanRollback(m *Manifest) error {
 	switch {
+	case m.Finished.IsZero() && !m.RolledBack:
+		return nil // interrupted for good: recover
 	case !m.Switched:
 		return errors.New("this upgrade did not switch the service; there is nothing to roll back")
 	case m.RolledBack:
@@ -91,6 +113,9 @@ func Rollback(ctx context.Context, cli *docker.CLI, dir string) error {
 	if err := CanRollback(m); err != nil {
 		return err
 	}
+	if m.Finished.IsZero() && !m.Switched {
+		return recoverRun(ctx, cli, dir, m)
+	}
 	type restore struct {
 		path string
 		data []byte
@@ -119,7 +144,7 @@ func Rollback(ctx context.Context, cli *docker.CLI, dir string) error {
 	if err := runCompose(ctx, cli, m.Compose, m.Project, "up", "-d", "--no-deps", m.Service); err != nil {
 		return err
 	}
-	if err := serving(ctx, cli, m.Compose, m.Service, m.User, majorOf(m.OldVersion)); err != nil {
+	if err := serving(ctx, cli, m.Compose, m.Service, m.User, majorOf(m.OldVersion), m.OldSysID); err != nil {
 		return err
 	}
 	m.RolledBack = true
@@ -137,7 +162,7 @@ func Cleanup(ctx context.Context, cli *docker.CLI, dir string) error {
 		return err
 	}
 	// The running service must use the new data, and nothing the old.
-	if err := serving(ctx, cli, m.Compose, m.Service, m.User, majorOf(m.NewVersion)); err != nil {
+	if err := serving(ctx, cli, m.Compose, m.Service, m.User, majorOf(m.NewVersion), m.NewSysID); err != nil {
 		return fmt.Errorf("checking the service: %w", err)
 	}
 	out, err := cli.Run(ctx, "ps", "-aq", "--filter", "volume="+m.OldData)
@@ -156,5 +181,61 @@ func Cleanup(ctx context.Context, cli *docker.CLI, dir string) error {
 		}
 	}
 	m.CleanedUp = true
+	return saveManifest(dir, m)
+}
+
+// recoverRun puts things back after a run that was killed before it could
+// clean up (power loss, kill -9): helpers go, a changed Compose file is put
+// back, the half-made copy is removed and the old service and apps start.
+func recoverRun(ctx context.Context, cli *docker.CLI, dir string, m *Manifest) error {
+	out, _ := cli.Run(ctx, "ps", "-aq", "--filter", "label=pgcarry.run="+m.RunID)
+	if ids := strings.Fields(out); len(ids) > 0 {
+		if _, err := cli.Run(ctx, append([]string{"rm", "-f"}, ids...)...); err != nil {
+			return err
+		}
+	}
+	restored := false
+	for _, f := range m.Files {
+		cur, err := os.ReadFile(f.Path)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(cur)
+		if hex.EncodeToString(sum[:]) != f.NewSHA256 {
+			continue // not pgcarry's version: leave it
+		}
+		orig, err := os.ReadFile(filepath.Join(dir, f.Backup))
+		if err != nil {
+			return err
+		}
+		if err := writeAtomic(f.Path, orig); err != nil {
+			return err
+		}
+		restored = true
+	}
+	if restored {
+		if err := runCompose(ctx, cli, m.Compose, m.Project, "up", "-d", "--no-deps", m.Service); err != nil {
+			return err
+		}
+	}
+	if m.Created {
+		switch m.MountType {
+		case "volume":
+			if users, _ := cli.Run(ctx, "ps", "-aq", "--filter", "volume="+m.NewData); strings.TrimSpace(users) == "" {
+				cli.Run(ctx, "volume", "rm", m.NewData)
+			}
+		case "bind":
+			parent, base := filepath.Dir(m.NewData), filepath.Base(m.NewData)
+			cli.Run(ctx, "run", "--rm", "--user", "0", "--entrypoint", "rm", "-v", parent+":/parent", m.NewImage, "-rf", "/parent/"+base)
+		}
+	}
+	if err := runCompose(ctx, cli, m.Compose, m.Project, append([]string{"start", m.Service}, m.Stopped...)...); err != nil {
+		return err
+	}
+	if err := serving(ctx, cli, m.Compose, m.Service, m.User, majorOf(m.OldVersion), m.OldSysID); err != nil {
+		return err
+	}
+	m.RolledBack = true
+	m.Finished = time.Now().UTC()
 	return saveManifest(dir, m)
 }

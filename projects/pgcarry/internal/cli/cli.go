@@ -40,15 +40,16 @@ Commands:
   version    Show the version
 
 Options:
-  -p, --project-directory DIR   The Compose project (default: current folder)
-  -f, --file FILE               Compose file (repeatable), as with docker compose
-      --project-name NAME       Compose project name
+  -p, --project-name NAME       Compose project name     } as with docker compose;
+  -f, --file FILE               Compose file (repeatable) } by default pgcarry uses
+      --project-directory DIR   Compose project folder    } what the service was
+                                                            started with
       --to VERSION              Major version to move to, e.g. 18
       --image IMAGE             New image (default: worked out from the current one)
       --json                    Print the plan as JSON
-      --backup-dir DIR          Where dumps go (default: PROJECT_DIR/pgcarry-backup-SERVICE-TIME)
+      --backup-dir DIR          Where dumps go (default: ~/.local/state/pgcarry/PROJECT/SERVICE-TIME)
       --no-switch               Rehearse: copy and verify, then start the old service again
-  -y, --yes                     Do not ask before stopping services
+  -y, --yes                     Do not ask for confirmation
 
 Example:
   pgcarry plan --to 18
@@ -66,7 +67,10 @@ func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []
 		fmt.Fprintf(stderr, "pgcarry: %s\nRun 'pgcarry --help' for usage.\n", strings.TrimPrefix(err.Error(), "usage: "))
 		return 2
 	case errors.Is(err, errBlocked):
+		fmt.Fprintln(stderr, "pgcarry: blocked; see the problems listed above")
 		return 3
+	case errors.Is(err, errInterrupted):
+		return 130
 	case errors.Is(err, context.Canceled):
 		fmt.Fprintln(stderr, "pgcarry: interrupted; everything pgcarry had changed was put back")
 		return 130
@@ -76,7 +80,10 @@ func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []
 	}
 }
 
-var errBlocked = errors.New("blocked")
+var (
+	errBlocked     = errors.New("blocked")
+	errInterrupted = errors.New("interrupted")
+)
 
 type options struct {
 	compose  compose.Options
@@ -101,7 +108,7 @@ func parse(args []string) (options, error) {
 	fs := flag.NewFlagSet("pgcarry", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var files multi
-	fs.StringVar(&o.compose.Dir, "p", "", "")
+	fs.StringVar(&o.compose.Name, "p", "", "")
 	fs.StringVar(&o.compose.Dir, "project-directory", "", "")
 	fs.Var(&files, "f", "")
 	fs.Var(&files, "file", "")
@@ -143,6 +150,12 @@ func run(ctx context.Context, stdin io.Reader, stdout io.Writer, args []string) 
 		return usagef("name a command")
 	}
 	cmd, args := args[0], args[1:]
+	for _, a := range args {
+		if a == "-h" || a == "--help" || a == "-help" {
+			fmt.Fprint(stdout, usage)
+			return nil
+		}
+	}
 	switch cmd {
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
@@ -161,6 +174,12 @@ func run(ctx context.Context, stdin io.Reader, stdout io.Writer, args []string) 
 	if err := absolute(&o.compose); err != nil {
 		return err
 	}
+	if o.json && cmd != "plan" {
+		return usagef("--json is only for plan")
+	}
+	if (cmd == "rollback" || cmd == "cleanup") && (o.to != 0 || o.image != "" || o.noSwitch) {
+		return usagef("%s takes no --to, --image or --no-switch; it works from the upgrade's backup folder", cmd)
+	}
 	cli0 := &docker.CLI{Bin: os.Getenv("PGCARRY_DOCKER")}
 	switch cmd {
 	case "rollback", "cleanup":
@@ -170,7 +189,7 @@ func run(ctx context.Context, stdin io.Reader, stdout io.Writer, args []string) 
 		return usagef("say which version to move to (--to 18) or give the image (--image)")
 	}
 	cli := cli0
-	proj, err := compose.Load(ctx, cli, o.compose)
+	proj, err := plan.Resolve(ctx, cli, o.compose, o.service)
 	if err != nil {
 		return err
 	}
@@ -202,11 +221,7 @@ func doUpgrade(ctx context.Context, stdin io.Reader, stdout io.Writer, o options
 	}
 	backup := o.backup
 	if backup == "" {
-		dir := o.compose.Dir
-		if dir == "" {
-			dir = "."
-		}
-		backup = filepath.Join(dir, fmt.Sprintf("pgcarry-backup-%s-%s", rep.Service, time.Now().Format("20060102-150405")))
+		backup = filepath.Join(upgrade.StateDir(), rep.Project, fmt.Sprintf("%s-%s", rep.Service, time.Now().Format("20060102-150405")))
 	}
 	backup, err := filepath.Abs(backup)
 	if err != nil {
@@ -224,6 +239,11 @@ func doUpgrade(ctx context.Context, stdin io.Reader, stdout io.Writer, o options
 	}
 	m, err := upgrade.Run(ctx, upgrade.Options{CLI: cli, Project: proj, Plan: rep, BackupDir: backup,
 		Switch: !o.noSwitch, Log: func(s string) { fmt.Fprintln(stdout, s) }})
+	if errors.Is(err, context.Canceled) {
+		what := strings.TrimSuffix(err.Error(), ": "+context.Canceled.Error())
+		fmt.Fprintf(stdout, "\npgcarry: %s.\nEverything pgcarry had changed was put back; running on the old data again: %s. Nothing was deleted. Partial dumps are in %s.\n", what, strings.Join(stops, ", "), backup)
+		return errInterrupted
+	}
 	if err != nil {
 		return err
 	}
@@ -238,7 +258,7 @@ func doUpgrade(ctx context.Context, stdin io.Reader, stdout io.Writer, o options
 		return nil
 	}
 	fmt.Fprintf(stdout, "\nRehearsal passed: PostgreSQL %s holds an exact copy (every table's row count, every sequence, roles and object counts match).\n", m.NewVersion)
-	fmt.Fprintf(stdout, "The new data is in %s %s. Running again on the old data: %s.\n", rep.MountType, m.NewData, strings.Join(stops, ", "))
+	fmt.Fprintf(stdout, "The rehearsal copy is in %s %s (a real upgrade replaces it). Running again on the old data: %s.\n", rep.MountType, m.NewData, strings.Join(stops, ", "))
 	fmt.Fprintf(stdout, "Dumps and a manifest are in %s.\n", backup)
 	return nil
 }
@@ -253,22 +273,23 @@ func confirm(in io.Reader, out io.Writer, q string) bool {
 	return false
 }
 
-// absolute makes the project folder and files absolute, so rollback and
-// cleanup work from anywhere later.
+// absolute makes a given project folder and files absolute, so rollback
+// and cleanup work from anywhere later. Nothing given stays as it is, so
+// Compose finds the project the way it normally would.
 func absolute(o *compose.Options) error {
-	dir := o.Dir
-	if dir == "" {
-		dir = "."
-	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	o.Dir = abs
-	for i, f := range o.Files {
-		if !filepath.IsAbs(f) {
-			o.Files[i] = filepath.Join(abs, f)
+	if o.Dir != "" {
+		abs, err := filepath.Abs(o.Dir)
+		if err != nil {
+			return err
 		}
+		o.Dir = abs
+	}
+	for i, f := range o.Files {
+		abs, err := filepath.Abs(f)
+		if err != nil {
+			return err
+		}
+		o.Files[i] = abs
 	}
 	return nil
 }
@@ -276,8 +297,16 @@ func absolute(o *compose.Options) error {
 func after(ctx context.Context, stdin io.Reader, stdout io.Writer, cmd string, o options, cli *docker.CLI) error {
 	dir := o.backup
 	if dir == "" {
+		name := o.compose.Name
+		if name == "" {
+			proj, err := compose.Load(ctx, cli, o.compose)
+			if err != nil {
+				return fmt.Errorf("%w (or give the upgrade's folder with --backup-dir)", err)
+			}
+			name = proj.Name
+		}
 		var err error
-		if dir, err = upgrade.LatestBackup(o.compose.Dir); err != nil {
+		if dir, err = upgrade.LatestBackup(name, o.service); err != nil {
 			return err
 		}
 	}
@@ -289,6 +318,17 @@ func after(ctx context.Context, stdin io.Reader, stdout io.Writer, cmd string, o
 	case "rollback":
 		if err := upgrade.CanRollback(m); err != nil {
 			return err
+		}
+		if m.Finished.IsZero() && !m.Switched {
+			fmt.Fprintf(stdout, "The upgrade started %s was interrupted while %s.\nThis removes what it left, puts back the Compose file if it had changed it, and starts %s on the old data (%s).\n", m.Started.Local().Format("2006-01-02 15:04"), m.Step, m.Service, m.OldData)
+			if !o.yes && !confirm(stdin, stdout, "Put things back?") {
+				return errors.New("stopped; nothing was changed")
+			}
+			if err := upgrade.Rollback(ctx, cli, dir); err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "Done: %s runs PostgreSQL %s on %s again.\n", m.Service, m.OldVersion, m.OldData)
+			return nil
 		}
 		fmt.Fprintf(stdout, "This puts back the original Compose file and starts %s on PostgreSQL %s with the old data (%s).\n", m.Service, m.OldVersion, m.OldData)
 		fmt.Fprintf(stdout, "Anything written to the database since the upgrade is not carried back.\n")

@@ -23,11 +23,16 @@ type Server struct {
 // tuples-only output.
 func (s *Server) Query(ctx context.Context, db, sql string) (string, error) {
 	out, err := s.CLI.Run(ctx, "exec", s.Container, "psql", "-X", "-q", "-v", "ON_ERROR_STOP=1",
-		"-At", "-U", s.User, "-d", db, "-c", sql)
+		"-At", "-U", s.User, "-d", ConnDB(db), "-c", sql)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimRight(out, "\n"), nil
+}
+
+// QueryJSON runs a statement returning one JSON value and decodes it.
+func (s *Server) QueryJSON(ctx context.Context, db, sql string, v any) error {
+	return s.queryJSON(ctx, db, sql, v)
 }
 
 // queryJSON runs a statement returning one JSON value and decodes it.
@@ -172,4 +177,11 @@ func (s *Server) AvailableExtensions(ctx context.Context, db string) (map[string
 		m[e.Name] = e.Default
 	}
 	return m, nil
+}
+
+// ConnDB is a -d argument naming exactly database name: PostgreSQL tools
+// read a -d value containing "=" (or a URI) as connection settings, so the
+// name goes inside a connection string.
+func ConnDB(name string) string {
+	return "dbname='" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(name) + "'"
 }

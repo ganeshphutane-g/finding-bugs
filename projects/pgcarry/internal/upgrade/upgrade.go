@@ -67,6 +67,13 @@ type Manifest struct {
 	Settings    []pg.Setting      `json:"settings,omitempty"`
 
 	User       string          `json:"user"`
+	RunID      string          `json:"run_id"`
+	Step       string          `json:"step,omitempty"` // the step under way, while running
+	Created    bool            `json:"created_new_data,omitempty"`
+	OldSysID   string          `json:"old_system_identifier,omitempty"`
+	NewSysID   string          `json:"new_system_identifier,omitempty"`
+	T1Settings [][2]string     `json:"template1_settings,omitempty"` // role ("" for all), name=value
+	T1Comment  string          `json:"template1_comment,omitempty"`
 	Compose    compose.Options `json:"compose"`
 	Files      []ComposeFile   `json:"compose_files,omitempty"`
 	Switched   bool            `json:"switched"`
@@ -143,7 +150,7 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 	u.oldCtr = fmt.Sprintf("pgcarry-%s-%s-old", r.Project, r.Service)
 	u.m = Manifest{Project: r.Project, Service: r.Service, OldImage: r.Image, NewImage: r.TargetImage,
 		OldVersion: r.Cluster.Version, MountType: r.MountType, OldData: r.MountName,
-		NewMount: r.TargetMount, Started: time.Now().UTC(), Compose: o.Project.Options, User: u.user}
+		NewMount: r.TargetMount, Started: time.Now().UTC(), Compose: o.Project.Options, User: u.user, RunID: u.runID}
 	switch r.MountType {
 	case "volume":
 		u.m.NewData = plan.NewVolumeName(r.MountName, r.Target.Major())
@@ -153,6 +160,11 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 	u.old = &pg.Server{CLI: u.cli, Container: u.oldCtr, User: u.user}
 
 	if err := u.prepare(ctx); err != nil {
+		return nil, err
+	}
+	// From here on the manifest says what is under way, so an interrupted
+	// run can be recovered with pgcarry rollback.
+	if err := u.writeManifest(); err != nil {
 		return nil, err
 	}
 	defer func() {
@@ -173,6 +185,7 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 			err = errors.Join(err, serr)
 		}
 		u.m.Finished = time.Now().UTC()
+		u.m.Step = ""
 		if werr := u.writeManifest(); werr != nil && err == nil {
 			err = werr
 		}
@@ -206,11 +219,17 @@ func Run(ctx context.Context, o Options) (m *Manifest, err error) {
 	for _, s := range steps {
 		start := time.Now()
 		u.log("%s ...", s.name)
+		u.m.Step = s.name
+		u.m.Created = u.created
+		u.writeManifest()
 		err := s.fn(ctx)
 		if err == nil && o.hook != nil {
 			err = o.hook(s.name)
 		}
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("interrupted while %s: %w", s.name, context.Canceled)
+			}
 			return nil, fmt.Errorf("%s: %w", s.name, err)
 		}
 		u.log("  done in %s", time.Since(start).Round(100*time.Millisecond))
@@ -238,11 +257,29 @@ func (u *run) prepare(ctx context.Context) error {
 	}
 	switch u.r.MountType {
 	case "volume":
+		if out, err := u.cli.Run(ctx, "volume", "inspect", "-f", `{{index .Labels "pgcarry.rehearsal"}}`, u.m.NewData); err == nil && strings.TrimSpace(out) == "1" {
+			// A copy from an earlier rehearsal, stale by now; replace it
+			// unless something uses it.
+			if users, _ := u.cli.Run(ctx, "ps", "-aq", "--filter", "volume="+u.m.NewData); strings.TrimSpace(users) == "" {
+				u.log("removing the copy left by an earlier rehearsal (%s)", u.m.NewData)
+				if _, err := u.cli.Run(ctx, "volume", "rm", u.m.NewData); err != nil {
+					return err
+				}
+			}
+		}
 		if _, err := u.cli.Run(ctx, "volume", "inspect", u.m.NewData); err == nil {
 			return fmt.Errorf("volume %s already exists, perhaps from an earlier upgrade that was rolled back; pgcarry will not write into it. If you do not need it: docker volume rm %s", u.m.NewData, u.m.NewData)
 		}
 	case "bind":
-		if entries, err := os.ReadDir(u.m.NewData); err == nil && len(entries) > 0 {
+		// The folder is on the Docker host, which may be another machine:
+		// look through a container.
+		parent, base := filepath.Dir(u.m.NewData), filepath.Base(u.m.NewData)
+		out, err := u.cli.Run(ctx, append(u.helperArgs(), "--user", "0", "--entrypoint", "sh", "-v", parent+":/parent",
+			u.r.TargetImage, "-c", `ls -A "/parent/$1" 2>/dev/null | head -1`, "sh", base)...)
+		if err != nil {
+			return fmt.Errorf("checking %s: %w", u.m.NewData, err)
+		}
+		if strings.TrimSpace(out) != "" {
 			return fmt.Errorf("folder %s already exists and is not empty", u.m.NewData)
 		}
 	}
@@ -250,6 +287,8 @@ func (u *run) prepare(ctx context.Context) error {
 	if err := os.MkdirAll(u.o.BackupDir, 0o700); err != nil {
 		return err
 	}
+	// The folder holds dumps and password hashes; keep it out of git.
+	os.WriteFile(filepath.Join(u.o.BackupDir, ".gitignore"), []byte("*\n"), 0o600)
 	// The password, for servers that ask for one over TCP.
 	u.pass = u.svc.Env("POSTGRES_PASSWORD")
 	if f := u.svc.Env("POSTGRES_PASSWORD_FILE"); u.pass == "" && f != "" {
@@ -326,6 +365,17 @@ func (u *run) recordBefore(ctx context.Context) error {
 		return err
 	}
 	u.m.Roles = roles
+	if u.m.OldSysID, err = u.old.Query(ctx, "postgres", "select system_identifier from pg_control_system()"); err != nil {
+		return err
+	}
+	if err := u.old.QueryJSON(ctx, "template1", `select coalesce(json_agg(json_build_array(coalesce(r.rolname, ''), cfg)), '[]')
+		from pg_db_role_setting s join pg_database d on d.oid = s.setdatabase
+		left join pg_roles r on r.oid = s.setrole, unnest(s.setconfig) cfg where d.datname = 'template1'`, &u.m.T1Settings); err != nil {
+		return err
+	}
+	if u.m.T1Comment, err = u.old.Query(ctx, "template1", "select coalesce(shobj_description(oid, 'pg_database'), '') from pg_database where datname = 'template1'"); err != nil {
+		return err
+	}
 	if u.m.RoleSigs, err = u.old.RoleSignatures(ctx); err != nil {
 		return fmt.Errorf("reading roles (pgcarry needs to connect as a superuser): %w", err)
 	}
@@ -374,7 +424,13 @@ func (u *run) removeContainers(ctx context.Context) {
 func (u *run) helper(ctx context.Context, stdout io.Writer, tool ...string) error {
 	args := append(u.helperArgs(), "--network", "container:"+u.oldCtr, "--entrypoint", tool[0])
 	if u.pass != "" {
-		args = append(args, "-e", "PGPASSWORD="+u.pass)
+		// From a private file, so it is not on any command line.
+		f, done, err := privateFile("PGPASSWORD=" + u.pass + "\n")
+		if err != nil {
+			return err
+		}
+		defer done()
+		args = append(args, "--env-file", f)
 	}
 	args = append(args, u.r.TargetImage)
 	args = append(args, tool[1:]...)
@@ -415,7 +471,7 @@ func (u *run) dump(ctx context.Context) error {
 		d := &u.m.Databases[i]
 		name := fmt.Sprintf("db-%02d.dump", i+1)
 		d.Dump, err = u.writeFile(name, func(w io.Writer) error {
-			return u.helper(ctx, w, "pg_dump", "-h", "127.0.0.1", "-U", u.user, "-Fc", "-d", d.Name)
+			return u.helper(ctx, w, "pg_dump", "-h", "127.0.0.1", "-U", u.user, "-Fc", "-d", pg.ConnDB(d.Name))
 		})
 		if err != nil {
 			return fmt.Errorf("database %s: %w", d.Name, err)
@@ -485,6 +541,23 @@ func (u *run) startIsolated(ctx context.Context) error {
 	return images.WaitReady(ctx, u.cli, u.oldCtr, 5*time.Minute)
 }
 
+// privateFile writes content to a temporary file only the user can read.
+func privateFile(content string) (string, func(), error) {
+	f, err := os.CreateTemp("", "pgcarry-env-*")
+	if err != nil {
+		return "", nil, err
+	}
+	_, err = f.WriteString(content)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		return "", nil, err
+	}
+	return f.Name(), func() { os.Remove(f.Name()) }, nil
+}
+
 // envFile writes the service's environment (the keys keep allows) to a
 // private temporary file, so values stay off command lines.
 func (u *run) envFile(keep func(string) bool) (string, func(), error) {
@@ -522,6 +595,9 @@ func (u *run) makeNewData(ctx context.Context) error {
 	case "volume":
 		key := u.r.MountKey + fmt.Sprintf("_pg%d", u.r.Target.Major())
 		args := []string{"volume", "create", "--label", "pgcarry.created=" + u.m.Started.Format(time.RFC3339)}
+		if !u.o.Switch {
+			args = append(args, "--label", "pgcarry.rehearsal=1")
+		}
 		if !u.o.Project.Volumes[u.r.MountKey].External {
 			// Compose adopts a volume carrying its labels as its own.
 			args = append(args, "--label", "com.docker.compose.project="+u.r.Project,
@@ -531,13 +607,22 @@ func (u *run) makeNewData(ctx context.Context) error {
 			return err
 		}
 	case "bind":
-		// The image sets up its own data folder inside; the postgres user
-		// must be able to reach it.
-		if err := os.MkdirAll(u.m.NewData, 0o755); err != nil {
-			return err
+		// Made on the Docker host, through a container. The image sets up
+		// its own data folder inside; the postgres user must reach it.
+		parent, base := filepath.Dir(u.m.NewData), filepath.Base(u.m.NewData)
+		if _, err := u.cli.Run(ctx, append(u.helperArgs(), "--user", "0", "--entrypoint", "sh", "-v", parent+":/parent",
+			u.r.TargetImage, "-c", `mkdir -p "/parent/$1" && chmod 755 "/parent/$1"`, "sh", base)...); err != nil {
+			return fmt.Errorf("creating %s: %w", u.m.NewData, err)
 		}
 	}
 	u.created = true
+	// A service running as its own user needs the data to belong to it.
+	if u.svc.User != "" {
+		if _, err := u.cli.Run(ctx, append(u.helperArgs(), "--user", "0", "--entrypoint", "chown", "-v", u.mountArg(),
+			u.r.TargetImage, u.svc.User, u.r.TargetMount)...); err != nil {
+			return fmt.Errorf("giving the new data to user %s: %w", u.svc.User, err)
+		}
+	}
 	return nil
 }
 
@@ -585,17 +670,23 @@ func (u *run) initdbArgs() string {
 func (u *run) startNew(ctx context.Context) error {
 	tmp := make([]byte, 16)
 	rand.Read(tmp)
-	args := []string{"run", "-d", "--name", u.newCtr, "--label", "pgcarry.run=" + u.runID,
-		"-v", u.mountArg(),
-		"-e", "POSTGRES_USER=" + u.user,
-		"-e", "POSTGRES_PASSWORD=" + hex.EncodeToString(tmp),
-		"-e", "POSTGRES_DB=postgres",
-		"-e", "POSTGRES_INITDB_ARGS=" + u.initdbArgs()}
+	env := "POSTGRES_USER=" + u.user + "\nPOSTGRES_PASSWORD=" + hex.EncodeToString(tmp) +
+		"\nPOSTGRES_DB=postgres\nPOSTGRES_INITDB_ARGS=" + u.initdbArgs() + "\n"
 	if v := u.svc.Env("PGDATA"); v != "" {
-		args = append(args, "-e", "PGDATA="+v)
+		env += "PGDATA=" + v + "\n"
 	}
 	if v := u.svc.Env("POSTGRES_HOST_AUTH_METHOD"); v != "" {
-		args = append(args, "-e", "POSTGRES_HOST_AUTH_METHOD="+v)
+		env += "POSTGRES_HOST_AUTH_METHOD=" + v + "\n"
+	}
+	envFile, done, err := privateFile(env)
+	if err != nil {
+		return err
+	}
+	defer done()
+	args := []string{"run", "-d", "--name", u.newCtr, "--label", "pgcarry.run=" + u.runID,
+		"-v", u.mountArg(), "--env-file", envFile}
+	if u.svc.User != "" {
+		args = append(args, "--user", u.svc.User)
 	}
 	if v := u.svc.Env("POSTGRES_INITDB_WALDIR"); v != "" {
 		return fmt.Errorf("POSTGRES_INITDB_WALDIR is set; pgcarry v1 does not move a separate WAL folder")
@@ -614,11 +705,18 @@ func (u *run) startNew(ctx context.Context) error {
 		return err
 	}
 	u.m.NewVersion = cl.Version
+	if u.m.NewSysID, err = u.new.Query(ctx, "postgres", "select system_identifier from pg_control_system()"); err != nil {
+		return err
+	}
 
 	// Carry the config files and settings a dump does not include, then
 	// restart so settings such as shared_preload_libraries apply before the
 	// restore needs them.
 	changed := false
+	owner := "postgres"
+	if u.svc.User != "" {
+		owner = u.svc.User
+	}
 	for _, f := range u.m.ConfigFiles {
 		content, err := os.ReadFile(filepath.Join(u.o.BackupDir, f))
 		if err != nil {
@@ -626,7 +724,7 @@ func (u *run) startNew(ctx context.Context) error {
 		}
 		target := path.Join(cl.DataDirectory, f)
 		if err := u.cli.Stream(ctx, strings.NewReader(string(content)), io.Discard,
-			"exec", "-i", "-u", "postgres", u.newCtr, "sh", "-c", `cat > "$1"`, "sh", target); err != nil {
+			"exec", "-i", "-u", owner, u.newCtr, "sh", "-c", `cat > "$1"`, "sh", target); err != nil {
 			return fmt.Errorf("writing %s: %w", f, err)
 		}
 		changed = true
@@ -635,7 +733,7 @@ func (u *run) startNew(ctx context.Context) error {
 		if !settingName.MatchString(s.Name) {
 			return fmt.Errorf("unexpected setting name %q", s.Name)
 		}
-		if _, err := u.new.Query(ctx, "postgres", fmt.Sprintf("ALTER SYSTEM SET %s = %s", s.Name, quoteLiteral(s.Value))); err != nil {
+		if _, err := u.new.Query(ctx, "postgres", fmt.Sprintf("ALTER SYSTEM SET %s = %s", s.Name, settingValue(s.Name, s.Value))); err != nil {
 			return fmt.Errorf("carrying setting %s: %w", s.Name, err)
 		}
 		changed = true
@@ -695,20 +793,40 @@ func (u *run) restore(ctx context.Context) error {
 		switch d.Name {
 		case "template1":
 			// It exists already; restore what it holds into it.
-			args = []string{"pg_restore", "--exit-on-error", "-U", u.user, "-d", "template1"}
+			args = []string{"pg_restore", "--exit-on-error", "-U", u.user, "-d", pg.ConnDB("template1")}
 		case "postgres":
 			if _, err := u.new.Query(ctx, "template1", "DROP DATABASE postgres"); err != nil {
 				f.Close()
 				return err
 			}
-			args = []string{"pg_restore", "--exit-on-error", "--create", "-U", u.user, "-d", "template1"}
+			args = []string{"pg_restore", "--exit-on-error", "--create", "-U", u.user, "-d", pg.ConnDB("template1")}
 		default:
-			args = []string{"pg_restore", "--exit-on-error", "--create", "-U", u.user, "-d", "postgres"}
+			args = []string{"pg_restore", "--exit-on-error", "--create", "-U", u.user, "-d", pg.ConnDB("postgres")}
 		}
 		err = u.cli.Stream(ctx, f, io.Discard, append([]string{"exec", "-i", u.newCtr}, args...)...)
 		f.Close()
 		if err != nil {
 			return fmt.Errorf("database %s: %w", d.Name, err)
+		}
+	}
+	// template1 is restored into the existing database, so its own settings
+	// and comment are set again here.
+	for _, rs := range u.m.T1Settings {
+		name, value, ok := strings.Cut(rs[1], "=")
+		if !ok || !settingName.MatchString(name) {
+			continue
+		}
+		stmt := "ALTER DATABASE template1"
+		if rs[0] != "" {
+			stmt = "ALTER ROLE " + quoteIdent(rs[0]) + " IN DATABASE template1"
+		}
+		if _, err := u.new.Query(ctx, "postgres", stmt+" SET "+name+" = "+settingValue(name, value)); err != nil {
+			return fmt.Errorf("template1 setting %s: %w", name, err)
+		}
+	}
+	if u.m.T1Comment != "" {
+		if _, err := u.new.Query(ctx, "postgres", "COMMENT ON DATABASE template1 IS "+quoteLiteral(u.m.T1Comment)); err != nil {
+			return err
 		}
 	}
 	// Planner statistics are not in dumps.
@@ -729,6 +847,29 @@ func (u *run) verify(ctx context.Context) error {
 			problems = append(problems, d.Name+": "+p)
 		}
 		u.log("  %s: %d tables, %d rows match", d.Name, len(after.Rows), after.TotalRows())
+	}
+	// Every database must be there (template0 aside).
+	want := map[string]bool{}
+	for _, d := range u.r.Cluster.Databases {
+		if d.Name != "template0" {
+			want[d.Name] = true
+		}
+	}
+	cl, err := u.new.Inspect(ctx, "postgres")
+	if err != nil {
+		return err
+	}
+	for _, d := range cl.Databases {
+		if d.Name == "template0" {
+			continue
+		}
+		if !want[d.Name] {
+			problems = append(problems, "database "+d.Name+" is new in the copy")
+		}
+		delete(want, d.Name)
+	}
+	for name := range want {
+		problems = append(problems, "database "+name+" is missing in the copy")
 	}
 	sigs, err := u.new.RoleSignatures(ctx)
 	if err != nil {
@@ -763,6 +904,11 @@ func (u *run) stopNew(ctx context.Context) error {
 
 // startAgain starts the old service and the apps pgcarry stopped.
 func (u *run) startAgain(ctx context.Context) error {
+	if len(u.m.Stopped) > 0 {
+		// A stop interrupted on pgcarry's side may still be finishing in
+		// the daemon; let it end, or the start below would be a no-op.
+		u.compose(ctx, append([]string{"stop"}, u.m.Stopped...)...)
+	}
 	svcs := append([]string{u.r.Service}, u.m.Stopped...)
 	if err := u.compose(ctx, append([]string{"start"}, svcs...)...); err != nil {
 		return fmt.Errorf("starting %s again: %w (start them with docker compose start)", strings.Join(svcs, ", "), err)
@@ -797,4 +943,65 @@ func existingParent(path string) string {
 		}
 		path = parent
 	}
+}
+
+// listSettings are settings whose value is a list of names (PostgreSQL
+// quotes their elements); each element must be its own literal.
+var listSettings = map[string]bool{
+	"search_path": true, "shared_preload_libraries": true, "session_preload_libraries": true,
+	"local_preload_libraries": true, "temp_tablespaces": true, "unix_socket_directories": true,
+}
+
+// settingValue writes a setting's value for ALTER SYSTEM.
+func settingValue(name, value string) string {
+	if !listSettings[strings.ToLower(name)] {
+		return quoteLiteral(value)
+	}
+	var elems []string
+	for _, e := range splitList(value) {
+		elems = append(elems, quoteLiteral(e))
+	}
+	if len(elems) == 0 {
+		return "''"
+	}
+	return strings.Join(elems, ", ")
+}
+
+// splitList splits a list setting as SHOW prints it: comma separated,
+// elements optionally in double quotes ("" inside quotes is one quote).
+func splitList(v string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote, quoted := false, false
+	flush := func() {
+		e := cur.String()
+		if !quoted {
+			e = strings.TrimSpace(e)
+		}
+		if e != "" || quoted {
+			out = append(out, e)
+		}
+		cur.Reset()
+		quoted = false
+	}
+	runes := []rune(v)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		switch {
+		case inQuote && c == '"' && i+1 < len(runes) && runes[i+1] == '"':
+			cur.WriteRune('"')
+			i++
+		case c == '"':
+			inQuote = !inQuote
+			quoted = true
+		case c == ',' && !inQuote:
+			flush()
+		case !inQuote && (c == ' ' || c == '\t') && (quoted || cur.Len() == 0):
+			// spaces around a quoted element
+		default:
+			cur.WriteRune(c)
+		}
+	}
+	flush()
+	return out
 }

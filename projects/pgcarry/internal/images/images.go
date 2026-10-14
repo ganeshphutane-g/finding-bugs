@@ -216,7 +216,9 @@ func WaitReady(ctx context.Context, cli *docker.CLI, id string, timeout time.Dur
 		}
 		// The entrypoint runs a temporary server while initialising; only
 		// the final one is reached over TCP.
-		if _, err := cli.Run(ctx, "exec", id, "pg_isready", "-q", "-h", "127.0.0.1"); err == nil {
+		// -U: a container running as an arbitrary uid has no user name,
+		// and pg_isready makes no attempt without one.
+		if _, err := cli.Run(ctx, "exec", id, "pg_isready", "-q", "-h", "127.0.0.1", "-U", "postgres"); err == nil {
 			return nil
 		}
 		if time.Now().After(deadline) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -76,6 +77,8 @@ func (r *Report) warn(f string, a ...any)  { r.Warnings = append(r.Warnings, fmt
 func (r *Report) change(f string, a ...any) {
 	r.Changes = append(r.Changes, fmt.Sprintf(f, a...))
 }
+
+var numericUser = regexp.MustCompile(`^\d+(:\d+)?$`)
 
 var pgImage = regexp.MustCompile(`(?i)(^|/)(postgres|postgresql|postgis|pgvector|timescaledb[\w-]*)(:|@|$)`)
 
@@ -202,6 +205,37 @@ func Build(ctx context.Context, in Input) (*Report, error) {
 		r.block("the %s service has %d running containers; pgcarry upgrades a single server", svc.Name, len(running))
 	}
 
+	// A volume on another driver, or with options (a bind to a chosen disk,
+	// NFS), needs the same for the new volume; v1 does not make those.
+	if r.MountType == "volume" {
+		out, err := cli.Run(ctx, "volume", "inspect", "-f", "{{.Driver}}|{{json .Options}}", r.MountName)
+		if err == nil {
+			driver, opts, _ := strings.Cut(strings.TrimSpace(out), "|")
+			if driver != "local" || (opts != "null" && opts != "{}" && opts != "") {
+				r.block("volume %s uses driver %s with options %s; pgcarry cannot yet make a matching new volume, so it does not upgrade this one (move the data to a plain named volume first, or upgrade by hand)", r.MountName, driver, opts)
+			}
+		}
+	}
+
+	// Leftovers of an interrupted run.
+	for _, c := range []string{"new", "old"} {
+		name := fmt.Sprintf("pgcarry-%s-%s-%s", in.Project.Name, svc.Name, c)
+		if _, err := cli.Run(ctx, "inspect", "--type", "container", name); err == nil {
+			r.block("container %s is left from an interrupted pgcarry run; run pgcarry rollback to put things back first", name)
+		}
+	}
+
+	// The container must really use the data the Compose files describe.
+	if r.Running && r.MountType != "" {
+		kind, src, err := actualMount(ctx, cli, r.Container, r.MountPoint)
+		switch {
+		case err != nil:
+			return nil, err
+		case kind != r.MountType || filepath.Clean(src) != filepath.Clean(r.MountName):
+			r.block("the running container has %s %q at %s, but the Compose files say %s %q; recreate the service from these files first (docker compose up -d %s)", kind, src, r.MountPoint, r.MountType, r.MountName, svc.Name)
+		}
+	}
+
 	user := svc.Env("POSTGRES_USER")
 	if user == "" {
 		user = "postgres"
@@ -302,6 +336,14 @@ func prepareEdit(ctx context.Context, r *Report, in Input) {
 
 func check(ctx context.Context, r *Report, srv *pg.Server, in Input) {
 	c := r.Cluster
+	for _, d := range c.Databases {
+		if !d.AllowConn && d.Name != "template0" {
+			r.block("database %s does not accept connections, so it cannot be dumped; allow them first (ALTER DATABASE %s ALLOW_CONNECTIONS true) or drop it if it is not needed", d.Name, quote(d.Name))
+		}
+	}
+	if u := in.Project.Services[r.Service].User; u != "" && !numericUser.MatchString(u) {
+		r.block("the service runs as user %q; pgcarry needs a numeric user (uid or uid:gid) to give the new data the same owner", u)
+	}
 	if c.InRecovery {
 		r.block("this server is a replica (in recovery); upgrade the primary instead")
 	}

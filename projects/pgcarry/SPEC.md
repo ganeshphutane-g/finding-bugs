@@ -66,7 +66,6 @@ per app, from megabytes to tens of gigabytes. They know `docker compose`, not
 6. **Verifies:**
    - every table's exact row count, every sequence's value, and the list of schemas,
      tables, views, functions, extensions and roles, old against new;
-   - with `--deep`, a hash of each table's rows.
 
    Any difference stops the upgrade before the switch.
 7. **Switches:**
