@@ -2,85 +2,37 @@ package plan
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ganeshphutane-g/pgcarry/internal/compose"
-	"github.com/ganeshphutane-g/pgcarry/internal/docker"
 	"github.com/ganeshphutane-g/pgcarry/internal/images"
+	"github.com/ganeshphutane-g/pgcarry/internal/testkit"
 )
 
 // These tests start real Compose projects. They run with
 // PGCARRY_INTEGRATION=1 and need Docker with the Compose plugin.
 
-type project struct {
-	t   *testing.T
-	cli *docker.CLI
-	opt compose.Options
-	dir string
-}
+func newProject(t *testing.T, yaml string) *project { return &project{testkit.New(t, yaml)} }
 
-func newProject(t *testing.T, yaml string) *project {
-	t.Helper()
-	if os.Getenv("PGCARRY_INTEGRATION") == "" {
-		t.Skip("set PGCARRY_INTEGRATION=1 to run tests against Docker")
-	}
-	b := make([]byte, 4)
-	rand.Read(b)
-	dir := t.TempDir()
-	p := &project{t: t, cli: &docker.CLI{}, dir: dir,
-		opt: compose.Options{Dir: dir, Name: "pgct" + hex.EncodeToString(b)}}
-	yaml = strings.ReplaceAll(yaml, "$DIR", dir)
-	must(t, os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(yaml), 0o644))
-	t.Cleanup(func() {
-		p.compose("down", "-v", "--remove-orphans", "-t", "1")
-	})
-	return p
-}
+type project struct{ *testkit.Project }
 
-func (p *project) compose(args ...string) string {
-	p.t.Helper()
-	full := append([]string{"compose", "--project-directory", p.opt.Dir, "-p", p.opt.Name}, args...)
-	out, err := p.cli.Run(context.Background(), full...)
-	if err != nil {
-		p.t.Fatalf("docker %s: %v", strings.Join(full, " "), err)
-	}
-	return out
-}
-
-// up starts the project and waits for the database service to be ready.
-func (p *project) up(service string) {
-	p.t.Helper()
-	p.compose("up", "-d")
-	id := strings.TrimSpace(p.compose("ps", "-q", service))
-	must(p.t, images.WaitReady(context.Background(), p.cli, id, 2*time.Minute))
-}
-
+func (p *project) compose(args ...string) string { return p.Compose(args...) }
+func (p *project) up(service string)             { p.Up(service) }
 func (p *project) psql(service, user, db, sql string) {
-	p.t.Helper()
-	p.compose("exec", "-T", service, "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", user, "-d", db, "-c", sql)
+	p.SQL(service, user, db, sql)
 }
 
 func (p *project) plan(service string, to int, image string) *Report {
-	p.t.Helper()
-	proj, err := compose.Load(context.Background(), p.cli, p.opt)
-	must(p.t, err)
-	r, err := Build(context.Background(), Input{CLI: p.cli, Project: proj, Service: service, To: to, Image: image})
-	must(p.t, err)
+	p.T.Helper()
+	r, err := Build(context.Background(), Input{CLI: p.CLI, Project: p.Load(), Service: service, To: to, Image: image})
+	must(p.T, err)
 	return r
 }
 
-func must(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatal(err)
-	}
-}
+func must(t *testing.T, err error) { t.Helper(); testkit.Must(t, err) }
 
 func contains(list []string, part string) bool {
 	for _, s := range list {
@@ -118,13 +70,13 @@ volumes:
 	if r.Service != "db" || r.Cluster.Major() != 14 || r.FileMajor != 14 || r.Target.Major() != 18 {
 		t.Fatalf("report: %+v", r)
 	}
-	if r.MountType != "volume" || r.MountName != p.opt.Name+"_pgdata" || r.TargetMount != "/var/lib/postgresql" || r.TargetData != "/var/lib/postgresql/18/docker" {
+	if r.MountType != "volume" || r.MountName != p.Opt.Name+"_pgdata" || r.TargetMount != "/var/lib/postgresql" || r.TargetData != "/var/lib/postgresql/18/docker" {
 		t.Fatalf("layout: %s %s -> %s %s", r.MountType, r.MountName, r.TargetMount, r.TargetData)
 	}
 	if len(r.Dependents) != 1 || r.Dependents[0] != "web" {
 		t.Fatalf("dependents %q", r.Dependents)
 	}
-	if !contains(r.Changes, "work_mem=8192kB") || len(r.CustomSettings) != 1 {
+	if !contains(r.Changes, "work_mem = '8MB'") {
 		t.Fatalf("custom settings not found: %+v %q", r.CustomSettings, r.Changes)
 	}
 	if len(r.CustomHBA) != 1 || !strings.HasPrefix(r.CustomHBA[0], "hostssl appdb") {
@@ -205,9 +157,9 @@ volumes:
 	p.compose("up", "-d", "anon", "bound")
 	for _, s := range []string{"anon", "bound"} {
 		id := strings.TrimSpace(p.compose("ps", "-q", s))
-		must(t, images.WaitReady(context.Background(), p.cli, id, 2*time.Minute))
+		must(t, images.WaitReady(context.Background(), p.CLI, id, 2*time.Minute))
 	}
-	proj, err := compose.Load(context.Background(), p.cli, p.opt)
+	proj, err := compose.Load(context.Background(), p.CLI, p.Opt)
 	must(t, err)
 	if _, err := FindService(proj, ""); err == nil || !strings.Contains(err.Error(), "several services") {
 		t.Fatalf("FindService: %v", err)
@@ -219,7 +171,7 @@ volumes:
 		t.Fatalf("stopped: %q", r.Blockers)
 	}
 	r := p.plan("bound", 18, "")
-	if !r.OK() || r.MountType != "bind" || !contains(r.Changes, filepath.Join(p.dir, "pg-pg18")) {
+	if !r.OK() || r.MountType != "bind" || !contains(r.Changes, filepath.Join(p.Dir, "pg-pg18")) {
 		t.Fatalf("bound: %s %q %q", r.MountType, r.Blockers, r.Changes)
 	}
 	if r := p.plan("bound", 16, ""); !contains(r.Blockers, "not newer") {

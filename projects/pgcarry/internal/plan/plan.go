@@ -35,11 +35,12 @@ type Report struct {
 	Container string `json:"container,omitempty"`
 	Running   bool   `json:"running"`
 
-	DataPath   string `json:"data_path"`   // PGDATA inside the container
-	MountType  string `json:"mount_type"`  // volume or bind
-	MountName  string `json:"mount_name"`  // volume name or host path
-	MountPoint string `json:"mount_point"` // mount target in the container
-	FileMajor  int    `json:"file_major"`  // from PG_VERSION
+	DataPath   string `json:"data_path"`           // PGDATA inside the container
+	MountType  string `json:"mount_type"`          // volume or bind
+	MountName  string `json:"mount_name"`          // volume name or host path
+	MountPoint string `json:"mount_point"`         // mount target in the container
+	MountKey   string `json:"mount_key,omitempty"` // the volume's key in the Compose file
+	FileMajor  int    `json:"file_major"`          // from PG_VERSION
 
 	Cluster *pg.Cluster `json:"cluster,omitempty"`
 
@@ -166,7 +167,7 @@ func Build(ctx context.Context, in Input) (*Report, error) {
 	case !ok:
 		r.block("the data folder %s is not in a named volume or bind mount of the service (an anonymous volume is lost when the container is recreated); add a volume first", r.DataPath)
 	case m.Type == "volume":
-		r.MountType, r.MountName, r.MountPoint = "volume", in.Project.VolumeName(m), m.Target
+		r.MountType, r.MountName, r.MountPoint, r.MountKey = "volume", in.Project.VolumeName(m), m.Target, m.Source
 	case m.Type == "bind":
 		r.MountType, r.MountName, r.MountPoint = "bind", m.Source, m.Target
 	default:
@@ -238,6 +239,10 @@ func Build(ctx context.Context, in Input) (*Report, error) {
 				r.block("%s runs PostgreSQL %d, not %d", r.TargetImage, r.Target.Major(), to)
 			}
 			r.TargetData, r.TargetMount = targetLayout(tinfo, r.Target.Major())
+			if svc.Env("PGDATA") != "" {
+				// The service sets PGDATA itself; it keeps the same layout.
+				r.TargetData, r.TargetMount = r.DataPath, r.MountPoint
+			}
 		}
 	}
 	r.Dependents = in.Project.Dependents(svc.Name)
@@ -296,7 +301,7 @@ func check(ctx context.Context, r *Report, srv *pg.Server, in Input) {
 	// Settings kept in files inside the data folder.
 	if settings, err := srv.FileSettings(ctx, "postgres", c.DataDirectory); err == nil {
 		for _, s := range settings {
-			if !initdbDefault(s.Name) {
+			if !initdbDefault(s.Name) && !strings.HasSuffix(s.SourceFile, "/postgresql.auto.conf") {
 				r.CustomSettings = append(r.CustomSettings, s)
 			}
 		}
@@ -304,9 +309,12 @@ func check(ctx context.Context, r *Report, srv *pg.Server, in Input) {
 	if len(r.CustomSettings) > 0 {
 		var names []string
 		for _, s := range r.CustomSettings {
-			names = append(names, s.Name+"="+s.Value+s.Unit)
+			names = append(names, s.Name+"="+s.Value)
 		}
 		r.change("settings from the data folder's config files are carried over: %s", strings.Join(names, ", "))
+	}
+	if auto := pg.RulesOf(srv.File(ctx, path.Join(c.DataDirectory, "postgresql.auto.conf"))); len(auto) > 0 {
+		r.change("postgresql.auto.conf (ALTER SYSTEM settings) is carried over: %s", strings.Join(auto, "; "))
 	}
 	if hba := pg.RulesOf(srv.File(ctx, path.Join(c.DataDirectory, "pg_hba.conf"))); len(hba) > 0 {
 		r.CustomHBA = customHBA(hba)

@@ -5,11 +5,11 @@ import (
 	"strings"
 )
 
-// Setting is a server setting and where it came from.
+// Setting is a server setting and where it came from. Value is as SHOW
+// gives it, units included ("8MB"), so it can be set again as it is.
 type Setting struct {
 	Name       string `json:"name"`
-	Value      string `json:"setting"`
-	Unit       string `json:"unit,omitempty"`
+	Value      string `json:"value"`
 	Source     string `json:"source"`
 	SourceFile string `json:"sourcefile,omitempty"`
 }
@@ -20,7 +20,7 @@ type Setting struct {
 func (s *Server) FileSettings(ctx context.Context, db, dataDir string) ([]Setting, error) {
 	var list []Setting
 	err := s.queryJSON(ctx, db, `select coalesce(json_agg(json_build_object(
-		'name', name, 'setting', setting, 'unit', coalesce(unit, ''), 'source', source,
+		'name', name, 'value', current_setting(name), 'source', source,
 		'sourcefile', coalesce(sourcefile, '')) order by name), '[]')
 		from pg_settings where source = 'configuration file'`, &list)
 	if err != nil {

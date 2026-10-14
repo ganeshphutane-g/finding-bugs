@@ -13,7 +13,7 @@ import (
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := cli.Run(ctx, os.Stdout, os.Stderr, os.Args[1:])
+	code := cli.Run(ctx, os.Stdin, os.Stdout, os.Stderr, os.Args[1:])
 	stop()
 	os.Exit(code)
 }

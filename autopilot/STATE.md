@@ -1,37 +1,50 @@
 # State
 
 Current project: #4 pgcarry (safe major-version upgrades of Postgres in Docker Compose)
-Phase: build, milestone 2 of 5 next
+Phase: build, milestone 3 of 5 next
 Repo: projects/pgcarry/ inside finding-bugs (own repos blocked, see below)
 Spec: projects/pgcarry/SPEC.md. Research: IDEAS.md round 4.
 
 ## Next step
 
-Milestone 1 is done: `pgcarry plan` covers
-- finding the database service and its data mount (named volume or bind mount);
-- reading the cluster (databases, sizes, extensions, locales, roles, checksums, md5
-  passwords, slots, tablespaces, settings from the data folder, custom pg_hba
-  rules);
-- the target image (per-family tag rules, a probe with tmpfs, the extensions it
-  has, locales tested by CREATE DATABASE);
-- the disk check and the blockers.
+Milestones 1–2 are done.
 
-The tests use real images (PGCARRY_INTEGRATION=1; about 60 s).
+`pgcarry plan` covers service discovery and the cluster facts, then a target probe
+that tests extensions and locales, and finally the blockers.
 
-Milestone 2: `upgrade --no-switch`:
-- stop the dependent services;
-- pg_dumpall --globals-only, then pg_dump -Fc per database, using the new image's
-  client against the old server, through a temporary container on the service's
-  network or `docker exec` into a helper;
-- check the dumps (pg_restore --list) and write checksums to a backup folder;
-- stop the old service;
-- create the new volume (or folder) with Compose labels;
-- initdb through the image with the same encoding, locale and provider as
-  template1, with the checksums choice;
-- restore the globals, then each database;
-- carry the custom settings and pg_hba rules;
-- verify row counts, sequences and object lists, writing a journal so it can be
-  resumed.
+`pgcarry upgrade --no-switch` is a rehearsal:
+- stop the apps;
+- record an inventory (row counts, sequences, objects, role signatures);
+- dump with the new image's client in the old container's network namespace;
+- check the dumps, and re-count to catch writes during the dump;
+- stop the old database, make a new volume (with Compose labels) or folder;
+- init through the image's entrypoint with template1's locale;
+- carry pg_hba/pg_ident/postgresql.auto.conf and the postgresql.conf settings;
+- restore, verify, then start everything again.
+
+On failure or Ctrl-C it puts everything back. The tests cover:
+- an official 14→18 run with many object kinds;
+- a bind mount on Alpine with a de_DE locale;
+- pgvector;
+- a failure after every step;
+- writes during the dump;
+- an interrupt.
+
+Found while testing: 18 catalogs NOT NULL constraints (left out of the
+comparison); pending ALTER SYSTEM settings live only in postgresql.auto.conf
+(copied as a file).
+
+Milestone 3 (switch):
+- `pgcarry upgrade` without --no-switch does the same, then edits the Compose
+  file by position with yaml.v3 nodes (the image line; the volume line to the new
+  key and mount point; a new top-level volume key with the same options), keeping
+  a backup copy;
+- it shows a diff and asks, runs `docker compose up -d SERVICE`, waits for health,
+  then starts the apps;
+- `pgcarry rollback` restores the file and starts the old service; `pgcarry
+  cleanup` removes the old volume and the dumps after asking;
+- when the image or volume comes from a variable, an override file or `extends`,
+  it prints the manual edit instead.
 
 Facts checked on real images (2026-10-14): the 14 and 17 images use PGDATA
 /var/lib/postgresql/data (VOLUME the same); 18 and 18-alpine use
