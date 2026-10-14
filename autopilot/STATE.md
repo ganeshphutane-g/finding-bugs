@@ -1,47 +1,33 @@
 # State
 
 Current project: #4 pgcarry (safe major-version upgrades of Postgres in Docker Compose)
-Phase: build, milestone 4 of 5 next
+Phase: finish (milestone 5): README, changelog and fixes are done; a verification
+review of the fixes is running
 Repo: projects/pgcarry/ inside finding-bugs (own repos blocked, see below)
 Spec: projects/pgcarry/SPEC.md. Research: IDEAS.md round 4.
 
 ## Next step
 
-Milestones 1–3 are done and CI is green.
+pgcarry is feature complete for v1:
+- plan / upgrade (switch) / --no-switch / rollback (including recovery of a killed
+  run) / cleanup;
+- two full reviews (data loss; ops/security/UX) and every confirmed finding fixed
+  with a test;
+- README with real output (/srv/demo/notes demo), CHANGELOG, LICENSE;
+- the full suite with -race is green locally (about 10 min); CI was green up to
+  0a164b7, and runs 6–7 (20f5918, 9465f3b) were in progress when this was written.
 
-- **plan:** discovery, cluster facts, target probe (extensions, locales), blockers,
-  and the Compose diff for the switch (or the reason it needs a manual edit).
-- **upgrade:**
-  - stops the apps, records an inventory (rows, sequences, objects, role
-    signatures with password hashes), dumps with the new client and checks the
-    dumps;
-  - re-counts to catch writes, makes a new volume with Compose labels (or a
-    folder), runs initdb through the entrypoint with template1's locale;
-  - carries pg_hba/pg_ident/postgresql.auto.conf and the conf settings, restores,
-    verifies;
-  - then switches: an edit by position with yaml.v3 (image, mount, new top-level
-    key); `compose config` must read the new image and mount; `up -d --no-deps`
-    and a version check, then the apps start.
-- **--no-switch** rehearses and starts the old service again.
-- **rollback** refuses if the file changed since; **cleanup** checks the service
-  serves the new version first.
-- **Failures:** any failure puts back the file, the old service, the apps, removes
-  the half-made copy and leaves no helpers.
-- **Tests (all real Docker, about 7 min with -race):** the official image,
-  Alpine+locale+bind, pgvector, failure after every step, writes during the dump,
-  an interrupt, switch/rollback/cleanup, an override file with a bind, a failed
-  switch, an image from a variable, and the editor unit tests.
+Left to finish v1:
+1. Read the verification review's findings (if the run ended before it reported:
+   re-run a short check of the fixes listed in the 20f5918 commit message). Fix
+   anything confirmed, with tests.
+2. Confirm CI is green on the final commit.
+3. Mark pgcarry v1.0.0 done in "Finished projects" with the commit, then start
+   research round 5 (first candidate: restic pull-mode orchestrator, see IDEAS.md).
 
-Milestone 4 (matrix and hardening):
-- versions 13→17, 15→18, 17→18;
-- POSTGRES_PASSWORD_FILE/secrets, POSTGRES_HOST_AUTH_METHOD=trust;
-- ICU locale databases (15+);
-- timescale or another shared_preload_libraries case if pullable;
-- a database of about 1 GB (timing, disk);
-- a project started with -f files from another folder;
-- Ctrl-C through the real CLI during the dump and the restore;
-- a non-root CI user (bind cleanup);
-- the README with real output; two full reviews (data loss; ops/UX).
+Known v1 limits, written in the README: dump/restore (not pg_upgrade); counts not
+content hashes; no tablespaces, separate WAL folder, replicas or volume drivers with
+options.
 
 Facts checked on real images (2026-10-14): the 14 and 17 images use PGDATA
 /var/lib/postgresql/data (VOLUME the same); 18 and 18-alpine use

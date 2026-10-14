@@ -2,6 +2,40 @@
 
 Newest first.
 
+## 2026-10-15 (IST) — run 4
+
+- Found that the finding-bugs repo is PUBLIC (the owner thought it was private).
+  Recorded under owner blockers; visibility not changed (playbook rule).
+- pgcarry milestones 1–4 done and pushed:
+  - plan, the upgrade rehearsal, the switch with a by-position Compose edit,
+    rollback, cleanup;
+  - a version matrix 13→17, 14/15/16/17→18, Alpine, pgvector, ICU, a password
+    file, trust auth.
+- Found by testing:
+  - 18 catalogs NOT NULL constraints;
+  - pending ALTER SYSTEM settings live only in postgresql.auto.conf;
+  - pg_isready makes no attempt without a user name under an arbitrary uid;
+  - a service that only uses the postgres image for tools was taken for the
+    database.
+- Two independent reviews found 19 issues. All confirmed ones are fixed with tests.
+  The serious ones:
+  - writes from undeclared clients were lost (now the dump comes from the old server
+    restarted without a network);
+  - -f from another folder or different files copied the wrong data (now the project
+    comes from the container's labels, and the mount is checked);
+  - databases with datallowconn=false were silently skipped;
+  - volumes with driver_opts were recreated without them;
+  - PGPASSWORD was visible in ps and in errors;
+  - a database named "dbname=x" redirected pg_dump;
+  - SIGHUP or kill -9 left everything down (now the manifest comes first and
+    rollback recovers);
+  - list settings were mangled;
+  - the wrong backup was picked by name.
+- Measured: a 1.1 GB database rehearses in 51 s (dump 14 s, restore 21 s, verify
+  2 s).
+- Next: the verification review of the fixes, green CI, then mark v1.0.0 and start
+  research round 5.
+
 ## 2026-10-14 (IST) — run 3
 
 - Owner has not created the docker-mop or bucketmove repos yet.
