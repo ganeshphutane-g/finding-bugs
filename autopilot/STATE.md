@@ -1,16 +1,20 @@
 # State
 
 Current project: #5 issuemove (move issues between Gitea/Forgejo repositories)
-Phase: build, milestone 3 of 4.
-- Milestones 1–2 are done: the client, refs, plan and move.
-- The move covers issues, comments, labels/milestones (created when missing),
-  assignees, due date, state, attachments with UUID rewriting, reactions, Sudo
-  authorship or an attribution header, `#n` rewriting outside code, the back-link
-  comment, closing and locking the original, and resume by hidden markers (no
-  journal file). It also works across instances (users matched by login + email).
-- Tests run on real Gitea 1.24.
-- Left for milestone 3: issue dependencies, watchers, `plan` saying when an issue
-  was already moved, README; then reviews.
+Phase: finish. Milestones 1–3 are done.
+- The move is complete and dependencies are carried. Watchers are dropped (the
+  Gitea 1.24 list API returned nothing even after a subscribe).
+- Markers are keyed by the server's own host and the repository ID, so a rerun
+  through another URL or after a rename finds earlier copies.
+- CI is green on Gitea 1.24 and the official Forgejo 16 (tests confirmed running
+  in the Forgejo job).
+- Two reviews were started at about 01:35 IST on 2026-10-16 (correctness/data
+  loss; security/usability). If their findings are not in LOG.md, re-run them.
+- A known risk to fix: markers are plain text, so a fake marker planted in the
+  target or on an original could hijack a rerun. Trust a marker only with a
+  matching title and poster (or keep a local journal).
+- Then the README with real output (demo: org acme, website -> docs, on a fresh
+  Gitea), CHANGELOG, v1.0.0.
 Repo: projects/issuemove/ inside finding-bugs (own repos blocked, see below)
 Spec: projects/issuemove/SPEC.md. Research: IDEAS.md round 5.
 
