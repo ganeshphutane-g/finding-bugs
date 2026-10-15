@@ -1,7 +1,9 @@
 # State
 
 Current project: #5 issuemove (move issues between Gitea/Forgejo repositories)
-Phase: build, milestone 1 of 4
+Phase: build, milestone 2 of 4 (milestone 1 done: API client, ref parsing, plan
+with labels/milestones/authors/assignees/blockers, Gitea test kit, CI matrix with
+Gitea 1.24 and codeberg.org/forgejo/forgejo:16)
 Repo: projects/issuemove/ inside finding-bugs (own repos blocked, see below)
 Spec: projects/issuemove/SPEC.md. Research: IDEAS.md round 5.
 

@@ -1,0 +1,32 @@
+name: issuemove
+
+on:
+  push:
+    paths: ["projects/issuemove/**", ".github/workflows/issuemove.yml"]
+  pull_request:
+    paths: ["projects/issuemove/**", ".github/workflows/issuemove.yml"]
+
+defaults:
+  run:
+    working-directory: projects/issuemove
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["gitea/gitea:1.24", "codeberg.org/forgejo/forgejo:16"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/issuemove/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet ./...
+      - name: pull ${{ matrix.image }}
+        run: docker pull ${{ matrix.image }}
+      - name: tests against ${{ matrix.image }}
+        run: ISSUEMOVE_INTEGRATION=1 ISSUEMOVE_IMAGE=${{ matrix.image }} go test -race -timeout 30m ./...
