@@ -3,6 +3,80 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 6 — 2026-10-16 IST
+
+One research pass (GitHub search plus web search). "checked" means read from GitHub
+search; "fetched" means the GitHub page was read; everything else is from search
+summaries.
+
+### Chosen (provisional): Uptime Kuma v2 config as code (project #6)
+
+Export the monitors, notifications, status pages, maintenance windows and tags of
+Uptime Kuma 2.x to YAML, diff them against a live instance, apply changes, and copy
+config between instances.
+- Export reads SQLite read-only.
+- Apply goes through the Socket.IO API.
+
+**Demand:**
+- [uptime-kuma#1354](https://github.com/louislam/uptime-kuma/issues/1354)
+  "Configure monitors using config file": 91 👍, open since 2022-03 (checked).
+  The maintainer said in 2023 it is too hard in the current design (fetched).
+- [uptime-kuma#6045](https://github.com/louislam/uptime-kuma/issues/6045) asks for
+  import/export of settings: 28 👍, opened 2025-08 (checked). A collaborator wrote in
+  2026-07 that "a json dump is a no-go… Nobody will maintain it" (fetched).
+- [uptime-kuma-api#75](https://github.com/lucasheld/uptime-kuma-api/issues/75)
+  "This project seems to be abandoned": 9 👍; #85 asks for 2.x support and is open
+  (checked).
+- Uptime Kuma has 92.5k★ (checked).
+
+**Gap:**
+- AutoKuma (907★) applies config from labels or files, cannot export, and breaks on
+  unknown v2 monitor types (its #167).
+- uptime-kuma-api (396★) is stalled.
+- terraform-provider-uptimekuma has 70★.
+- kumaconf is new and untested on v2.
+
+**Scores:** 5/4/4/3/5 = **21**.
+
+**Risks:**
+- The Socket.IO API is unofficial and changes between versions. Pin and test against
+  the Kuma versions supported.
+- Upstream may add a SQL-dump backup, which would not be readable or diffable.
+
+**Name:** "kumactl" is taken (Kong's Kuma service mesh CLI), so pick another.
+
+**Before the spec:** re-check the counts and the maintainer quotes, and look for
+newer tools.
+
+### Runners-up
+
+- **npm-exit** (Nginx Proxy Manager → Caddy/Traefik config), **21**.
+  - NPM has 34.4k★; "config as code" (#2695) and CLI creation (#3708) were closed
+    not_planned (checked).
+  - The only converter found has 0★.
+  - The demand evidence is thinner (5 👍 and forum threads).
+- **Portainer exit** (stacks → plain compose folders), 19. nopoz/portrieve (11★)
+  already does it.
+- **GitHub star-lists backup/sync**, 19 (community#8293, 100 👍). The field is
+  crowded.
+- **n8n Community Edition git sync**, 17. There are many small DIY repos, and n8n may
+  ship it.
+- **Mastodon archive importer**, 15 (mastodon#12423, 478 👍). It depends on Mastodon
+  internals, needs admin access, and federation could cause notification spam.
+
+### Rejected in round 6
+
+- Watchtower successor: dockcheck, Cup, WUD and Komodo exist.
+- GitHub→Gitea mirror: gitea-mirror has 1.5k★.
+- Editing ports or mounts of a container: runlike and docker-autocompose exist.
+- Confluence export: exporters exist.
+- ingress-nginx → Gateway API: ingress2gateway covers it.
+- Bitnami image exit: overlaps pgcarry.
+- Runner-fee estimator: the fee was postponed.
+- Image changelog preview, dive on Docker 29, native HTTP healthchecks, registry
+  retention, Plex→Jellyfin, *arr config as code, a Compose digest lockfile: weak
+  signals, or already covered.
+
 ## Research round 5 — 2026-10-15 IST
 
 One research pass. Counts marked (checked) were read from GitHub search that day;

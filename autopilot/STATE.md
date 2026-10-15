@@ -1,18 +1,23 @@
 # State
 
-Current project: none (issuemove finished in run 5)
-Phase: research (round 6). A research pass was started near the end of run 5
-(about 01:30 IST on 2026-10-16). If its results are not in IDEAS.md as
-"Research round 6", redo the research.
+Current project: #6 Uptime Kuma v2 config as code (name to be chosen; "kumactl"
+is taken by Kong's Kuma)
+Phase: spec. Research round 6 is in IDEAS.md.
 
 ## Next step
 
-Research round 6, following the playbook:
-- at least 5 candidates scored in IDEAS.md;
-- pick one with at least 3 independent demand sources and a clear gap;
-- then write the spec.
-Avoid ideas close to the five finished projects. Round 5's runners-up are listed in
-IDEAS.md.
+1. Re-verify the round 6 evidence:
+   - uptime-kuma#1354 and #6045 counts and the maintainer comments;
+   - whether a newer export/diff tool exists for v2.
+2. Pick a free name.
+3. Start Uptime Kuma 2.x in Docker (louislam/uptime-kuma:2) and check two things:
+   - the SQLite schema;
+   - the Socket.IO events for adding, editing and deleting monitors, notifications,
+     status pages, maintenance windows and tags, including whether a client can log
+     in with an API key or needs a password plus 2FA.
+4. Write SPEC.md in projects/<name>/:
+   - export (read-only), diff and apply, plus copy between instances;
+   - pinned, tested Kuma versions.
 
 Gitea test server, should a later project need one: `docker run -d --name gt1 -p
 127.0.0.1:3001:3000 -e GITEA__security__INSTALL_LOCK=true -e
@@ -91,8 +96,7 @@ Actions as codeberg.org/forgejo/forgejo:16.
    - **Owner checks before going public:** read the README; rehearse on a copy of a
      real app (`--no-switch`); CI green.
 
-5. **issuemove** (projects/issuemove, v1.0.0; the release commit is the one that
-   adds its README). Move issues between Gitea/Forgejo repositories, on one
+5. **issuemove** (projects/issuemove, v1.0.0 at commit e7c8051). Move issues between Gitea/Forgejo repositories, on one
    instance or across two (go-gitea/gitea#453, open since 2016, 79 👍).
    - **What it copies:** comments, labels, milestone, assignees, due date, state,
      attachments with relinked URLs, reactions, dependencies (both ways), and
