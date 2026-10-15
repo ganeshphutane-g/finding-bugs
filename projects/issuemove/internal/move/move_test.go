@@ -92,7 +92,7 @@ func TestMoveSameInstanceAsAuthors(t *testing.T) {
 		i1.Milestone == nil || i1.Milestone.Title != "v2" || len(i1.Assignees) != 1 || i1.Assignees[0].Login != "bob" {
 		t.Fatalf("issue 1: %+v", i1)
 	}
-	if len(i1.Assets) != 1 || !strings.Contains(i1.Body, i1.Assets[0].UUID) || !strings.Contains(i1.Body, "Moved from [root/src](") {
+	if len(i1.Assets) != 1 || !strings.Contains(i1.Body, i1.Assets[0].UUID) || !strings.Contains(i1.Body, "Moved from [root/src#1](") {
 		t.Fatalf("issue 1 body/attachment:\n%s\n%+v", i1.Body, i1.Assets)
 	}
 	data, err := d.DownloadAttachment(ctx, i1.Assets[0].UUID)
@@ -227,5 +227,21 @@ func TestMoveToAnotherInstance(t *testing.T) {
 	oc, _ := a.Admin.Comments(ctx, "root", "src", 1)
 	if last := oc[len(oc)-1].Body; !strings.Contains(last, b.URL+"/root/dst/issues/") {
 		t.Fatalf("source link %q", last)
+	}
+}
+
+// TestRerunThroughAnotherURLDuplicatesNothing repeats a move through a
+// different address for the same server.
+func TestRerunThroughAnotherURLDuplicatesNothing(t *testing.T) {
+	s := testkit.Start(t)
+	seed(t, s)
+	_, err := doMove(t, s.Admin, s.Admin, "root/src#2", "root/dst", nil)
+	must(t, err)
+	other := gitea.New(strings.Replace(s.URL, "127.0.0.1", "localhost", 1), s.Admin.Token)
+	res, err := doMove(t, other, other, "root/src#2", "root/dst", nil)
+	must(t, err)
+	all, _ := s.Admin.Issues(ctx, "root", "dst", "all", "")
+	if len(all) != 1 || !res[0].Resumed {
+		t.Fatalf("%d issues in the target after a rerun via localhost", len(all))
 	}
 }

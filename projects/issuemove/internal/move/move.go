@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -70,11 +69,7 @@ func Run(ctx context.Context, o Options) ([]Result, error) {
 	if !p.OK() {
 		return nil, fmt.Errorf("the plan has problems to solve first: %s", strings.Join(p.Blockers, "; "))
 	}
-	u, err := url.Parse(o.Src.BaseURL)
-	if err != nil {
-		return nil, err
-	}
-	m := &mover{o: o, p: p, srcKey: u.Host + "/" + p.Source.String(),
+	m := &mover{o: o, p: p, srcKey: p.SourceKey,
 		labels: map[string]int64{}, miles: map[string]int64{}, moved: map[int64]int64{}}
 	for k, v := range p.LabelMap {
 		m.labels[strings.ToLower(k)] = v
@@ -181,7 +176,7 @@ func when(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") }
 func (m *mover) header(kind string, author gitea.User, at time.Time, link string, postedAs string) string {
 	if postedAs != "" {
 		if kind == "issue" {
-			return fmt.Sprintf("> Moved from [%s](%s), opened %s.\n\n", m.sourceName(), link, when(at))
+			return fmt.Sprintf("> Moved from [%s](%s), opened %s.\n\n", m.sourceName()+"#"+issueNumber(link), link, when(at))
 		}
 		return fmt.Sprintf("> Written %s.\n\n", when(at))
 	}
@@ -195,7 +190,11 @@ func (m *mover) header(kind string, author gitea.User, at time.Time, link string
 	if kind == "comment" {
 		verb = "Written"
 	}
-	return fmt.Sprintf("> %s by %s on %s in [%s](%s).\n\n", verb, who, when(at), m.sourceName(), link)
+	name := m.sourceName()
+	if kind == "issue" {
+		name += "#" + issueNumber(link)
+	}
+	return fmt.Sprintf("> %s by %s on %s in [%s](%s).\n\n", verb, who, when(at), name, link)
 }
 
 func (m *mover) sourceName() string { return m.p.Source.String() }
@@ -521,4 +520,17 @@ func (m *mover) links(ctx context.Context, ip *plan.Issue) {
 			m.log("  could not make %s#%d depend on %s/%s#%d: %v", t, to, owner, repo, n, err)
 		}
 	}
+}
+
+// issueNumber is the number at the end of an issue's web address.
+func issueNumber(link string) string {
+	i := strings.LastIndex(link, "/")
+	if i < 0 {
+		return ""
+	}
+	n := link[i+1:]
+	if j := strings.IndexAny(n, "#?"); j >= 0 {
+		n = n[:j]
+	}
+	return n
 }

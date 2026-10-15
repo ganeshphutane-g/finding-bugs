@@ -24,6 +24,7 @@ type Repo struct {
 	FullName    string `json:"full_name"`
 	Owner       User   `json:"owner"`
 	Name        string `json:"name"`
+	HTMLURL     string `json:"html_url"`
 	HasIssues   bool   `json:"has_issues"`
 	Archived    bool   `json:"archived"`
 	Permissions struct {

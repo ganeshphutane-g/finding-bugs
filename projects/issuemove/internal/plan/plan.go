@@ -41,8 +41,13 @@ type Plan struct {
 	Source       ref.Repo `json:"source"`
 	Target       ref.Repo `json:"target"`
 	SameInstance bool     `json:"same_instance"`
-	AsAuthors    bool     `json:"as_original_authors"` // Sudo is possible
-	Issues       []Issue  `json:"issues"`
+	// SourceKey identifies the source repository in markers: the server's
+	// own host name (from its root URL) and the repository's ID, so a
+	// second run finds earlier copies whatever URL is used and after a
+	// rename.
+	SourceKey string  `json:"source_key"`
+	AsAuthors bool    `json:"as_original_authors"` // Sudo is possible
+	Issues    []Issue `json:"issues"`
 
 	LabelMap      map[string]int64  `json:"label_map"`        // name -> existing target label id
 	NewLabels     []gitea.Label     `json:"labels_to_create"` // missing in the target
@@ -81,6 +86,11 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 	if err != nil {
 		return nil, fmt.Errorf("source repository %s: %w", p.Source, err)
 	}
+	host := srcRepo.HTMLURL
+	if u, err := url.Parse(srcRepo.HTMLURL); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	p.SourceKey = fmt.Sprintf("%s/repo-%d", host, srcRepo.ID)
 	dstRepo, err := in.Dst.Repo(ctx, p.Target.Owner, p.Target.Name)
 	if err != nil {
 		return nil, fmt.Errorf("target repository %s: %w", p.Target, err)
