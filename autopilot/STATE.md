@@ -1,28 +1,40 @@
 # State
 
-Current project: #5 Gitea/Forgejo issue mover (name to pick in the spec)
-Phase: spec
-Repo: projects/<name>/ inside finding-bugs until the owner creates repos.
-Research: IDEAS.md round 5.
+Current project: #5 issuemove (move issues between Gitea/Forgejo repositories)
+Phase: build, milestone 1 of 4
+Repo: projects/issuemove/ inside finding-bugs (own repos blocked, see below)
+Spec: projects/issuemove/SPEC.md. Research: IDEAS.md round 5.
 
 ## Next step
 
-1. (pgcarry CI is green on df3dbb4, checked at the end of run 4.)
-2. Write SPEC.md for the issue mover. First verify against real gitea/gitea and
-   codeberg.org/forgejo/forgejo containers (Docker Hub / codeberg images; check they
-   pull):
-   - which API fields can be set (issue and comment create, labels, milestones,
-     attachments, closing);
-   - whether the Sudo header keeps authors;
-   - whether timestamps can be kept (the migration API or the admin paths);
-   - how cross-repo and cross-instance references look;
-   - rate limits.
-   Then build in milestones, as for earlier projects.
+Milestone 1:
+- the API client (pagination, errors, Sudo, multipart);
+- SOURCE/TARGET parsing;
+- `issuemove plan` (a read-only report).
+
+Facts checked on Gitea 1.24.7 (2026-10-15):
+- CreateIssueOption, CreateIssueCommentOption and Edit* have no date fields, so
+  dates cannot be kept;
+- with an admin token the `Sudo` header creates issues, comments, reactions and
+  attachments as other users;
+- attachments are uploaded as multipart to /issues/{n}/assets (as the Sudo user);
+- the timeline endpoint exists.
+
+Forgejo cannot be pulled here (codeberg.org and data.forgejo.org are blocked by the
+proxy; the Go proxy only has v1.21). Test Forgejo in GitHub Actions with
+codeberg.org/forgejo/forgejo. `forgejoclone/forgejo` on Docker Hub is an
+unofficial mirror; it is not used.
+
+Gitea test server: `docker run -d --name gt1 -p 127.0.0.1:3001:3000 -e
+GITEA__security__INSTALL_LOCK=true -e GITEA__database__DB_TYPE=sqlite3
+gitea/gitea:1.24`, then `docker exec -u git gt1 gitea admin user create --admin
+...`. Use `--noproxy '*'` with curl for 127.0.0.1.
 
 ## Notes for runs
 
-- The Docker daemon is not running at session start. Start it with
-  `sudo dockerd > /tmp/dockerd.log 2>&1 &` and wait a few seconds.
+- The Docker daemon is not running at session start. Start it detached with
+  `sudo nohup dockerd > /tmp/claude-0/dockerd.log 2>&1 &` and wait a few seconds
+  (a plain `&` inside a compound command dies with the shell).
 - Integration tests: `MOP_INTEGRATION=1 go test ./...` (label-scoped, safe) or
   `MOP_INTEGRATION=destructive` (unscoped; only on a throwaway daemon like this one).
 - The classic image store prunes differently (parent images). To test it, stop
