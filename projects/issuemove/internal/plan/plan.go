@@ -176,7 +176,7 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 	newMile := map[string]bool{}
 	for _, is := range issues {
 		ip := Issue{Issue: is, CommentReac: map[int64][]gitea.Reaction{}}
-		users[is.User.Login] = is.User
+		addUser(users, is.User)
 		if ip.Comments, err = in.Src.Comments(ctx, p.Source.Owner, p.Source.Name, is.Number); err != nil {
 			return nil, err
 		}
@@ -184,14 +184,14 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 			return nil, err
 		}
 		for _, r := range ip.Reactions {
-			users[r.User.Login] = r.User
+			addUser(users, r.User)
 		}
 		for _, a := range is.Assets {
 			ip.Attachments++
 			ip.Bytes += a.Size
 		}
 		for _, c := range ip.Comments {
-			users[c.User.Login] = c.User
+			addUser(users, c.User)
 			for _, a := range c.Assets {
 				ip.Attachments++
 				ip.Bytes += a.Size
@@ -204,7 +204,7 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 				ip.CommentReac[c.ID] = rs
 			}
 			for _, r := range rs {
-				users[r.User.Login] = r.User
+				addUser(users, r.User)
 			}
 		}
 		for _, l := range is.Labels {
@@ -224,7 +224,7 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 			}
 		}
 		for _, a := range is.Assignees {
-			users[a.Login] = a
+			addUser(users, a)
 		}
 		p.Issues = append(p.Issues, ip)
 	}
@@ -274,4 +274,13 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 		}
 	}
 	return p, nil
+}
+
+// addUser records a user, keeping the most complete record: user objects
+// inside reactions, for instance, come without an email.
+func addUser(users map[string]gitea.User, u gitea.User) {
+	if have, ok := users[u.Login]; ok && (have.Email != "" || u.Email == "") {
+		return
+	}
+	users[u.Login] = u
 }

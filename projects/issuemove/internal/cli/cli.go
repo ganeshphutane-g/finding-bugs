@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ganeshphutane-g/issuemove/internal/gitea"
+	"github.com/ganeshphutane-g/issuemove/internal/move"
 	"github.com/ganeshphutane-g/issuemove/internal/plan"
 	"github.com/ganeshphutane-g/issuemove/internal/ref"
 )
@@ -27,6 +29,7 @@ link to their new place.
 
 Commands:
   plan      Show what would happen (changes nothing)
+  move      Do it (shows the plan and asks first)
   version   Show the version
 
 SOURCE is owner/repo#12, owner/repo#12,15, owner/repo#12-20, or owner/repo
@@ -38,7 +41,10 @@ Options:
       --target-url URL    The target instance, when it differs
       --state STATE       With owner/repo: open (default), closed or all
       --label NAMES       With owner/repo: only issues with these labels (comma-separated)
-      --json              Print the plan as JSON
+      --json              Print the plan as JSON (plan only)
+      --keep-open         Leave the originals open (they still get the link)
+      --lock              Lock the originals' conversation
+  -y, --yes               Do not ask before moving
 
 Tokens come from the environment, never from the command line:
   ISSUEMOVE_TOKEN, or ISSUEMOVE_SOURCE_TOKEN and ISSUEMOVE_TARGET_TOKEN,
@@ -55,6 +61,7 @@ func usagef(f string, a ...any) error { return fmt.Errorf("%w: %s", errUsage, fm
 
 // Env is the outside world the command sees.
 type Env struct {
+	Stdin          io.Reader
 	Stdout, Stderr io.Writer
 	Getenv         func(string) string
 	ReadFile       func(string) ([]byte, error)
@@ -62,7 +69,7 @@ type Env struct {
 
 // DefaultEnv uses the process environment.
 func DefaultEnv() Env {
-	return Env{Stdout: os.Stdout, Stderr: os.Stderr, Getenv: os.Getenv, ReadFile: os.ReadFile}
+	return Env{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, Getenv: os.Getenv, ReadFile: os.ReadFile}
 }
 
 // Run runs issuemove and returns the exit code.
@@ -90,6 +97,7 @@ type options struct {
 	url, srcURL, dstURL string
 	state, labels       string
 	json                bool
+	keepOpen, lock, yes bool
 	pos                 []string
 }
 
@@ -103,6 +111,10 @@ func parse(args []string) (options, error) {
 	fs.StringVar(&o.state, "state", "", "")
 	fs.StringVar(&o.labels, "label", "", "")
 	fs.BoolVar(&o.json, "json", false, "")
+	fs.BoolVar(&o.keepOpen, "keep-open", false, "")
+	fs.BoolVar(&o.lock, "lock", false, "")
+	fs.BoolVar(&o.yes, "y", false, "")
+	fs.BoolVar(&o.yes, "yes", false, "")
 	rest := args
 	for {
 		if err := fs.Parse(rest); err != nil {
@@ -158,7 +170,7 @@ func run(ctx context.Context, env Env, args []string) error {
 	case "version", "--version":
 		fmt.Fprintf(env.Stdout, "issuemove %s\n", Version)
 		return nil
-	case "plan":
+	case "plan", "move":
 	default:
 		return usagef("unknown command %q", cmd)
 	}
@@ -201,7 +213,11 @@ func run(ctx context.Context, env Env, args []string) error {
 	if err != nil {
 		return err
 	}
-	p, err := plan.Build(ctx, plan.Input{Src: gitea.New(srcURL, srcTok), Dst: gitea.New(dstURL, dstTok),
+	if o.json && cmd != "plan" {
+		return usagef("--json is for plan")
+	}
+	srcC, dstC := gitea.New(srcURL, srcTok), gitea.New(dstURL, dstTok)
+	p, err := plan.Build(ctx, plan.Input{Src: srcC, Dst: dstC,
 		Source: src, Target: dst, State: o.state, Labels: o.labels})
 	if err != nil {
 		return err
@@ -218,7 +234,37 @@ func run(ctx context.Context, env Env, args []string) error {
 	if !p.OK() {
 		return errBlocked
 	}
+	if cmd == "plan" {
+		return nil
+	}
+	if !o.yes && !confirm(env.Stdin, env.Stdout, fmt.Sprintf("Move %d issue(s) to %s?", len(p.Issues), p.Target)) {
+		return errors.New("stopped; nothing was changed")
+	}
+	results, err := move.Run(ctx, move.Options{Src: srcC, Dst: dstC, Plan: p, KeepOpen: o.keepOpen, Lock: o.lock,
+		Log: func(s string) { fmt.Fprintln(env.Stdout, s) }})
+	if err != nil {
+		if len(results) > 0 || errors.Is(err, context.Canceled) {
+			fmt.Fprintln(env.Stdout, "\nThe move stopped partway. Run the same command again: what was copied is found and finished, nothing is duplicated.")
+		}
+		return err
+	}
+	fmt.Fprintf(env.Stdout, "\nMoved %d issue(s) to %s; the originals have a link to their new place", len(results), p.Target)
+	if o.keepOpen {
+		fmt.Fprintln(env.Stdout, " and stay open.")
+	} else {
+		fmt.Fprintln(env.Stdout, " and are closed.")
+	}
 	return nil
+}
+
+func confirm(in io.Reader, out io.Writer, q string) bool {
+	fmt.Fprintf(out, "\n%s [y/N] ", q)
+	line, _ := bufio.NewReader(in).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
 }
 
 func firstOf(a, b string) string {

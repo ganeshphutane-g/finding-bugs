@@ -1,9 +1,16 @@
 # State
 
 Current project: #5 issuemove (move issues between Gitea/Forgejo repositories)
-Phase: build, milestone 2 of 4 (milestone 1 done: API client, ref parsing, plan
-with labels/milestones/authors/assignees/blockers, Gitea test kit, CI matrix with
-Gitea 1.24 and codeberg.org/forgejo/forgejo:16)
+Phase: build, milestone 3 of 4.
+- Milestones 1–2 are done: the client, refs, plan and move.
+- The move covers issues, comments, labels/milestones (created when missing),
+  assignees, due date, state, attachments with UUID rewriting, reactions, Sudo
+  authorship or an attribution header, `#n` rewriting outside code, the back-link
+  comment, closing and locking the original, and resume by hidden markers (no
+  journal file). It also works across instances (users matched by login + email).
+- Tests run on real Gitea 1.24.
+- Left for milestone 3: issue dependencies, watchers, `plan` saying when an issue
+  was already moved, README; then reviews.
 Repo: projects/issuemove/ inside finding-bugs (own repos blocked, see below)
 Spec: projects/issuemove/SPEC.md. Research: IDEAS.md round 5.
 
