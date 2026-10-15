@@ -1,47 +1,25 @@
 # State
 
-Current project: #5 issuemove (move issues between Gitea/Forgejo repositories)
-Phase: finish. Milestones 1–3 are done.
-- The move is complete and dependencies are carried. Watchers are dropped (the
-  Gitea 1.24 list API returned nothing even after a subscribe).
-- Markers are keyed by the server's own host and the repository ID, so a rerun
-  through another URL or after a rename finds earlier copies.
-- CI is green on Gitea 1.24 and the official Forgejo 16 (tests confirmed running
-  in the Forgejo job).
-- Two reviews were started at about 01:35 IST on 2026-10-16 (correctness/data
-  loss; security/usability). If their findings are not in LOG.md, re-run them.
-- A known risk to fix: markers are plain text, so a fake marker planted in the
-  target or on an original could hijack a rerun. Trust a marker only with a
-  matching title and poster (or keep a local journal).
-- Then the README with real output (demo: org acme, website -> docs, on a fresh
-  Gitea), CHANGELOG, v1.0.0.
-Repo: projects/issuemove/ inside finding-bugs (own repos blocked, see below)
-Spec: projects/issuemove/SPEC.md. Research: IDEAS.md round 5.
+Current project: none (issuemove finished in run 5)
+Phase: research (round 6). A research pass was started near the end of run 5
+(about 01:30 IST on 2026-10-16). If its results are not in IDEAS.md as
+"Research round 6", redo the research.
 
 ## Next step
 
-Milestone 1:
-- the API client (pagination, errors, Sudo, multipart);
-- SOURCE/TARGET parsing;
-- `issuemove plan` (a read-only report).
+Research round 6, following the playbook:
+- at least 5 candidates scored in IDEAS.md;
+- pick one with at least 3 independent demand sources and a clear gap;
+- then write the spec.
+Avoid ideas close to the five finished projects. Round 5's runners-up are listed in
+IDEAS.md.
 
-Facts checked on Gitea 1.24.7 (2026-10-15):
-- CreateIssueOption, CreateIssueCommentOption and Edit* have no date fields, so
-  dates cannot be kept;
-- with an admin token the `Sudo` header creates issues, comments, reactions and
-  attachments as other users;
-- attachments are uploaded as multipart to /issues/{n}/assets (as the Sudo user);
-- the timeline endpoint exists.
-
-Forgejo cannot be pulled here (codeberg.org and data.forgejo.org are blocked by the
-proxy; the Go proxy only has v1.21). Test Forgejo in GitHub Actions with
-codeberg.org/forgejo/forgejo. `forgejoclone/forgejo` on Docker Hub is an
-unofficial mirror; it is not used.
-
-Gitea test server: `docker run -d --name gt1 -p 127.0.0.1:3001:3000 -e
-GITEA__security__INSTALL_LOCK=true -e GITEA__database__DB_TYPE=sqlite3
-gitea/gitea:1.24`, then `docker exec -u git gt1 gitea admin user create --admin
-...`. Use `--noproxy '*'` with curl for 127.0.0.1.
+Gitea test server, should a later project need one: `docker run -d --name gt1 -p
+127.0.0.1:3001:3000 -e GITEA__security__INSTALL_LOCK=true -e
+GITEA__database__DB_TYPE=sqlite3 gitea/gitea:1.24`, then `docker exec -u git gt1
+gitea admin user create --admin ...`. Use `--noproxy '*'` with curl for 127.0.0.1.
+Forgejo cannot be pulled here (codeberg.org is blocked); it runs fine in GitHub
+Actions as codeberg.org/forgejo/forgejo:16.
 
 ## Notes for runs
 
@@ -113,6 +91,21 @@ gitea/gitea:1.24`, then `docker exec -u git gt1 gitea admin user create --admin
    - **Owner checks before going public:** read the README; rehearse on a copy of a
      real app (`--no-switch`); CI green.
 
+5. **issuemove** (projects/issuemove, v1.0.0; the release commit is the one that
+   adds its README). Move issues between Gitea/Forgejo repositories, on one
+   instance or across two (go-gitea/gitea#453, open since 2016, 79 👍).
+   - **What it copies:** comments, labels, milestone, assignees, due date, state,
+     attachments with relinked URLs, reactions, dependencies (both ways), and
+     rewritten references.
+   - **Authorship:** with an admin token, posts as the original authors (Sudo).
+   - **Safety:** plan first; resumable without duplicates; markers trusted only
+     from the token's user or the author.
+   - **Reviews:** two full reviews (correctness; security/usability), with about 25
+     findings fixed, each with a test.
+   - **CI:** green on Gitea 1.24 and Forgejo 16.
+   - **Owner checks before going public:** read the README; try `plan` and then a
+     `move` of one test issue on their own instance.
+
 ## Blockers for the owner
 
 - The finding-bugs repo itself is PUBLIC (seen 2026-10-15). Everything in it
@@ -125,6 +118,8 @@ gitea/gitea:1.24`, then `docker exec -u git gt1 gitea admin user create --admin
   `ganeshphutane-g/docker-mop` on GitHub and give the Claude GitHub app access to it
   (GitHub settings > Applications > Claude > Repository access). The next run will
   move the project there with its history.
+- Same for bucketmove, pushdir, pgcarry and issuemove (one empty private repo each,
+  with the Claude app given access), if they should live on their own.
 - Same for pushdir: an empty private repo `ganeshphutane-g/pushdir` with the Claude
   app given access lets the next run move it there (its README already uses that
   module path for `go install`).

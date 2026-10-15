@@ -2,6 +2,32 @@
 
 Newest first.
 
+## 2026-10-16 (IST) — run 5
+
+- issuemove (project #5) built and finished:
+  - milestones 1–3: plan, copy, resume, references, dependencies, cross-instance;
+  - CI on Gitea 1.24 and the official Forgejo 16 image (the tests were confirmed to
+    really run in the Forgejo job).
+- Two full reviews: correctness/data loss, and security/usability (run against real
+  Gitea containers). Fixed, each with a regression test:
+  - fake markers planted in the target or the source could divert a move;
+  - labels, milestone and assignees were silently dropped when the author could not
+    write to the target;
+  - a rerun could close copies, lost reactions and reverted attachment links;
+  - authors who could not see a private target made the move fail halfway;
+  - a shared token was sent to both instances;
+  - a mistyped `--label` selected every issue;
+  - cross-instance name matching could be forged (now opt-in with `--match-users`,
+    and mentions are quietened);
+  - plus redirects, retries, Ctrl-C at the prompt, the plan wording and exit codes.
+- I checked by mutation that the new tests fail when each fix is removed.
+- README from a real demo run (acme/website -> acme/docs), CHANGELOG, Roadmap.
+- Started research round 6.
+- Owner:
+  - the finding-bugs repo is still public (your decision);
+  - the v1.0.0 tags have to be created in the web UI (the git proxy refuses tags);
+  - optionally, create own repos for the projects.
+
 ## 2026-10-15 (IST) — run 4
 
 - Found that the finding-bugs repo is PUBLIC (the owner thought it was private).
