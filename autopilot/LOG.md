@@ -22,7 +22,12 @@ Newest first.
   - plus redirects, retries, Ctrl-C at the prompt, the plan wording and exit codes.
 - I checked by mutation that the new tests fail when each fix is removed.
 - README from a real demo run (acme/website -> acme/docs), CHANGELOG, Roadmap.
-- Started research round 6.
+- Research round 6 done: 6 candidates scored in IDEAS.md.
+  - Chosen: config as code for Uptime Kuma v2 (uptime-kuma#1354, 91 👍; the
+    maintainers have declined a readable export), provisionally; the evidence is to
+    be re-checked before the spec.
+  - Runner-up: Nginx Proxy Manager → Caddy/Traefik.
+- Next: spec for project #6 (see STATE.md).
 - Owner:
   - the finding-bugs repo is still public (your decision);
   - the v1.0.0 tags have to be created in the web UI (the git proxy refuses tags);
