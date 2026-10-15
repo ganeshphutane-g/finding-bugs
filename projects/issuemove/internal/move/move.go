@@ -109,6 +109,9 @@ func Run(ctx context.Context, o Options) ([]Result, error) {
 		}
 	}
 	for i := range p.Issues {
+		m.links(ctx, &p.Issues[i])
+	}
+	for i := range p.Issues {
 		if err := m.closeOriginal(ctx, &p.Issues[i]); err != nil {
 			return m.results, fmt.Errorf("%s#%d: %w", p.Source, p.Issues[i].Issue.Number, err)
 		}
@@ -483,4 +486,39 @@ func missingAssets(src, have []gitea.Attachment) []gitea.Attachment {
 		missing = append(missing, a)
 	}
 	return missing
+}
+
+// links carries dependencies once every issue has its new number. Failures
+// are logged, not fatal: the text keeps the history. (Watchers are not
+// copied: Gitea subscribes everyone who writes on an issue, and with an admin
+// token the participants write as themselves.)
+func (m *mover) links(ctx context.Context, ip *plan.Issue) {
+	t := m.p.Target
+	to := m.moved[ip.Issue.Number]
+	have := map[string]bool{}
+	if deps, err := m.o.Dst.Dependencies(ctx, t.Owner, t.Name, to); err == nil {
+		for _, d := range deps {
+			have[strings.ToLower(d.Repository.FullName)+"#"+strconv.FormatInt(d.Number, 10)] = true
+		}
+	}
+	for _, d := range ip.DependsOn {
+		owner, repo, n := d.Repository.Owner, d.Repository.Name, d.Number
+		if d.Repository.FullName == "" {
+			owner, repo = m.p.Source.Owner, m.p.Source.Name
+		}
+		if strings.EqualFold(owner+"/"+repo, m.p.Source.String()) {
+			if nw, ok := m.moved[n]; ok {
+				owner, repo, n = t.Owner, t.Name, nw
+			} else if !m.p.SameInstance {
+				m.log("  %s#%d depended on %s/%s#%d on the other instance; not carried", t, to, owner, repo, n)
+				continue
+			}
+		}
+		if have[strings.ToLower(owner+"/"+repo)+"#"+strconv.FormatInt(n, 10)] {
+			continue
+		}
+		if err := m.o.Dst.AddDependency(ctx, t.Owner, t.Name, to, owner, repo, n); err != nil {
+			m.log("  could not make %s#%d depend on %s/%s#%d: %v", t, to, owner, repo, n, err)
+		}
+	}
 }

@@ -72,6 +72,8 @@ func seed(t *testing.T, s *testkit.Server) {
 	must(t, err)
 	_, err = bob.EditIssue(ctx, "root", "src", is2.Number, map[string]any{"state": "closed"})
 	must(t, err)
+	// #1 depends on #2.
+	must(t, s.Admin.AddDependency(ctx, "root", "src", is.Number, "root", "src", is2.Number))
 }
 
 func TestMoveSameInstanceAsAuthors(t *testing.T) {
@@ -123,6 +125,11 @@ func TestMoveSameInstanceAsAuthors(t *testing.T) {
 	must(t, err)
 	if i2.State != "closed" || !strings.Contains(i2.Body, fmt.Sprintf("Duplicate of #%d", n1)) || !strings.Contains(i2.Body, "root/src#9") {
 		t.Fatalf("issue 2: %s\n%s", i2.State, i2.Body)
+	}
+	deps, err := d.Dependencies(ctx, "root", "dst", n1)
+	must(t, err)
+	if len(deps) != 1 || deps[0].Number != n2 || deps[0].Repository.FullName != "root/dst" {
+		t.Fatalf("dependencies %+v", deps)
 	}
 	// The originals are closed and point to the copies.
 	for _, r := range res {

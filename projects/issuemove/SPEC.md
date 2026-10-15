@@ -37,8 +37,12 @@ each).
   - attachments on the issue and on comments, with links in the text rewritten to
     the new attachments;
   - reactions;
-  - dependencies between issues moved together;
-  - watchers, where the target allows it.
+  - dependencies (blocked-by links), pointed at the new numbers when both issues
+    move together.
+
+  Watchers are not copied: the subscription list API was unreliable on Gitea 1.24
+  (empty even after a successful subscribe). Gitea subscribes everyone who writes on
+  an issue, and with an admin token the participants post as themselves.
 - **Keeps who wrote what.** With an admin token on the same instance, every issue,
   comment and reaction is posted as its original author (Gitea's `Sudo`, confirmed on
   Gitea 1.24). Otherwise each one starts with a short line naming the original

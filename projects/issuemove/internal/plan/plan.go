@@ -32,6 +32,8 @@ type Issue struct {
 	Bytes       int64                      `json:"attachment_bytes"`
 	Assignees   []string                   `json:"assignees_kept"`
 	Dropped     []string                   `json:"assignees_dropped,omitempty"`
+	DependsOn   []gitea.Dependency         `json:"depends_on,omitempty"`
+	MovedTo     string                     `json:"already_moved_to,omitempty"` // from an earlier run
 }
 
 // Plan is the whole move.
@@ -226,6 +228,17 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 		for _, a := range is.Assignees {
 			addUser(users, a)
 		}
+		for _, c := range ip.Comments {
+			if i := strings.Index(c.Body, "<!-- issuemove:moved-to="); i >= 0 {
+				rest := c.Body[i+len("<!-- issuemove:moved-to="):]
+				if end := strings.Index(rest, " -->"); end > 0 {
+					ip.MovedTo = rest[:end]
+				}
+			}
+		}
+		if ip.DependsOn, err = in.Src.Dependencies(ctx, p.Source.Owner, p.Source.Name, is.Number); err != nil && !gitea.IsNotFound(err) {
+			return nil, err
+		}
 		p.Issues = append(p.Issues, ip)
 	}
 	if (len(p.NewLabels) > 0 || len(p.NewMilestones) > 0) && !canWriteDst {
@@ -269,6 +282,9 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 		p.warn("the target token is not a site admin, so everything is posted as %s, with the original author and date at the top of each issue and comment", dstMe.Login)
 	}
 	for _, ip := range p.Issues {
+		if ip.MovedTo != "" {
+			p.warn("%s#%d was already moved to %s by an earlier run; that copy is finished, not duplicated", p.Source, ip.Issue.Number, ip.MovedTo)
+		}
 		if len(ip.Dropped) > 0 {
 			p.warn("%s#%d: assignees %s cannot be assigned in %s; they are named in the text", p.Source, ip.Issue.Number, strings.Join(ip.Dropped, ", "), p.Target)
 		}

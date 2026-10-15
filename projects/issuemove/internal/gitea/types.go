@@ -283,3 +283,34 @@ func (c *Client) Lock(ctx context.Context, owner, repo string, n int64) error {
 
 // String helps logging.
 func (i *Issue) String() string { return fmt.Sprintf("#%d %s", i.Number, i.Title) }
+
+// Dependency is an issue another one depends on, as listed by the API.
+type Dependency struct {
+	Number     int64 `json:"number"`
+	Repository struct {
+		Owner    string `json:"owner"`
+		Name     string `json:"name"`
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+}
+
+// Dependencies lists the issues an issue depends on (is blocked by).
+func (c *Client) Dependencies(ctx context.Context, owner, repo string, n int64) ([]Dependency, error) {
+	return list[Dependency](ctx, c, repoPath(owner, repo)+"/issues/"+strconv.FormatInt(n, 10)+"/dependencies", nil)
+}
+
+// AddDependency makes issue n depend on depOwner/depRepo#dep.
+func (c *Client) AddDependency(ctx context.Context, owner, repo string, n int64, depOwner, depRepo string, dep int64) error {
+	return c.send(ctx, http.MethodPost, repoPath(owner, repo)+"/issues/"+strconv.FormatInt(n, 10)+"/dependencies",
+		map[string]any{"owner": depOwner, "repo": depRepo, "index": dep}, nil)
+}
+
+// Subscribers lists an issue's watchers.
+func (c *Client) Subscribers(ctx context.Context, owner, repo string, n int64) ([]User, error) {
+	return list[User](ctx, c, repoPath(owner, repo)+"/issues/"+strconv.FormatInt(n, 10)+"/subscriptions", nil)
+}
+
+// Subscribe makes user watch an issue.
+func (c *Client) Subscribe(ctx context.Context, owner, repo string, n int64, user string) error {
+	return c.send(ctx, http.MethodPut, repoPath(owner, repo)+"/issues/"+strconv.FormatInt(n, 10)+"/subscriptions/"+url.PathEscape(user), nil, nil)
+}
