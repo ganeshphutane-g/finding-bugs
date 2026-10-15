@@ -20,13 +20,13 @@ exists: the closest are a YouTrack-to-Gitea script (2★) and a Gitea-to-GitHub 
 
 ## What v1 does
 
-`issuemove [OPTIONS] SOURCE TARGET`, where SOURCE is `owner/repo#12`, `owner/repo#12-20`
-or `owner/repo` with `--label`/`--state` filters, and TARGET is `owner/repo`.
-Either side can be on another instance (`--source-url`, `--target-url`, a token for
-each).
+`issuemove plan|move [OPTIONS] SOURCE TARGET`, where SOURCE is `owner/repo#12`,
+`owner/repo#12-20` or `owner/repo` with `--label`/`--state` filters, and TARGET is
+`owner/repo`. Either side can be on another instance (`--source-url`, `--target-url`,
+a token for each).
 
-- **Plans first.** `--dry-run` (the default without `--yes`) lists every issue and
-  what will happen to it:
+- **Plans first.** `plan` (and `move`, before it asks) lists every issue and what
+  will happen to it:
   - labels and milestones it will match or create;
   - users it can and cannot keep as authors;
   - attachments, and anything it will drop with the reason.
@@ -45,8 +45,10 @@ each).
   an issue, and with an admin token the participants post as themselves.
 - **Keeps who wrote what.** With an admin token on the same instance, every issue,
   comment and reaction is posted as its original author (Gitea's `Sudo`, confirmed on
-  Gitea 1.24). Otherwise each one starts with a short line naming the original
-  author and date. Original dates cannot be set through the API (confirmed: the
+  Gitea 1.24), if they can see the target. Otherwise each one starts with a short
+  line naming the original author and date. On another instance a name can belong to
+  someone else, so authors are only posted as with `--match-users` (same name and
+  email), and other @mentions are quietened. Original dates cannot be set through the API (confirmed: the
   create options have no date fields), so they are always kept in that line.
 - **Leaves a trail:**
   - the new issue links back to the original;
@@ -55,9 +57,12 @@ each).
   - references to other issues in the same source repository (`#5`) are rewritten
     to `owner/repo#5`, or to their new number when moved together, so links keep
     working.
-- **Safe to re-run.** A journal records what was copied: a run interrupted halfway
-  resumes without creating duplicates. Each new issue carries a hidden marker naming
-  its source.
+- **Safe to re-run.** Each copied issue and comment ends with a hidden marker naming
+  its source, and the original gets a marked "Moved to" note. A run interrupted
+  halfway finds what was copied and finishes it (attachments, labels, reactions,
+  links) without creating duplicates. Markers count only in text posted by the
+  token's user or the original author, and marker-like text in copied content is
+  defused, so nobody can pass their own issue off as a copy.
 
 ## Non-goals for v1
 

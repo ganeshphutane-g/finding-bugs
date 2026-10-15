@@ -2,6 +2,7 @@ package gitea
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,16 @@ type User struct {
 	IsAdmin bool   `json:"is_admin"`
 }
 
+// MarshalJSON leaves the email out, so a printed plan does not list
+// everyone's address.
+func (u User) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		ID      int64  `json:"id"`
+		Login   string `json:"login"`
+		IsAdmin bool   `json:"is_admin,omitempty"`
+	}{u.ID, u.Login, u.IsAdmin})
+}
+
 // Repo is a repository.
 type Repo struct {
 	ID          int64  `json:"id"`
@@ -25,6 +36,7 @@ type Repo struct {
 	Owner       User   `json:"owner"`
 	Name        string `json:"name"`
 	HTMLURL     string `json:"html_url"`
+	Private     bool   `json:"private"`
 	HasIssues   bool   `json:"has_issues"`
 	Archived    bool   `json:"archived"`
 	Permissions struct {
@@ -306,12 +318,16 @@ func (c *Client) AddDependency(ctx context.Context, owner, repo string, n int64,
 		map[string]any{"owner": depOwner, "repo": depRepo, "index": dep}, nil)
 }
 
-// Subscribers lists an issue's watchers.
-func (c *Client) Subscribers(ctx context.Context, owner, repo string, n int64) ([]User, error) {
-	return list[User](ctx, c, repoPath(owner, repo)+"/issues/"+strconv.FormatInt(n, 10)+"/subscriptions", nil)
+// Blocks lists the issues that depend on (are blocked by) an issue.
+func (c *Client) Blocks(ctx context.Context, owner, repo string, n int64) ([]Dependency, error) {
+	return list[Dependency](ctx, c, repoPath(owner, repo)+"/issues/"+strconv.FormatInt(n, 10)+"/blocks", nil)
 }
 
-// Subscribe makes user watch an issue.
-func (c *Client) Subscribe(ctx context.Context, owner, repo string, n int64, user string) error {
-	return c.send(ctx, http.MethodPut, repoPath(owner, repo)+"/issues/"+strconv.FormatInt(n, 10)+"/subscriptions/"+url.PathEscape(user), nil, nil)
+// SetLabels replaces an issue's labels.
+func (c *Client) SetLabels(ctx context.Context, owner, repo string, n int64, ids []int64) error {
+	if ids == nil {
+		ids = []int64{}
+	}
+	return c.send(ctx, http.MethodPut, repoPath(owner, repo)+"/issues/"+strconv.FormatInt(n, 10)+"/labels",
+		map[string]any{"labels": ids}, nil)
 }

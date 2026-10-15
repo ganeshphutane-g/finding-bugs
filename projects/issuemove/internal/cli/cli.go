@@ -9,6 +9,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -44,12 +46,18 @@ Options:
       --json              Print the plan as JSON (plan only)
       --keep-open         Leave the originals open (they still get the link)
       --lock              Lock the originals' conversation
+      --match-users       On another instance, post as the accounts with the
+                          same name and email (default: name authors in the text)
   -y, --yes               Do not ask before moving
 
 Tokens come from the environment, never from the command line:
-  ISSUEMOVE_TOKEN, or ISSUEMOVE_SOURCE_TOKEN and ISSUEMOVE_TARGET_TOKEN,
-  or a file named by ISSUEMOVE_TOKEN_FILE (and _SOURCE_/_TARGET_ variants).
+  ISSUEMOVE_SOURCE_TOKEN and ISSUEMOVE_TARGET_TOKEN (or files named by
+  ISSUEMOVE_SOURCE_TOKEN_FILE and ISSUEMOVE_TARGET_TOKEN_FILE); on one
+  instance, ISSUEMOVE_TOKEN (or ISSUEMOVE_TOKEN_FILE) serves for both.
 An admin token on the target posts everything as its original authors.
+
+Exit codes: 0 done, 1 error or answered no, 2 bad usage, 3 the plan is
+blocked, 130 interrupted.
 `
 
 var (
@@ -98,6 +106,8 @@ type options struct {
 	state, labels       string
 	json                bool
 	keepOpen, lock, yes bool
+	matchUsers          bool
+	help                bool
 	pos                 []string
 }
 
@@ -115,9 +125,13 @@ func parse(args []string) (options, error) {
 	fs.BoolVar(&o.lock, "lock", false, "")
 	fs.BoolVar(&o.yes, "y", false, "")
 	fs.BoolVar(&o.yes, "yes", false, "")
+	fs.BoolVar(&o.matchUsers, "match-users", false, "")
 	rest := args
 	for {
-		if err := fs.Parse(rest); err != nil {
+		if err := fs.Parse(rest); errors.Is(err, flag.ErrHelp) {
+			o.help = true
+			return o, nil
+		} else if err != nil {
 			return o, usagef("%v", err)
 		}
 		if fs.NArg() == 0 {
@@ -134,21 +148,31 @@ func parse(args []string) (options, error) {
 	return o, nil
 }
 
-// token reads a token for a side ("SOURCE" or "TARGET").
-func token(env Env, side string) (string, error) {
-	for _, name := range []string{"ISSUEMOVE_" + side + "_TOKEN", "ISSUEMOVE_TOKEN"} {
+// token reads a token for a side ("SOURCE" or "TARGET"). The side's own
+// settings come first; the shared ones only when both sides are one
+// instance, so a token is never sent to a server it was not made for.
+func token(env Env, side string, shared bool) (string, error) {
+	names := []string{"ISSUEMOVE_" + side + "_TOKEN"}
+	if shared {
+		names = append(names, "ISSUEMOVE_TOKEN")
+	}
+	for _, name := range names {
 		if v := strings.TrimSpace(env.Getenv(name)); v != "" {
 			return v, nil
 		}
-	}
-	for _, name := range []string{"ISSUEMOVE_" + side + "_TOKEN_FILE", "ISSUEMOVE_TOKEN_FILE"} {
-		if f := env.Getenv(name); f != "" {
+		if f := env.Getenv(name + "_FILE"); f != "" {
 			data, err := env.ReadFile(f)
 			if err != nil {
-				return "", fmt.Errorf("%s: %w", name, err)
+				return "", fmt.Errorf("%s_FILE: %w", name, err)
 			}
-			return strings.TrimSpace(string(data)), nil
+			if v := strings.TrimSpace(string(data)); v != "" {
+				return v, nil
+			}
+			return "", fmt.Errorf("%s_FILE: the file is empty", name)
 		}
+	}
+	if !shared {
+		return "", fmt.Errorf("no %s token: the instances differ, so set ISSUEMOVE_%s_TOKEN (ISSUEMOVE_TOKEN is used only within one instance)", strings.ToLower(side), side)
 	}
 	return "", fmt.Errorf("no %s token: set ISSUEMOVE_TOKEN (or ISSUEMOVE_%s_TOKEN)", strings.ToLower(side), side)
 }
@@ -158,11 +182,6 @@ func run(ctx context.Context, env Env, args []string) error {
 		return usagef("name a command")
 	}
 	cmd, args := args[0], args[1:]
-	for _, a := range args {
-		if a == "-h" || a == "--help" || a == "-help" {
-			cmd = "help"
-		}
-	}
 	switch cmd {
 	case "-h", "--help", "help":
 		fmt.Fprint(env.Stdout, usage)
@@ -172,11 +191,18 @@ func run(ctx context.Context, env Env, args []string) error {
 		return nil
 	case "plan", "move":
 	default:
+		if strings.HasPrefix(cmd, "-") {
+			return usagef("the command comes first, as in: issuemove plan %s ...", cmd)
+		}
 		return usagef("unknown command %q", cmd)
 	}
 	o, err := parse(args)
 	if err != nil {
 		return err
+	}
+	if o.help {
+		fmt.Fprint(env.Stdout, usage)
+		return nil
 	}
 	if len(o.pos) != 2 {
 		return usagef("need SOURCE and TARGET")
@@ -201,15 +227,20 @@ func run(ctx context.Context, env Env, args []string) error {
 		return usagef("give the instance with --url (or ISSUEMOVE_URL)")
 	}
 	for _, u := range []string{srcURL, dstURL} {
-		if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+		pu, err := url.Parse(u)
+		if err != nil || (pu.Scheme != "https" && pu.Scheme != "http") || pu.Host == "" {
 			return usagef("%q is not an http(s) URL", u)
 		}
+		if pu.Scheme == "http" && !loopback(pu.Hostname()) {
+			fmt.Fprintf(env.Stderr, "issuemove: warning: %s is not https, so the token travels unencrypted\n", u)
+		}
 	}
-	srcTok, err := token(env, "SOURCE")
+	shared := sameServer(srcURL, dstURL)
+	srcTok, err := token(env, "SOURCE", shared)
 	if err != nil {
 		return err
 	}
-	dstTok, err := token(env, "TARGET")
+	dstTok, err := token(env, "TARGET", shared)
 	if err != nil {
 		return err
 	}
@@ -218,7 +249,13 @@ func run(ctx context.Context, env Env, args []string) error {
 	}
 	srcC, dstC := gitea.New(srcURL, srcTok), gitea.New(dstURL, dstTok)
 	p, err := plan.Build(ctx, plan.Input{Src: srcC, Dst: dstC,
-		Source: src, Target: dst, State: o.state, Labels: o.labels})
+		Source: src, Target: dst, State: o.state, Labels: o.labels,
+		KeepOpen: o.keepOpen, Lock: o.lock, MatchUsers: o.matchUsers,
+		Progress: func(done, total int) {
+			if total >= 20 && (done%20 == 0 || done == total) {
+				fmt.Fprintf(env.Stderr, "reading issues: %d/%d\n", done, total)
+			}
+		}})
 	if err != nil {
 		return err
 	}
@@ -237,15 +274,19 @@ func run(ctx context.Context, env Env, args []string) error {
 	if cmd == "plan" {
 		return nil
 	}
-	if !o.yes && !confirm(env.Stdin, env.Stdout, fmt.Sprintf("Move %d issue(s) to %s?", len(p.Issues), p.Target)) {
-		return errors.New("stopped; nothing was changed")
+	if !o.yes {
+		yes, err := confirm(ctx, env.Stdin, env.Stdout, fmt.Sprintf("Move %d issue(s) to %s?", len(p.Issues), p.Target))
+		if err != nil {
+			return err
+		}
+		if !yes {
+			return errors.New("stopped; nothing was changed")
+		}
 	}
-	results, err := move.Run(ctx, move.Options{Src: srcC, Dst: dstC, Plan: p, KeepOpen: o.keepOpen, Lock: o.lock,
+	results, err := move.Run(ctx, move.Options{Src: srcC, Dst: dstC, Plan: p,
 		Log: func(s string) { fmt.Fprintln(env.Stdout, s) }})
 	if err != nil {
-		if len(results) > 0 || errors.Is(err, context.Canceled) {
-			fmt.Fprintln(env.Stdout, "\nThe move stopped partway. Run the same command again: what was copied is found and finished, nothing is duplicated.")
-		}
+		fmt.Fprintln(env.Stdout, "\nThe move stopped. Once the problem below is solved, run the same command again: what was copied is found and finished, nothing is duplicated.")
 		return err
 	}
 	fmt.Fprintf(env.Stdout, "\nMoved %d issue(s) to %s; the originals have a link to their new place", len(results), p.Target)
@@ -257,14 +298,41 @@ func run(ctx context.Context, env Env, args []string) error {
 	return nil
 }
 
-func confirm(in io.Reader, out io.Writer, q string) bool {
+// confirm asks a yes/no question; Ctrl-C while waiting stops the program.
+func confirm(ctx context.Context, in io.Reader, out io.Writer, q string) (bool, error) {
 	fmt.Fprintf(out, "\n%s [y/N] ", q)
-	line, _ := bufio.NewReader(in).ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
+	answer := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(in).ReadString('\n')
+		answer <- line
+	}()
+	select {
+	case <-ctx.Done():
+		fmt.Fprintln(out)
+		return false, ctx.Err()
+	case line := <-answer:
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes":
+			return true, nil
+		}
+		return false, nil
+	}
+}
+
+// sameServer reports whether two URLs name the same instance.
+func sameServer(a, b string) bool {
+	ua, err1 := url.Parse(a)
+	ub, err2 := url.Parse(b)
+	return err1 == nil && err2 == nil && strings.EqualFold(ua.Scheme, ub.Scheme) && strings.EqualFold(ua.Host, ub.Host) &&
+		strings.TrimSuffix(ua.Path, "/") == strings.TrimSuffix(ub.Path, "/")
+}
+
+func loopback(host string) bool {
+	if host == "localhost" {
 		return true
 	}
-	return false
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func firstOf(a, b string) string {

@@ -29,7 +29,30 @@ type Client struct {
 // New makes a client for an instance.
 func New(baseURL, token string) *Client {
 	return &Client{BaseURL: strings.TrimSuffix(baseURL, "/"), Token: token,
-		HTTP: &http.Client{Timeout: 2 * time.Minute}}
+		HTTP: &http.Client{Timeout: 30 * time.Minute, CheckRedirect: keepTokenHome}}
+}
+
+// keepTokenHome drops the token and Sudo headers when a redirect leaves the
+// origin (scheme, host or port) the request was made to. (Go itself drops
+// them only when the host name changes.)
+func keepTokenHome(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	first := via[0].URL
+	if req.URL.Scheme != first.Scheme || !strings.EqualFold(req.URL.Host, first.Host) {
+		req.Header.Del("Authorization")
+		req.Header.Del("Sudo")
+	}
+	return nil
+}
+
+// retries is how often a failed read is tried again.
+var retries = []time.Duration{time.Second, 3 * time.Second, 10 * time.Second}
+
+func retryable(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
 }
 
 // As returns a client acting as user (empty: as the token's own user).
@@ -63,6 +86,26 @@ func IsStatus(err error, status int) bool {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body io.Reader, ctype string, out any) (http.Header, error) {
+	// Reads are retried when the server is busy or the connection fails;
+	// writes are not, as a write that did happen would be repeated.
+	for attempt := 0; ; attempt++ {
+		h, err := c.do1(ctx, method, path, query, body, ctype, out)
+		if method != http.MethodGet || attempt == len(retries) || ctx.Err() != nil {
+			return h, err
+		}
+		var ae *APIError
+		if err == nil || (errors.As(err, &ae) && !retryable(ae.Status)) {
+			return h, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(retries[attempt]):
+		}
+	}
+}
+
+func (c *Client) do1(ctx context.Context, method, path string, query url.Values, body io.Reader, ctype string, out any) (http.Header, error) {
 	u := c.BaseURL + "/api/v1" + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
@@ -100,6 +143,9 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		}
 		if len(msg) > 300 {
 			msg = msg[:300] + "..."
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			msg = "the token was refused; check that it is right and has not expired"
 		}
 		return nil, &APIError{Method: method, Path: path, Status: resp.StatusCode, Message: msg}
 	}
@@ -179,8 +225,9 @@ func (c *Client) upload(ctx context.Context, path, field, name string, content i
 }
 
 // DownloadAttachment fetches an attachment's content by its UUID, from
-// this instance's /attachments/ route (so the token is only ever sent to
-// the configured instance, whatever URL the server reports).
+// this instance's /attachments/ route (so the token goes to the configured
+// instance, whatever URL the server reports, and is dropped if the server
+// redirects elsewhere).
 func (c *Client) DownloadAttachment(ctx context.Context, uuid string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/attachments/"+url.PathEscape(uuid), nil)
 	if err != nil {

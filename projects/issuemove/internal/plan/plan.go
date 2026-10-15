@@ -6,10 +6,12 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/ganeshphutane-g/issuemove/internal/gitea"
+	"github.com/ganeshphutane-g/issuemove/internal/marker"
 	"github.com/ganeshphutane-g/issuemove/internal/ref"
 )
 
@@ -20,6 +22,14 @@ type Input struct {
 	Target   ref.Repo
 	State    string // with no numbers: open, closed or all
 	Labels   string // with no numbers: comma-separated label filter
+
+	KeepOpen bool // leave the originals open
+	Lock     bool // lock the originals
+	// MatchUsers, on another instance, posts as the target account with the
+	// same name and email (otherwise authors are named in the text).
+	MatchUsers bool
+	// Progress, when set, is told how many issues have been read.
+	Progress func(done, total int)
 }
 
 // Issue is one issue to move.
@@ -33,7 +43,8 @@ type Issue struct {
 	Assignees   []string                   `json:"assignees_kept"`
 	Dropped     []string                   `json:"assignees_dropped,omitempty"`
 	DependsOn   []gitea.Dependency         `json:"depends_on,omitempty"`
-	MovedTo     string                     `json:"already_moved_to,omitempty"` // from an earlier run
+	Blocks      []gitea.Dependency         `json:"blocks,omitempty"`           // issues that depend on this one
+	MovedTo     string                     `json:"already_moved_to,omitempty"` // by an earlier run
 }
 
 // Plan is the whole move.
@@ -48,6 +59,12 @@ type Plan struct {
 	SourceKey string  `json:"source_key"`
 	AsAuthors bool    `json:"as_original_authors"` // Sudo is possible
 	Issues    []Issue `json:"issues"`
+	// SourceUser and TargetUser are the tokens' users: only text they (or
+	// the original authors) posted is trusted to carry markers.
+	SourceUser string `json:"source_user"`
+	TargetUser string `json:"target_user"`
+	KeepOpen   bool   `json:"keep_open"`
+	Lock       bool   `json:"lock"`
 
 	LabelMap      map[string]int64  `json:"label_map"`        // name -> existing target label id
 	NewLabels     []gitea.Label     `json:"labels_to_create"` // missing in the target
@@ -77,7 +94,7 @@ func sameInstance(a, b *gitea.Client) bool {
 func Build(ctx context.Context, in Input) (*Plan, error) {
 	p := &Plan{Source: ref.Repo{Owner: in.Source.Owner, Name: in.Source.Repo}, Target: in.Target,
 		SameInstance: sameInstance(in.Src, in.Dst), LabelMap: map[string]int64{}, MilestoneMap: map[string]int64{},
-		Authors: map[string]string{}}
+		Authors: map[string]string{}, KeepOpen: in.KeepOpen, Lock: in.Lock}
 	if p.SameInstance && strings.EqualFold(p.Source.String(), p.Target.String()) {
 		return nil, fmt.Errorf("the source and target are the same repository")
 	}
@@ -104,6 +121,7 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 		return nil, fmt.Errorf("the source token: %w", err)
 	}
 	p.AsAuthors = dstMe.IsAdmin
+	p.SourceUser, p.TargetUser = srcMe.Login, dstMe.Login
 
 	switch {
 	case !dstRepo.HasIssues:
@@ -118,6 +136,10 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 	canWriteSrc := srcRepo.Permissions.Push || srcRepo.Permissions.Admin || srcMe.IsAdmin
 	if !canWriteSrc {
 		p.block("the source token (%s) cannot write to %s, so it cannot close the originals; use a token with write access", srcMe.Login, p.Source)
+	}
+
+	if srcRepo.Private && !dstRepo.Private {
+		p.warn("%s is private and %s is not: the moved issues, comments and attachments become visible to everyone who can see %s", p.Source, p.Target, p.Target)
 	}
 
 	// The issues.
@@ -139,6 +161,29 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 			issues = append(issues, *is)
 		}
 	} else {
+		if in.Labels != "" {
+			// Gitea ignores label names it does not know, which would
+			// select every issue.
+			known := map[string]bool{}
+			ls, err := in.Src.Labels(ctx, p.Source.Owner, p.Source.Name)
+			if err != nil {
+				return nil, err
+			}
+			if org, err := in.Src.OrgLabels(ctx, p.Source.Owner); err == nil {
+				ls = append(ls, org...)
+			}
+			for _, l := range ls {
+				known[strings.ToLower(l.Name)] = true
+			}
+			for _, name := range strings.Split(in.Labels, ",") {
+				if name = strings.TrimSpace(name); !known[strings.ToLower(name)] {
+					p.block("%s has no label %q", p.Source, name)
+				}
+			}
+			if !p.OK() {
+				return p, nil
+			}
+		}
 		state := in.State
 		if state == "" {
 			state = "open"
@@ -186,7 +231,10 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 	users := map[string]gitea.User{}
 	newLabel := map[string]bool{}
 	newMile := map[string]bool{}
-	for _, is := range issues {
+	for i, is := range issues {
+		if in.Progress != nil {
+			in.Progress(i+1, len(issues))
+		}
 		ip := Issue{Issue: is, CommentReac: map[int64][]gitea.Reaction{}}
 		addUser(users, is.User)
 		if ip.Comments, err = in.Src.Comments(ctx, p.Source.Owner, p.Source.Name, is.Number); err != nil {
@@ -239,20 +287,25 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 			addUser(users, a)
 		}
 		for _, c := range ip.Comments {
-			if i := strings.Index(c.Body, "<!-- issuemove:moved-to="); i >= 0 {
-				rest := c.Body[i+len("<!-- issuemove:moved-to="):]
-				if end := strings.Index(rest, " -->"); end > 0 {
-					ip.MovedTo = rest[:end]
-				}
+			if to, ok := MoveNote(c, p.SourceUser); ok {
+				ip.MovedTo = to
 			}
 		}
 		if ip.DependsOn, err = in.Src.Dependencies(ctx, p.Source.Owner, p.Source.Name, is.Number); err != nil && !gitea.IsNotFound(err) {
 			return nil, err
 		}
+		if ip.Blocks, err = in.Src.Blocks(ctx, p.Source.Owner, p.Source.Name, is.Number); err != nil && !gitea.IsNotFound(err) {
+			return nil, err
+		}
 		p.Issues = append(p.Issues, ip)
 	}
-	if (len(p.NewLabels) > 0 || len(p.NewMilestones) > 0) && !canWriteDst {
-		p.block("the target token (%s) cannot create labels or milestones in %s; create them first or use a token with write access", dstMe.Login, p.Target)
+	needsWrite := len(p.NewLabels) > 0 || len(p.NewMilestones) > 0
+	for _, ip := range p.Issues {
+		is := ip.Issue
+		needsWrite = needsWrite || len(is.Labels) > 0 || is.Milestone != nil || len(is.Assignees) > 0 || is.Due != nil
+	}
+	if needsWrite && !canWriteDst {
+		p.block("the target token (%s) cannot write to %s, so it cannot set labels, milestones, assignees or due dates; use a token with write access", dstMe.Login, p.Target)
 	}
 
 	// Authors: posted as themselves when possible, else named in the text.
@@ -265,11 +318,34 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 			p.Authors[login] = login
 			continue
 		}
-		// On another instance the same name may be someone else: also
-		// require the same email.
+		// On another instance the same name may be someone else: only on
+		// request, and with the same (real) email.
+		if !in.MatchUsers || u.Email == "" || noReply(u.Email) {
+			continue
+		}
 		tu, err := in.Dst.User(ctx, login)
-		if err == nil && u.Email != "" && strings.EqualFold(tu.Email, u.Email) {
+		if err == nil && strings.EqualFold(tu.Email, u.Email) {
 			p.Authors[login] = tu.Login
+		}
+	}
+	// Someone who cannot see the target cannot post there: their text is
+	// posted by the token's user and names them.
+	canPost := map[string]bool{}
+	for login, as := range p.Authors {
+		if as == "" || strings.EqualFold(as, dstMe.Login) {
+			continue
+		}
+		ok, seen := canPost[as]
+		if !seen {
+			_, err := in.Dst.As(as).Repo(ctx, p.Target.Owner, p.Target.Name)
+			ok = err == nil
+			canPost[as] = ok
+			if !ok {
+				p.warn("%s cannot see %s, so what they wrote is posted by %s and names them", as, p.Target, dstMe.Login)
+			}
+		}
+		if !ok {
+			p.Authors[login] = ""
 		}
 	}
 	// Assignees: only someone known to be the same account on the target,
@@ -290,16 +366,63 @@ func Build(ctx context.Context, in Input) (*Plan, error) {
 	}
 	if !p.AsAuthors {
 		p.warn("the target token is not a site admin, so everything is posted as %s, with the original author and date at the top of each issue and comment", dstMe.Login)
+	} else if !p.SameInstance && !in.MatchUsers {
+		p.warn("on another instance a name can belong to someone else, so authors are named in the text; --match-users posts as the accounts with the same name and email")
+	}
+	dropped, mentions := 0, false
+	for _, ip := range p.Issues {
+		rs := ip.Reactions
+		for _, r := range ip.CommentReac {
+			rs = append(rs, r...)
+		}
+		for _, r := range rs {
+			if p.Authors[r.User.Login] == "" {
+				dropped++
+			}
+		}
+		mentions = mentions || mentionLike.MatchString(ip.Issue.Body)
+		for _, c := range ip.Comments {
+			mentions = mentions || mentionLike.MatchString(c.Body)
+		}
+	}
+	if dropped > 0 {
+		p.warn("%d reaction(s) are not copied: a reaction can only be added as its own user, which needs an admin token (and, on another instance, the same account there)", dropped)
+	}
+	if mentions {
+		p.warn("people @mentioned in the moved text are notified again when the copies are posted")
 	}
 	for _, ip := range p.Issues {
 		if ip.MovedTo != "" {
-			p.warn("%s#%d was already moved to %s by an earlier run; that copy is finished, not duplicated", p.Source, ip.Issue.Number, ip.MovedTo)
+			if strings.HasPrefix(strings.ToLower(ip.MovedTo), strings.ToLower(p.Target.String())+"#") {
+				p.warn("%s#%d was already moved to %s by an earlier run; that copy is finished, not duplicated", p.Source, ip.Issue.Number, ip.MovedTo)
+			} else {
+				p.block("%s#%d was already moved to %s; move that issue instead", p.Source, ip.Issue.Number, ip.MovedTo)
+			}
 		}
 		if len(ip.Dropped) > 0 {
 			p.warn("%s#%d: assignees %s cannot be assigned in %s; they are named in the text", p.Source, ip.Issue.Number, strings.Join(ip.Dropped, ", "), p.Target)
 		}
 	}
 	return p, nil
+}
+
+var mentionLike = regexp.MustCompile(`(^|[\s(\[>"'*_~])@[0-9A-Za-z_-]`)
+
+// noReply reports an address that is not a real mailbox (Gitea's
+// placeholder for hidden emails), which anyone could claim elsewhere.
+func noReply(email string) bool {
+	at := strings.LastIndex(email, "@")
+	return at < 0 || strings.Contains(strings.ToLower(email[at:]), "noreply")
+}
+
+// MoveNote reads the "Moved to" note issuemove leaves on an original: a
+// comment by the source token's user ending in a moved-to marker. It
+// returns where the issue went.
+func MoveNote(c gitea.Comment, sourceUser string) (string, bool) {
+	if !strings.EqualFold(c.User.Login, sourceUser) {
+		return "", false
+	}
+	return marker.Last(c.Body, "moved-to")
 }
 
 // addUser records a user, keeping the most complete record: user objects

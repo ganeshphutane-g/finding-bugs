@@ -8,6 +8,7 @@ import (
 func TestRewriteRefs(t *testing.T) {
 	moved := map[int64]int64{3: 40}
 	src := func(n int64) string { return fmt.Sprintf("me/old#%d", n) }
+	refs := func(s string) string { return rewriteRefs(s, moved, src) }
 	for in, want := range map[string]string{
 		"see #3 and #5":                 "see #40 and me/old#5",
 		"(#3)":                          "(#40)",
@@ -21,9 +22,25 @@ func TestRewriteRefs(t *testing.T) {
 		"``a ` #3`` and #3":             "``a ` #3`` and #40",
 		"https://host/me/old/issues#3":  "https://host/me/old/issues#3",
 		"heading\n## Steps\n#3":         "heading\n## Steps\n#40",
+		"[step 3](#3) and (#3)":         "[step 3](#3) and (#40)",
 	} {
-		if got := rewriteRefs(in, moved, src); got != want {
+		if got := outsideCode(in, refs); got != want {
 			t.Errorf("rewriteRefs(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestQuietMentions(t *testing.T) {
+	keep := func(l string) bool { return l == "alice" }
+	for in, want := range map[string]string{
+		"thanks @bob and @alice": "thanks @​bob and @alice",
+		"mail bob@example.com":   "mail bob@example.com",
+		"(@bob) `@bob`":          "(@​bob) `@bob`",
+		"@bob: at the start":     "@​bob: at the start",
+		"in **@bob** bold":       "in **@\u200bbob** bold",
+	} {
+		if got := outsideCode(in, func(s string) string { return quietMentions(s, keep) }); got != want {
+			t.Errorf("quietMentions(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

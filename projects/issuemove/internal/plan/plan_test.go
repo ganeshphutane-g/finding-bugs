@@ -95,8 +95,13 @@ func TestPlanBlockers(t *testing.T) {
 		t.Fatalf("no issues: %q", p.Blockers)
 	}
 	bob := s.Client("bob")
-	if p := build(t, bob, bob, "root/src#2", "root/dst"); !contains(p.Blockers, "cannot write to root/src") || !contains(p.Blockers, "cannot create labels") {
+	if p := build(t, bob, bob, "root/src#2", "root/dst"); !contains(p.Blockers, "cannot write to root/src") || !contains(p.Blockers, "cannot set labels") {
 		t.Fatalf("bob: %q", p.Blockers)
+	}
+	p, err := Build(context.Background(), Input{Src: s.Admin, Dst: s.Admin, Source: ref.Source{Owner: "root", Repo: "src"},
+		Target: ref.Repo{Owner: "root", Name: "dst"}, State: "all", Labels: "new-label,typo"})
+	if err != nil || !contains(p.Blockers, `no label "typo"`) || len(p.Issues) != 0 {
+		t.Fatalf("unknown label: %v %q", err, p.Blockers)
 	}
 	if _, err := Build(context.Background(), Input{Src: s.Admin, Dst: s.Admin, Source: ref.Source{Owner: "root", Repo: "src"}, Target: ref.Repo{Owner: "root", Name: "src"}}); err == nil {
 		t.Fatal("same repository should be refused")

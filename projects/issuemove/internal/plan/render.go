@@ -17,7 +17,13 @@ func (p *Plan) Render(w io.Writer) {
 	out("Move %d issue(s) from %s to %s (%s)", len(p.Issues), p.Source, p.Target, where)
 	for _, ip := range p.Issues {
 		is := ip.Issue
-		extra := []string{fmt.Sprintf("%d comment(s)", len(ip.Comments))}
+		comments := 0
+		for _, c := range ip.Comments {
+			if _, note := MoveNote(c, p.SourceUser); !note {
+				comments++
+			}
+		}
+		extra := []string{fmt.Sprintf("%d comment(s)", comments)}
 		if ip.Attachments > 0 {
 			extra = append(extra, fmt.Sprintf("%d attachment(s), %s", ip.Attachments, human(ip.Bytes)))
 		}
@@ -70,7 +76,16 @@ func (p *Plan) Render(w io.Writer) {
 	if len(attr) > 0 {
 		out("Named in the text (posted by the token's user): %s", strings.Join(attr, ", "))
 	}
-	out("Original dates are kept in the text; the originals are closed with a link to the new issues.")
+	then := "closed"
+	switch {
+	case p.KeepOpen && p.Lock:
+		then = "left open and locked"
+	case p.KeepOpen:
+		then = "left open"
+	case p.Lock:
+		then = "closed and locked"
+	}
+	out("Original dates are kept in the text; the originals get a link to the new issues and are %s.", then)
 	section := func(title string, items []string) {
 		if len(items) == 0 {
 			return
