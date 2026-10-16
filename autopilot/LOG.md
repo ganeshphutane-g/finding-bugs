@@ -27,8 +27,9 @@ Newest first.
   - YAML that could not be read back;
   - Kafka SASL, custom links, logos, paused groups and null tags.
 - The README shows a real demo run; CHANGELOG written.
-- Tests pass locally on Kuma 2.0.0 and 2.5.6. CI for the final commit was still
-  running when this was written.
+- Tests pass locally and in CI (aa90445) on Kuma 2.0.0 and the latest 2.x.
+- Research round 7 started at the end of the run; if it is not in IDEAS.md,
+  redo it.
 - Next: research round 7 (STATE.md).
 - Owner:
   - the finding-bugs repo is still public (your decision);
