@@ -311,17 +311,23 @@ func (e *exporter) monitor(m kuma.Object, ix *index) Obj {
 	name := m.Str("name")
 	fields := map[string]any{}
 	for k, v := range m {
-		if monitorDropped[k] || v == nil {
+		if monitorDropped[k] {
 			continue
 		}
 		fields[k] = v
 	}
-	if fields["active"] == true {
-		delete(fields, "active")
-	}
+	typ := m.Str("type")
 	o := Obj{}
 	put := func(k string, v any) {
-		if empty(v) {
+		if dv, known := defaultFor(typ, k); known && k != "name" {
+			if same(v, dv) {
+				return // as the web interface would have it
+			}
+			if isEmpty(v) {
+				o = append(o, KV{k, nil}) // empty where the default is not
+				return
+			}
+		} else if empty(v) {
 			return
 		}
 		switch {
@@ -398,11 +404,23 @@ func maintenance(mt kuma.Maintenance, ix *index) Obj {
 	for _, k := range []string{"description", "strategy", "active", "intervalDay", "dateRange", "timeRange", "weekdays",
 		"daysOfMonth", "cron", "durationMinutes", "timezoneOption"} {
 		v, ok := mt.Object[k]
-		if !ok || empty(v) {
+		if !ok {
 			continue
 		}
 		if a, isList := v.([]any); isList && len(a) == 1 && a[0] == nil {
 			continue // dateRange [null]: no dates
+		}
+		if dv, known := kindDefault("maintenance", "", k); known {
+			if same(v, dv) {
+				continue
+			}
+			if isEmpty(v) {
+				o = append(o, KV{k, nil})
+				continue
+			}
+		}
+		if empty(v) {
+			continue
 		}
 		o = append(o, KV{k, value(v)})
 	}
@@ -435,7 +453,17 @@ func statusPage(sp kuma.StatusPage, ix *index) Obj {
 	}
 	sort.Strings(rest)
 	for _, k := range rest {
-		if v := sp.Object[k]; !empty(v) {
+		v := sp.Object[k]
+		if dv, known := kindDefault("status_pages", "", k); known {
+			if same(v, dv) {
+				continue
+			}
+			if isEmpty(v) {
+				o = append(o, KV{k, nil})
+				continue
+			}
+		}
+		if !empty(v) {
 			o = append(o, KV{k, value(v)})
 		}
 	}

@@ -13,20 +13,29 @@ Milestone 1 is done (run 6):
 - `kumafile export` writes YAML plus a 0600 .env with the secrets;
 - tests pass on Kuma 2.0.0 and 2.5.6.
 
-Milestone 2, model and diff:
-1. Defaults per monitor type, so the export leaves them out. Get them by creating
-   a monitor of each type with the web UI's defaults (the EditMonitor.vue default
-   object) and reading it back; a field equal to the default is dropped.
-2. Read a kumafile back: YAML, then ${NAME} expansion from the env file and the
-   environment ($${ is a literal), then the same model as an export.
-3. Identity keys:
-   - monitor: group path + name, case-insensitive;
-   - notification, tag, Docker host, remote browser: name;
-   - maintenance: title;
-   - status page: slug;
-   - proxy: protocol://host:port.
-4. `kumafile diff FILE`: create, change (field by field) and, with `--prune`,
-   delete.
+Milestone 2 is done (run 6):
+- the baseline (what a UI-created monitor looks like, plus per-type tweaks;
+  internal/config/defaults.go) trims the export;
+- Load reads a file and expands ${NAME} ($${ is a literal);
+- Diff compares the file with the instance, which is loaded through its own
+  export, so both sides look alike; `kumafile diff` exits 0 in sync, 3 on
+  differences;
+- references are checked; secrets are never printed.
+
+Milestone 3, apply:
+- `kumafile apply [FILE] [--prune] [-y]`: show the diff, ask, then act in
+  dependency order (tags, notifications, proxies, Docker hosts, remote browsers,
+  groups parent-first, monitors, maintenance, status pages); deletes in reverse
+  order.
+- An update sends the live monitor object merged with the file's fields
+  (editMonitor copies 116 named fields, so leaving one out clears it). Use
+  pause/resume for active; notifications go in notificationIDList; tags via
+  add/edit/deleteMonitorTag.
+- Tests:
+  - round trip: export A, apply to a fresh B, export B, same file;
+  - a second apply changes nothing;
+  - prune;
+  - a monitor of every type the server lists.
 
 Notes for apply (milestone 3):
 - saveStatusPage(slug, config, imgDataUrl, groups) needs imgDataUrl = config.icon

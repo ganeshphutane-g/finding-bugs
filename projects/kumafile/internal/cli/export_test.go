@@ -136,3 +136,38 @@ func TestExport(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errb)
 	}
 }
+
+func TestDiff(t *testing.T) {
+	s := testkit.Start(t)
+	seed(t, s)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "kuma.yaml")
+	e, _, errb := testEnv(t, s, nil)
+	if code := Run(context.Background(), e, []string{"export", "-o", file}); code != 0 {
+		t.Fatalf("export: %s", errb)
+	}
+	e, out, errb := testEnv(t, s, nil)
+	if code := Run(context.Background(), e, []string{"diff", file}); code != 0 || !strings.Contains(out.String(), "The instance matches the file.") {
+		t.Fatalf("a fresh export differs (exit %d):\n%s%s", code, out, errb)
+	}
+	data, _ := os.ReadFile(file)
+	changed := strings.Replace(string(data), "interval: 120", "interval: 300", 1)
+	changed = strings.Replace(changed, "description: All our services", "description: Everything", 1)
+	os.WriteFile(file, []byte(changed), 0o644)
+	e, out, _ = testEnv(t, s, map[string]string{"MONITOR_HOMEPAGE_BASIC_AUTH_PASS": "rotated"})
+	code := Run(context.Background(), e, []string{"diff", file})
+	for _, want := range []string{"interval: 120 -> 300", "basic_auth_pass: (secret, changed)", "description: All our services -> Everything", "0 to create, 2 to change, 0 to delete."} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if code != 3 || strings.Contains(out.String(), "rotated") || strings.Contains(out.String(), "http-pass") {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	// Without the env file, the secrets are missing.
+	os.Remove(filepath.Join(dir, "kuma.env"))
+	e, _, errb = testEnv(t, s, nil)
+	if code := Run(context.Background(), e, []string{"diff", file}); code != 1 || !strings.Contains(errb.String(), "no value for") {
+		t.Fatalf("exit %d: %s", code, errb)
+	}
+}

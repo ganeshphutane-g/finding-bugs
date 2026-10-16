@@ -30,7 +30,11 @@ and remote browsers.
 
 Commands:
   export    Write the instance's configuration to a file
+  diff      Show how the instance differs from a file (changes nothing)
   version   Show the version
+
+  kumafile export [-o FILE]
+  kumafile diff [FILE]      (FILE defaults to kumafile.yaml; - reads stdin)
 
 Options:
       --url URL            The instance (default $KUMAFILE_URL)
@@ -39,6 +43,10 @@ Options:
       --secrets FILE       export: where to write secrets (default: the output
                            file with .env instead of .yaml)
       --with-secrets       export: keep secrets in the file itself
+      --env-file FILE      diff: where ${NAME} values are (default: the file
+                           with .env instead of .yaml, if it exists); the
+                           environment takes precedence
+      --prune              diff: also delete what is only on the instance
 
 Login comes from the environment, never from the command line:
   KUMAFILE_USERNAME and KUMAFILE_PASSWORD (or KUMAFILE_PASSWORD_FILE), and
@@ -46,7 +54,7 @@ Login comes from the environment, never from the command line:
   two-factor login; or KUMAFILE_TOKEN(_FILE), a token from an earlier login.
   An instance with authentication turned off needs none.
 
-Exit codes: 0 done, 1 error, 2 bad usage.
+Exit codes: 0 done (diff: in sync), 1 error, 2 bad usage, 3 diff: differences.
 `
 
 var errUsage = errors.New("usage")
@@ -99,6 +107,8 @@ func Run(ctx context.Context, env Env, args []string) int {
 	case errors.Is(err, errUsage):
 		fmt.Fprintf(env.Stderr, "kumafile: %s\nRun 'kumafile --help' for usage.\n", strings.TrimPrefix(err.Error(), "usage: "))
 		return 2
+	case errors.Is(err, errDifferent):
+		return 3
 	case errors.Is(err, context.Canceled):
 		fmt.Fprintln(env.Stderr, "kumafile: interrupted")
 		return 130
@@ -113,6 +123,8 @@ type options struct {
 	output      string
 	secrets     string
 	withSecrets bool
+	envFile     string
+	prune       bool
 	help        bool
 	pos         []string
 }
@@ -126,6 +138,8 @@ func parse(args []string) (options, error) {
 	fs.StringVar(&o.output, "output", "", "")
 	fs.StringVar(&o.secrets, "secrets", "", "")
 	fs.BoolVar(&o.withSecrets, "with-secrets", false, "")
+	fs.StringVar(&o.envFile, "env-file", "", "")
+	fs.BoolVar(&o.prune, "prune", false, "")
 	rest := args
 	for {
 		if err := fs.Parse(rest); errors.Is(err, flag.ErrHelp) {
@@ -155,7 +169,7 @@ func run(ctx context.Context, env Env, args []string) error {
 	case "version", "--version":
 		fmt.Fprintf(env.Stdout, "kumafile %s\n", Version)
 		return nil
-	case "export":
+	case "export", "diff":
 	default:
 		if strings.HasPrefix(cmd, "-") {
 			return usagef("the command comes first, as in: kumafile export %s ...", cmd)
@@ -170,10 +184,106 @@ func run(ctx context.Context, env Env, args []string) error {
 		fmt.Fprint(env.Stdout, usage)
 		return nil
 	}
+	if cmd == "diff" {
+		return diff(ctx, env, o)
+	}
 	if len(o.pos) > 0 {
 		return usagef("export takes no file name; use -o FILE")
 	}
 	return export(ctx, env, o)
+}
+
+var errDifferent = errors.New("the instance differs from the file")
+
+func diff(ctx context.Context, env Env, o options) error {
+	if len(o.pos) > 1 {
+		return usagef("diff takes one file")
+	}
+	path := "kumafile.yaml"
+	if len(o.pos) == 1 {
+		path = o.pos[0]
+	}
+	want, err := loadFile(env, path, o.envFile)
+	if err != nil {
+		return err
+	}
+	c, u, err := connect(ctx, env, o)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	st, err := c.Read(ctx)
+	if err != nil {
+		return err
+	}
+	have, err := liveDoc(st)
+	if err != nil {
+		return err
+	}
+	p := config.Diff(want, have, o.prune)
+	fmt.Fprintf(env.Stdout, "Comparing %s with %s (Uptime Kuma %s):\n", path, redact(u), st.Info.Version)
+	p.Render(env.Stdout)
+	if len(p.Problems) > 0 {
+		return fmt.Errorf("the file refers to things that do not exist (listed above with !)")
+	}
+	if !p.InSync() {
+		return errDifferent
+	}
+	return nil
+}
+
+// loadFile reads a kumafile, filling ${NAME} from the environment and then
+// the env file.
+func loadFile(env Env, path, envFile string) (*config.Doc, error) {
+	var data []byte
+	var err error
+	if path == "-" {
+		data, err = io.ReadAll(env.Stdin)
+	} else {
+		data, err = env.ReadFile(path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	vars := map[string]string{}
+	explicit := envFile != ""
+	if envFile == "" && path != "-" {
+		envFile = strings.TrimSuffix(strings.TrimSuffix(path, ".yaml"), ".yml") + ".env"
+	}
+	if envFile != "" {
+		ed, err := env.ReadFile(envFile)
+		switch {
+		case err == nil:
+			if vars, err = config.ReadEnv(bytes.NewReader(ed)); err != nil {
+				return nil, fmt.Errorf("%s: %w", envFile, err)
+			}
+		case explicit || !errors.Is(err, os.ErrNotExist):
+			return nil, err
+		}
+	}
+	return config.Load(data, func(name string) (string, bool) {
+		if v := env.Getenv(name); v != "" {
+			return v, true
+		}
+		v, ok := vars[name]
+		return v, ok
+	})
+}
+
+// liveDoc is the instance as a loaded file, made by the same export, so
+// both sides of a comparison look alike.
+func liveDoc(st *kuma.State) (*config.Doc, error) {
+	ex, err := config.Make(st, config.ExportOptions{InlineSecrets: true})
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	if err := enc.Encode(ex.Doc); err != nil {
+		return nil, err
+	}
+	enc.Close()
+	return config.Load(buf.Bytes(), func(string) (string, bool) { return "", false })
 }
 
 func instanceURL(env Env, o options) (string, error) {

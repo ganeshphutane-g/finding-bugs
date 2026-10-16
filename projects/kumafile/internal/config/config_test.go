@@ -2,7 +2,6 @@ package config
 
 import (
 	"bytes"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -10,10 +9,6 @@ import (
 
 	"github.com/ganeshphutane-g/kumafile/internal/kuma"
 )
-
-func num(n int) json.Number { return json.Number(itoa(n)) }
-
-func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
 
 func render(t *testing.T, ex *Export) string {
 	t.Helper()
