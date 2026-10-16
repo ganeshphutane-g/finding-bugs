@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ganeshphutane-g/kumafile/internal/config"
 	"github.com/ganeshphutane-g/kumafile/internal/kuma"
@@ -45,6 +46,14 @@ func Run(ctx context.Context, o Options) error {
 	}
 	a := &applier{o: o, c: o.Client, raw: map[string]map[string]kuma.Object{}, ids: map[string]map[string]int64{}}
 	a.index()
+	// A probe an interrupted run left behind.
+	for _, m := range o.State.Monitors {
+		if m.Str("name") == ProbeName && m["active"] != true {
+			if _, err := a.c.Do(ctx, "deleteMonitor", m.ID()); err != nil {
+				return fmt.Errorf("removing the leftover %q: %w", ProbeName, err)
+			}
+		}
+	}
 
 	// Creates and updates, what others refer to first; groups before what
 	// they contain.
@@ -149,6 +158,8 @@ func (a *applier) do(ctx context.Context, act config.Action) error {
 	verb := "+"
 	if act.Op == config.Update {
 		verb = "~"
+		// Others in the file refer to it by its new name or place.
+		a.ids[act.Kind.Key][act.Want.Key] = a.ids[act.Kind.Key][act.Have.Key]
 	}
 	var err error
 	switch act.Kind.Key {
@@ -338,12 +349,9 @@ func (a *applier) monitor(ctx context.Context, act config.Action) error {
 	payload["docker_host"] = nullID(a.id("docker_hosts", str(w.Fields["docker_host"])))
 	payload["remote_browser"] = nullID(a.id("remote_browsers", str(w.Fields["remote_browser"])))
 	// Shapes the server insists on.
-	var codes []string
+	codes := []string{}
 	for _, c := range list(payload["accepted_statuscodes"]) {
 		codes = append(codes, fmt.Sprint(c))
-	}
-	if codes == nil {
-		codes = []string{"200-299"}
 	}
 	payload["accepted_statuscodes"] = codes
 	if s, ok := payload["kafkaProducerSaslOptions"].(string); ok && strings.HasPrefix(strings.TrimSpace(s), "{") {
@@ -370,7 +378,10 @@ func (a *applier) monitor(ctx context.Context, act config.Action) error {
 		if _, err := a.c.Do(ctx, "editMonitor", payload); err != nil {
 			return err
 		}
-		if was := truthy(a.raw["monitors"][act.Have.Key]["active"]); was != active {
+		live := a.raw["monitors"][act.Have.Key]
+		// Under a paused group the server reports the monitor as paused
+		// whatever its own setting, which it does not show: leave it.
+		if was := truthy(live["active"]); was != active && !truthy(live["forceInactive"]) {
 			event := "pauseMonitor"
 			if active {
 				event = "resumeMonitor"
@@ -416,13 +427,17 @@ func list(v any) []any {
 	return l
 }
 
+// ProbeName names the paused monitor made for a moment to learn the
+// server's fields; one left behind is removed by the next apply.
+const ProbeName = "kumafile probe (temporary)"
+
 // knowFields learns which monitor fields the server has: from one of its
 // monitors, or from a short-lived paused one when there are none.
 func (a *applier) knowFields(ctx context.Context) error {
 	if a.fields != nil {
 		return nil
 	}
-	r, err := a.c.Do(ctx, "add", map[string]any{"type": "http", "name": "kumafile probe (temporary)", "url": "https://example.com",
+	r, err := a.c.Do(ctx, "add", map[string]any{"type": "http", "name": ProbeName, "url": "https://example.com",
 		"accepted_statuscodes": []string{"200-299"}, "notificationIDList": map[string]any{}, "conditions": []any{},
 		"interval": 60, "retryInterval": 60, "active": false})
 	if err != nil {
@@ -430,9 +445,12 @@ func (a *applier) knowFields(ctx context.Context) error {
 	}
 	id := kuma.Int(r["monitorID"])
 	m, err := a.c.Do(ctx, "getMonitor", id)
-	if _, derr := a.c.Do(ctx, "deleteMonitor", id, false); derr != nil && err == nil {
-		err = derr
+	// Remove it even if the context was cancelled meanwhile.
+	dctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	if _, derr := a.c.Do(dctx, "deleteMonitor", id); derr != nil && err == nil {
+		err = fmt.Errorf("%w (remove the paused monitor %q by hand)", derr, ProbeName)
 	}
+	cancel()
 	if err != nil {
 		return fmt.Errorf("learning the server's monitor fields: %w", err)
 	}
@@ -444,13 +462,15 @@ func (a *applier) knowFields(ctx context.Context) error {
 	return nil
 }
 
-// monitorTags makes the monitor's tags (with values) match the file.
+// monitorTags makes the monitor's tags (with values) match the file,
+// adding them in the file's order.
 func (a *applier) monitorTags(ctx context.Context, act config.Action, id int64) error {
 	type tv struct {
 		tag   int64
 		value string
 	}
-	want := map[tv]bool{}
+	var want []tv
+	wanted := map[tv]bool{}
 	for _, t := range list(act.Want.Fields["tags"]) {
 		name, value := str(t), ""
 		if m, ok := t.(map[string]any); ok {
@@ -460,25 +480,29 @@ func (a *applier) monitorTags(ctx context.Context, act config.Action, id int64) 
 		if tid == 0 {
 			return fmt.Errorf("tag %q was not found", name)
 		}
-		want[tv{tid, value}] = true
+		if k := (tv{tid, value}); !wanted[k] {
+			wanted[k] = true
+			want = append(want, k)
+		}
 	}
 	have := map[tv]bool{}
 	if act.Op == config.Update {
 		for _, t := range list(a.raw["monitors"][act.Have.Key]["tags"]) {
 			m, _ := t.(map[string]any)
-			have[tv{kuma.Int(m["tag_id"]), fmt.Sprint(nz(m["value"]))}] = true
-		}
-	}
-	for t := range have {
-		if !want[t] {
-			if _, err := a.c.Do(ctx, "deleteMonitorTag", t.tag, id, t.value); err != nil {
-				return err
+			k := tv{kuma.Int(m["tag_id"]), fmt.Sprint(nz(m["value"]))}
+			have[k] = true
+			if !wanted[k] {
+				// The stored value as it is (it can be null, which "" does
+				// not match).
+				if _, err := a.c.Do(ctx, "deleteMonitorTag", k.tag, id, m["value"]); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	for t := range want {
-		if !have[t] {
-			if _, err := a.c.Do(ctx, "addMonitorTag", t.tag, id, t.value); err != nil {
+	for _, k := range want {
+		if !have[k] {
+			if _, err := a.c.Do(ctx, "addMonitorTag", k.tag, id, k.value); err != nil {
 				return err
 			}
 		}
@@ -516,10 +540,13 @@ func (a *applier) statusPage(ctx context.Context, act config.Action) error {
 		}
 		a.created(act, kuma.Int(cfg["id"]))
 	}
-	for _, f := range []string{"slug", "title", "description", "icon", "theme", "showTags", "domainNameList", "customCSS",
-		"footerText", "showPoweredBy", "analyticsId", "analyticsScriptUrl", "analyticsType", "showCertificateExpiry",
-		"showOnlyLastHeartbeat", "rssTitle", "autoRefreshInterval"} {
+	for _, f := range config.StatusPageFields() {
 		cfg[f] = field(act.Want, "status_pages", "", f)
+	}
+	for f, v := range w {
+		if f != "groups" && f != "logo" {
+			cfg[f] = v // also settings of later versions
+		}
 	}
 	if cfg["domainNameList"] == nil {
 		cfg["domainNameList"] = []any{}
@@ -532,9 +559,9 @@ func (a *applier) statusPage(ctx context.Context, act config.Action) error {
 		gm, _ := g.(map[string]any)
 		var mons []any
 		for _, m := range list(gm["monitors"]) {
-			name, show := str(m), false
+			name, show, link := str(m), false, ""
 			if mm, ok := m.(map[string]any); ok {
-				name, show = str(mm["monitor"]), mm["show_url"] == true
+				name, show, link = str(mm["monitor"]), mm["show_url"] == true, str(mm["url"])
 			}
 			mid := a.id("monitors", name)
 			if mid == 0 {
@@ -544,7 +571,11 @@ func (a *applier) statusPage(ctx context.Context, act config.Action) error {
 			if show {
 				send = 1
 			}
-			mons = append(mons, map[string]any{"id": mid, "sendUrl": send})
+			entry := map[string]any{"id": mid, "sendUrl": send}
+			if link != "" {
+				entry["url"] = link
+			}
+			mons = append(mons, entry)
 		}
 		if mons == nil {
 			mons = []any{}
@@ -554,7 +585,13 @@ func (a *applier) statusPage(ctx context.Context, act config.Action) error {
 	if groups == nil {
 		groups = []any{}
 	}
-	_, err := a.c.Do(ctx, "saveStatusPage", slug, cfg, cfg["icon"], groups)
+	// An uploaded logo travels in the file as a PNG data address; the
+	// server stores it as a file again.
+	img := cfg["icon"]
+	if logo := str(w["logo"]); logo != "" {
+		img = logo
+	}
+	_, err := a.c.Do(ctx, "saveStatusPage", slug, cfg, img, groups)
 	return err
 }
 
@@ -630,7 +667,9 @@ func (a *applier) remove(ctx context.Context, act config.Action) error {
 	case "remote_browsers":
 		_, err = a.c.Do(ctx, "deleteRemoteBrowser", id)
 	case "monitors":
-		_, err = a.c.Do(ctx, "deleteMonitor", id, false)
+		// (2.0.0 takes no "delete children" argument; later versions
+		// default it to false.)
+		_, err = a.c.Do(ctx, "deleteMonitor", id)
 	case "maintenance":
 		_, err = a.c.Do(ctx, "deleteMaintenance", id)
 	case "status_pages":

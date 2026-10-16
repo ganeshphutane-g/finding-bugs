@@ -31,6 +31,7 @@ type Client struct {
 	mu    sync.Mutex
 	lists map[string]json.RawMessage // the latest copy of each pushed list
 	info  Info
+	types []string // monitor types the server announced (nil: none)
 	// authState is "loginRequired" or "autoLogin", as the server said on
 	// connecting; authReady is closed once it is known.
 	authState string
@@ -88,6 +89,20 @@ func (c *Client) onEvent(name string, args []json.RawMessage) {
 			}
 			c.mu.Unlock()
 		}
+	case name == "monitorTypeList" && len(args) > 0:
+		var pairs [][]json.RawMessage
+		if json.Unmarshal(args[0], &pairs) == nil {
+			var types []string
+			for _, p := range pairs {
+				var t string
+				if len(p) > 0 && json.Unmarshal(p[0], &t) == nil {
+					types = append(types, t)
+				}
+			}
+			c.mu.Lock()
+			c.types = types
+			c.mu.Unlock()
+		}
 	case name == "loginRequired" || name == "autoLogin":
 		c.mu.Lock()
 		if c.authState == "" {
@@ -111,6 +126,11 @@ func (c *Client) Info() Info {
 // Login logs in, unless the instance has authentication turned off. It
 // returns a token for later logins (empty without authentication).
 func (c *Client) Login(ctx context.Context, cr Credentials) (string, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+	}
 	select {
 	case <-c.authReady:
 	case <-c.conn.Done():
@@ -132,7 +152,7 @@ func (c *Client) Login(ctx context.Context, cr Credentials) (string, error) {
 		return cr.Token, nil
 	}
 	if cr.Username == "" || cr.Password == "" {
-		return "", errors.New("the instance needs a login: set a username and password (or a token)")
+		return "", errors.New("the instance needs a login: set KUMAFILE_USERNAME and KUMAFILE_PASSWORD (or KUMAFILE_TOKEN)")
 	}
 	var r struct {
 		result
@@ -156,10 +176,28 @@ func (c *Client) Login(ctx context.Context, cr Credentials) (string, error) {
 			}
 		}
 		if code == "" {
-			return "", fmt.Errorf("%s has two-factor login: give a one-time code or the TOTP secret", cr.Username)
+			return "", fmt.Errorf("%s has two-factor login: set KUMAFILE_TOTP (a one-time code) or KUMAFILE_TOTP_SECRET", cr.Username)
 		}
 		data["token"] = code
-		if err := c.call(ctx, &r, "login", data); err != nil {
+		err := c.call(ctx, &r, "login", data)
+		if err != nil && cr.TOTP == "" && r.Msg == "authInvalidToken" {
+			// A code works only once: one used by a run moments ago is
+			// refused. Wait for the next one.
+			now := time.Now()
+			next := now.Truncate(30 * time.Second).Add(31 * time.Second)
+			select {
+			case <-time.After(next.Sub(now)):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+			if data["token"], err = totp(cr.TOTPSecret, time.Now()); err == nil {
+				err = c.call(ctx, &r, "login", data)
+			}
+		}
+		if err != nil {
+			if r.Msg == "authInvalidToken" {
+				err = errors.New("the one-time code was not accepted (each code works only once; a run moments ago may have used it)")
+			}
 			return "", fmt.Errorf("logging in as %s with the one-time code: %w", cr.Username, err)
 		}
 	}
@@ -185,7 +223,29 @@ func (r result) err() error {
 	if r.Msg == "" {
 		return errors.New("the server said no, without a reason")
 	}
-	return errors.New(r.Msg)
+	msg := Clean(r.Msg, 300)
+	if strings.Contains(msg, "Too frequently") {
+		msg += " (Uptime Kuma allows about 20 logins a minute, for everyone together; wait a minute, and log in less often with KUMAFILE_TOKEN from 'kumafile login')"
+	}
+	return errors.New(msg)
+}
+
+// Clean makes text from the server safe to print: control characters
+// (which could move the cursor or rename the terminal) become "?", and it
+// is cut to max bytes.
+func Clean(s string, max int) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			b.WriteRune('?')
+			continue
+		}
+		b.WriteRune(r)
+		if b.Len() > max {
+			return b.String() + "..."
+		}
+	}
+	return b.String()
 }
 
 // messages are English texts for the server's translation keys.
@@ -266,6 +326,30 @@ func (c *Client) HTTP(ctx context.Context, path string, out any) error {
 		return fmt.Errorf("GET %s: HTTP %d: %.200s", path, resp.StatusCode, bytes.TrimSpace(data))
 	}
 	return json.Unmarshal(data, out)
+}
+
+// Fetch reads a file of the instance (up to max bytes) and its type.
+func (c *Client) Fetch(ctx context.Context, path string, max int64) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("GET %s: HTTP %d", path, resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if int64(len(data)) > max {
+		return nil, "", fmt.Errorf("GET %s: larger than %d bytes", path, max)
+	}
+	return data, resp.Header.Get("Content-Type"), nil
 }
 
 // PathEscape escapes a URL path segment.

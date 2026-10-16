@@ -56,6 +56,15 @@ type Item struct {
 // Doc is a loaded file.
 type Doc struct {
 	Items map[string][]*Item // by kind key, in file order
+	// Present are the sections the file has (an empty list counts, a
+	// missing or empty section does not): only these are pruned.
+	Present map[string]bool
+	// MonitorFields, for an instance, are the monitor fields its server
+	// has; a file's fields are checked against them.
+	MonitorFields map[string]bool
+	// MonitorTypes, for an instance, are the types its server has (nil:
+	// not known).
+	MonitorTypes map[string]bool
 }
 
 // Get finds an item by kind and key.
@@ -89,7 +98,7 @@ func Load(data []byte, lookup Lookup) (*Doc, error) {
 		problems = append(problems, fmt.Sprintf("version %v is not supported (this kumafile reads version 1)", v))
 	}
 	missing := map[string]bool{}
-	d := &Doc{Items: map[string][]*Item{}}
+	d := &Doc{Items: map[string][]*Item{}, Present: map[string]bool{}}
 	for key := range raw {
 		if key != "version" && KindOf(key).Key == "" {
 			problems = append(problems, fmt.Sprintf("unknown section %q", key))
@@ -100,6 +109,7 @@ func Load(data []byte, lookup Lookup) (*Doc, error) {
 		if !ok || v == nil {
 			continue
 		}
+		d.Present[k.Key] = true
 		list, ok := v.([]any)
 		if !ok {
 			problems = append(problems, fmt.Sprintf("%s: expected a list", k.Key))
@@ -203,22 +213,7 @@ func expand(v any, lookup Lookup, missing map[string]bool) (any, bool) {
 }
 
 // isSecretField reports fields that hold credentials whatever their value.
-func isSecretField(kind, field string, v any) bool {
-	switch kind {
-	case "monitors":
-		if monitorSecrets[field] {
-			return true
-		}
-		if s, ok := v.(string); ok && ((field == "headers" && secretHeader.MatchString(s)) || (field == "url" && userinfo.MatchString(s))) {
-			return true
-		}
-	case "proxies":
-		return field == "password"
-	case "remote_browsers":
-		return field == "url"
-	}
-	return false
-}
+func isSecretField(kind, field string, v any) bool { return secretField(kind, field, v) }
 
 func identity(k Kind, f map[string]any) (key, label string, err error) {
 	str := func(name string) (string, error) {

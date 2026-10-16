@@ -11,7 +11,7 @@ import (
 // (set -a; . FILE) and docker compose (env_file) read the same way.
 func WriteEnv(w io.Writer, secrets []Secret) error {
 	bw := bufio.NewWriter(w)
-	fmt.Fprintln(bw, "# Secrets for the kumafile configuration. Keep this file private.")
+	fmt.Fprintln(bw, EnvHeader+". Keep this file private.")
 	for _, s := range secrets {
 		fmt.Fprintf(bw, "%s=%s\n", s.Name, quote(s.Value))
 	}

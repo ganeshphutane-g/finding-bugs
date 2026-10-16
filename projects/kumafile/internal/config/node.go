@@ -77,7 +77,10 @@ func node(v any) *yaml.Node {
 		return node(a)
 	case string:
 		n := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: x}
-		if strings.Contains(x, "\n") {
+		switch {
+		case !literalSafe(x):
+			n.Style = yaml.DoubleQuotedStyle // reads back exactly
+		case strings.Contains(x, "\n"):
 			n.Style = yaml.LiteralStyle
 		}
 		return n
@@ -106,6 +109,20 @@ func allScalar(a []any) bool {
 				return false
 			}
 		default:
+			return false
+		}
+	}
+	return true
+}
+
+// literalSafe reports text that a literal block (|) gives back unchanged:
+// no leading blank or newline, no tabs or other control characters.
+func literalSafe(s string) bool {
+	if s != strings.TrimLeft(s, " \t\n") {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x20 && r != '\n' || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 || r == 0xfeff {
 			return false
 		}
 	}

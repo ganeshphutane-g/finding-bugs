@@ -19,6 +19,13 @@ type Secret struct {
 	Name, Value string
 }
 
+// FileHeader and EnvHeader start the files kumafile writes (so it knows
+// which files it may replace).
+const (
+	FileHeader = "# Uptime Kuma configuration, exported by kumafile"
+	EnvHeader  = "# Secrets for the kumafile configuration"
+)
+
 // Export is a file made from an instance.
 type Export struct {
 	Doc      *yaml.Node
@@ -31,25 +38,15 @@ type ExportOptions struct {
 	Source        string // where it came from, for the header
 	InlineSecrets bool   // keep secrets in the file
 	Now           time.Time
+	live          bool // for comparing: marks what the server does not show
 }
 
-// monitorSecrets are monitor fields that hold credentials.
-var monitorSecrets = map[string]bool{
-	"basic_auth_pass": true, "oauth_client_secret": true, "bearer_token": true, "gamedigToken": true,
-	"pushToken": true, "databaseConnectionString": true, "radiusPassword": true, "radiusSecret": true,
-	"mqttPassword": true, "tlsKey": true, "kafkaProducerSaslOptions": true, "rabbitmqPassword": true,
-	"sshPassword": true, "sshPrivateKey": true, "sshPassphrase": true,
-}
+// parentPaused marks, in the instance's own view, a monitor whose group is
+// paused: its active setting is not known and not compared.
+const parentPaused = "_parent_paused"
 
-// secretKey matches setting names that hold credentials (notification
-// settings vary by provider, so they are recognised by name).
-var secretKey = regexp.MustCompile(`(?i)(pass(word|phrase)?$|secret|token|api_?key|privatekey|private_key|webhook|access_?key|credential|signature|sendkey|botkey|auth_?key)`)
-
-// secretHeader matches HTTP headers that usually carry credentials.
-var secretHeader = regexp.MustCompile(`(?i)(authorization|token|api[-_]?key|secret|cookie|password)`)
-
-// userinfo matches a URL with a password in it.
-var userinfo = regexp.MustCompile(`://[^/@\s:]+:[^/@\s]+@`)
+// LiveOptions are the options for an export used to compare.
+func LiveOptions() ExportOptions { return ExportOptions{InlineSecrets: true, live: true} }
 
 // monitorDropped are fields the server derives or that are written another
 // way in the file.
@@ -102,11 +99,8 @@ func envName(parts ...string) string {
 			out = append(out, p)
 		}
 	}
-	name := strings.Join(out, "_")
-	if name == "" || (name[0] >= '0' && name[0] <= '9') {
-		name = "K_" + name
-	}
-	return name
+	// The prefix marks what kumafile may take from the environment.
+	return "KUMA_" + strings.Join(out, "_")
 }
 
 // escape protects text that looks like a ${reference}.
@@ -148,7 +142,7 @@ func (e *exporter) secretsIn(v any, parts ...string) any {
 		sort.Strings(keys) // stable secret names
 		for _, k := range keys {
 			sub := append(append([]string(nil), parts...), k)
-			if s, ok := x[k].(string); ok && (secretKey.MatchString(k) || userinfo.MatchString(s)) {
+			if s, ok := x[k].(string); ok && secretSetting(k, s) {
 				out[k] = e.secret(s, sub...)
 				continue
 			}
@@ -186,6 +180,7 @@ func Make(st *kuma.State, opt ExportOptions) (*Export, error) {
 	if err := ix.check(); err != nil {
 		return nil, err
 	}
+	st = ix.st
 
 	doc := Obj{{"version", 1}}
 
@@ -253,7 +248,7 @@ func Make(st *kuma.State, opt ExportOptions) (*Export, error) {
 		for _, b := range st.RemoteBrowsers {
 			u := b.Str("url")
 			var uv any = value(u)
-			if strings.Contains(strings.ToLower(u), "token=") || userinfo.MatchString(u) {
+			if secretField("remote_browsers", "url", u) {
 				uv = e.secret(u, "browser", b.Str("name"), "url")
 			}
 			bs = append(bs, Obj{{"name", value(b.Str("name"))}, {"url", uv}})
@@ -290,7 +285,7 @@ func Make(st *kuma.State, opt ExportOptions) (*Export, error) {
 	if when.IsZero() {
 		when = time.Now()
 	}
-	head := fmt.Sprintf("Uptime Kuma configuration, exported by kumafile on %s", when.UTC().Format("2006-01-02 15:04 UTC"))
+	head := fmt.Sprintf("%s on %s", strings.TrimPrefix(FileHeader, "# "), when.UTC().Format("2006-01-02 15:04 UTC"))
 	if opt.Source != "" {
 		head += "\nfrom " + opt.Source
 		if st.Info.Version != "" {
@@ -314,24 +309,40 @@ func (e *exporter) monitor(m kuma.Object, ix *index) Obj {
 		fields[k] = v
 	}
 	typ := m.Str("type")
+	if m["forceInactive"] == true {
+		// In a paused group the server reports the monitor as paused,
+		// whatever its own setting (which it does not show).
+		delete(fields, "active")
+		if e.opt.live {
+			fields[parentPaused] = true
+		}
+	}
 	if u, _ := fields["url"].(string); placeholderURL[u] {
 		delete(fields, "url") // the web interface's empty address
 	}
 	o := Obj{}
 	put := func(k string, v any) {
+		if k == parentPaused {
+			o = append(o, KV{k, true})
+			return
+		}
 		if dv, known := defaultFor(typ, k); known && k != "name" {
 			if same(v, dv) {
 				return // as the web interface would have it
 			}
 			if isEmpty(v) {
-				o = append(o, KV{k, nil}) // empty where the default is not
+				// Empty where the default is not.
+				if _, list := dv.([]any); list {
+					o = append(o, KV{k, []any{}})
+				} else {
+					o = append(o, KV{k, nil})
+				}
 				return
 			}
 		} else if empty(v) {
 			return
 		}
-		switch {
-		case monitorSecrets[k]:
+		if secretField("monitors", k, v) {
 			switch s, ok := v.(string); {
 			case ok:
 				v = e.secret(s, "monitor", name, k)
@@ -343,19 +354,7 @@ func (e *exporter) monitor(m kuma.Object, ix *index) Obj {
 				raw, _ := json.Marshal(v)
 				v = e.secret(string(raw), "monitor", name, k)
 			}
-		case k == "headers":
-			if s, ok := v.(string); ok && secretHeader.MatchString(s) {
-				v = e.secret(s, "monitor", name, k)
-			} else {
-				v = value(v)
-			}
-		case k == "url":
-			if s, ok := v.(string); ok && userinfo.MatchString(s) {
-				v = e.secret(s, "monitor", name, k)
-			} else {
-				v = value(v)
-			}
-		default:
+		} else {
 			v = value(v)
 		}
 		o = append(o, KV{k, v})
@@ -452,6 +451,10 @@ func statusPage(sp kuma.StatusPage, ix *index) Obj {
 		switch k {
 		case "id", "slug", "title", "published":
 			continue // (published cannot be changed through the API)
+		case "icon":
+			if sp.Str("logo") != "" {
+				continue // the uploaded logo goes as "logo"
+			}
 		}
 		rest = append(rest, k)
 	}
@@ -477,7 +480,13 @@ func statusPage(sp kuma.StatusPage, ix *index) Obj {
 		for _, gm := range g.Monitors {
 			ref := ix.monitorRef(gm.ID)
 			if gm.SendURL {
-				mons = append(mons, Obj{{"monitor", ref}, {"show_url", true}})
+				e := Obj{{"monitor", ref}, {"show_url", true}}
+				// The page shows the monitor's own address unless another
+				// link was set for it.
+				if gm.URL != "" && gm.URL != ix.monitors[gm.ID].Str("url") {
+					e = append(e, KV{"url", value(gm.URL)})
+				}
+				mons = append(mons, e)
 			} else {
 				mons = append(mons, ref)
 			}

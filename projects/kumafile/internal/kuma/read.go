@@ -3,10 +3,12 @@ package kuma
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // Object is one item as the server describes it. Numbers stay exact
@@ -86,14 +88,20 @@ type State struct {
 	Proxies        []Object
 	DockerHosts    []Object
 	RemoteBrowsers []Object
-	Maintenance    []Maintenance
-	StatusPages    []StatusPage
+	// MonitorTypes are the types the server announced (built-in ones are
+	// not announced); nil when it announced none.
+	MonitorTypes []string
+	Maintenance  []Maintenance
+	StatusPages  []StatusPage
 }
 
 // Read collects the instance's configuration. The connection must be
 // freshly logged in: lists are what the server pushed at login.
 func (c *Client) Read(ctx context.Context) (*State, error) {
 	st := &State{Info: c.Info()}
+	c.mu.Lock()
+	st.MonitorTypes = c.types
+	c.mu.Unlock()
 	var err error
 	if st.Monitors, err = c.objects("monitorList"); err != nil {
 		return nil, err
@@ -165,6 +173,17 @@ func (c *Client) Read(ctx context.Context) (*State, error) {
 	}
 	for _, p := range pages {
 		sp := StatusPage{Object: p}
+		if icon := p.Str("icon"); strings.HasPrefix(icon, "/upload/") {
+			// An uploaded logo is a file on this instance: carry the
+			// image itself.
+			data, ctype, err := c.Fetch(ctx, icon, 5<<20)
+			if err != nil {
+				return nil, fmt.Errorf("status page %q: its logo: %w", p.Str("slug"), err)
+			}
+			if strings.HasPrefix(ctype, "image/png") || bytes.HasPrefix(data, []byte("\x89PNG")) {
+				p["logo"] = "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
+			}
+		}
 		var data struct {
 			PublicGroupList []struct {
 				Name        string   `json:"name"`

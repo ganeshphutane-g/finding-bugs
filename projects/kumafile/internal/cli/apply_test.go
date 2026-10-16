@@ -145,17 +145,17 @@ monitors:
   - {name: Ping, type: ping, hostname: 127.0.0.1}
   - {name: DNS, type: dns, hostname: example.org, dns_resolve_type: AAAA}
   - {name: Docker, type: docker, docker_container: web, docker_host: local}
-  - {name: Push, type: push, pushToken: "${PUSH_TOKEN}"}
+  - {name: Push, type: push, pushToken: "${KUMA_PUSH_TOKEN}"}
   - {name: Game, type: gamedig, game: minecraft, hostname: mc.example.org, port: 25565}
-  - {name: MQTT, type: mqtt, hostname: mqtt.example.org, port: 1883, mqttTopic: a/b, mqttUsername: u, mqttPassword: "${MQTT_PASS}"}
-  - {name: Postgres, type: postgres, databaseConnectionString: "${PG_URL}"}
+  - {name: MQTT, type: mqtt, hostname: mqtt.example.org, port: 1883, mqttTopic: a/b, mqttUsername: u, mqttPassword: "${KUMA_MQTT_PASS}"}
+  - {name: Postgres, type: postgres, databaseConnectionString: "${KUMA_PG_URL}"}
   - {name: Redis, type: redis, databaseConnectionString: "redis://localhost:6379"}
   - {name: Radius, type: radius, hostname: radius.lan, radiusUsername: u, radiusPassword: p, radiusSecret: s}
   - {name: Websocket, type: websocket-upgrade, url: "wss://example.org/ws"}
   - {name: gRPC, type: grpc-keyword, grpcUrl: "grpc.example.org:443", keyword: SERVING, grpcServiceName: health}
 `
 	os.WriteFile(file, []byte(text), 0o644)
-	vars := map[string]string{"PUSH_TOKEN": "abcdefghijklmnopqrstuvwxyz012345", "MQTT_PASS": "m", "PG_URL": "postgres://u:p@db:5432/x"}
+	vars := map[string]string{"KUMA_PUSH_TOKEN": "abcdefghijklmnopqrstuvwxyz012345", "KUMA_MQTT_PASS": "m", "KUMA_PG_URL": "postgres://u:p@db:5432/x"}
 	code, out := kf(t, s, vars, "apply", "-y", file)
 	if code != 0 {
 		t.Fatalf("apply (exit %d):\n%s\n%s", code, out, s.Logs())
@@ -168,8 +168,8 @@ monitors:
 		t.Fatal(out)
 	}
 	ex := body(t, exported)
-	for _, want := range []string{"pushToken: ${MONITOR_PUSH_PUSHTOKEN}", "databaseConnectionString: ${MONITOR_POSTGRES_DATABASECONNECTIONSTRING}",
-		"mqttPassword: ${MONITOR_MQTT_MQTTPASSWORD}", "docker_host: local", "group: Group", "dns_resolve_type: AAAA"} {
+	for _, want := range []string{"pushToken: ${KUMA_MONITOR_PUSH_PUSHTOKEN}", "databaseConnectionString: ${KUMA_MONITOR_POSTGRES_DATABASECONNECTIONSTRING}",
+		"mqttPassword: ${KUMA_MONITOR_MQTT_MQTTPASSWORD}", "docker_host: local", "group: Group", "dns_resolve_type: AAAA"} {
 		if !strings.Contains(ex, want) {
 			t.Errorf("export lacks %q", want)
 		}

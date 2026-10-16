@@ -166,7 +166,7 @@ var managed = map[string][]string{
 		"daysOfMonth", "cron", "durationMinutes", "timezoneOption", "monitors", "status_pages"},
 	"status_pages": {"slug", "title", "description", "icon", "theme", "showTags", "domainNameList",
 		"customCSS", "footerText", "showPoweredBy", "analyticsId", "analyticsScriptUrl", "analyticsType",
-		"showCertificateExpiry", "showOnlyLastHeartbeat", "rssTitle", "autoRefreshInterval", "groups"},
+		"showCertificateExpiry", "showOnlyLastHeartbeat", "rssTitle", "autoRefreshInterval", "groups", "logo"},
 	"monitors": {"name", "group", "type", "notifications", "tags", "proxy", "docker_host", "remote_browser"},
 }
 
@@ -229,6 +229,17 @@ func timeRange(v any) any {
 			c[k] = x
 		}
 		out[i] = c
+	}
+	return out
+}
+
+// StatusPageFields are the status page settings apply sends.
+func StatusPageFields() []string {
+	var out []string
+	for _, f := range managed["status_pages"] {
+		if f != "groups" && f != "logo" {
+			out = append(out, f)
+		}
 	}
 	return out
 }

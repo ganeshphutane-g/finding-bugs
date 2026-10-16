@@ -20,20 +20,20 @@ func (p *Plan) Render(w io.Writer) {
 			if t := str(a.Want.Fields["type"]); t != "" {
 				extra = " (" + t + ")"
 			}
-			fmt.Fprintf(w, "  + %s %s%s\n", a.Kind.One, a.Label(), extra)
+			fmt.Fprintf(w, "  + %s %s%s\n", a.Kind.One, clean(a.Label()), clean(extra))
 		case Update:
-			fmt.Fprintf(w, "  ~ %s %s\n", a.Kind.One, a.Label())
+			fmt.Fprintf(w, "  ~ %s %s\n", a.Kind.One, clean(a.Label()))
 			for _, c := range a.Changes {
 				if c.Secret {
-					fmt.Fprintf(w, "      %s: (secret, changed)\n", c.Field)
+					fmt.Fprintf(w, "      %s: (secret, changed)\n", clean(c.Field))
 				} else {
-					fmt.Fprintf(w, "      %s: %s -> %s\n", c.Field, show(c.From), show(c.To))
+					fmt.Fprintf(w, "      %s: %s -> %s\n", clean(c.Field), show(c.From), show(c.To))
 				}
 			}
 		case Delete:
-			fmt.Fprintf(w, "  - %s %s\n", a.Kind.One, a.Label())
+			fmt.Fprintf(w, "  - %s %s\n", a.Kind.One, clean(a.Label()))
 		case Keep:
-			kept = append(kept, a.Kind.One+" "+a.Label())
+			kept = append(kept, a.Kind.One+" "+clean(a.Label()))
 		}
 	}
 	if len(kept) > 0 {
@@ -41,7 +41,7 @@ func (p *Plan) Render(w io.Writer) {
 		fmt.Fprintf(w, "  Only on the instance, kept (--prune deletes them): %s\n", strings.Join(kept, ", "))
 	}
 	for _, pr := range p.Problems {
-		fmt.Fprintf(w, "  ! %s\n", pr)
+		fmt.Fprintf(w, "  ! %s\n", clean(pr))
 	}
 	if p.InSync() {
 		fmt.Fprintln(w, "The instance matches the file.")
@@ -50,8 +50,25 @@ func (p *Plan) Render(w io.Writer) {
 	fmt.Fprintf(w, "%d to create, %d to change, %d to delete.\n", counts[Create], counts[Update], counts[Delete])
 }
 
+// clean makes names and values safe to print (no control characters).
+func clean(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x20 && r != '\t' || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			b.WriteRune('?')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // show writes a value briefly.
 func show(v any) string {
+	return clean(show1(v))
+}
+
+func show1(v any) string {
 	if isEmpty(v) {
 		return "(none)"
 	}

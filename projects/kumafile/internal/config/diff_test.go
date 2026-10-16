@@ -96,17 +96,37 @@ monitors:
 	// With --prune, the tag the API monitor still has on the instance goes,
 	// and what refers to removed things is a problem.
 	p = Diff(load(t, "monitors:\n  - {name: A, type: http, notifications: [Chat], tags: [nope]}", nil), have, true)
-	if len(p.Problems) != 2 || !strings.Contains(strings.Join(p.Problems, "\n"), `notification "Chat" does not exist`) {
+	// Only the sections the file has are pruned: the notification stays.
+	if len(p.Problems) != 1 || !strings.Contains(p.Problems[0], `tag "nope" does not exist`) {
 		t.Fatalf("problems %q", p.Problems)
 	}
 	deletes := 0
 	for _, a := range p.Actions {
 		if a.Op == Delete {
 			deletes++
+			if a.Kind.Key != "monitors" {
+				t.Errorf("deleted %s %s from a section the file does not have", a.Kind.One, a.Label())
+			}
 		}
 	}
-	if deletes != 6 {
+	if deletes != 3 {
 		t.Fatalf("%d deletes", deletes)
+	}
+	// An empty section is still a section: everything in it goes.
+	p = Diff(load(t, "tags: []", nil), have, true)
+	if n := len(p.Actions); n != 2+1+3 || p.Actions[0].Op != Delete || p.Actions[2].Op != Keep {
+		t.Fatalf("tags: [] with prune: %+v", p.Actions)
+	}
+	// A monitor moved to another group is changed, not made again.
+	moved := load(t, strings.Replace(live, "    group: Web\n", "", 1), nil)
+	p = Diff(moved, have, true)
+	if len(p.Actions) != 1 || p.Actions[0].Op != Update || p.Actions[0].Changes[0].Field != "group" {
+		t.Fatalf("move: %+v", p.Actions)
+	}
+	// A typo in a field name is caught.
+	p = Diff(load(t, "monitors:\n  - {name: X, type: http, ulr: https://x}", nil), have, false)
+	if len(p.Problems) != 1 || !strings.Contains(p.Problems[0], `unknown field "ulr" (did you mean "url"?)`) {
+		t.Fatalf("typo: %q", p.Problems)
 	}
 	renamed := load(t, strings.Replace(live, "name: prod,", "name: Prod,", 1), nil)
 	if p := Diff(renamed, have, false); p.InSync() || p.Actions[0].Changes[0].Field != "name" {

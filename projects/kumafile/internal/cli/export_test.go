@@ -82,11 +82,11 @@ func TestExport(t *testing.T) {
 	for _, want := range []string{
 		"name: Homepage\n    group: Web\n    type: http\n    url: https://example.org",
 		"interval: 120", "maxretries: 2",
-		"basic_auth_user: bob", "basic_auth_pass: ${MONITOR_HOMEPAGE_BASIC_AUTH_PASS}",
+		"basic_auth_user: bob", "basic_auth_pass: ${KUMA_MONITOR_HOMEPAGE_BASIC_AUTH_PASS}",
 		"notifications: [Ops Telegram]",
 		"- name: prod\n        value: eu",
-		"telegramBotToken: ${NOTIFICATION_OPS_TELEGRAM_TELEGRAMBOTTOKEN}",
-		"password: ${PROXY_PROXY_LAN_PASSWORD}",
+		"telegramBotToken: ${KUMA_NOTIFICATION_OPS_TELEGRAM_TELEGRAMBOTTOKEN}",
+		"password: ${KUMA_PROXY_PROXY_LAN_PASSWORD}",
 		"dockerDaemon: /var/run/docker.sock",
 		"monitors: [Web / Homepage]",
 		"description: All our services",
@@ -112,7 +112,7 @@ func TestExport(t *testing.T) {
 	f, _ := os.Open(filepath.Join(dir, "kuma.env"))
 	defer f.Close()
 	env, err := config.ReadEnv(f)
-	if err != nil || env["MONITOR_HOMEPAGE_BASIC_AUTH_PASS"] != "http-pass" || env["NOTIFICATION_OPS_TELEGRAM_TELEGRAMBOTTOKEN"] != "123:SECRET" {
+	if err != nil || env["KUMA_MONITOR_HOMEPAGE_BASIC_AUTH_PASS"] != "http-pass" || env["KUMA_NOTIFICATION_OPS_TELEGRAM_TELEGRAMBOTTOKEN"] != "123:SECRET" {
 		t.Fatalf("secrets %v %v", env, err)
 	}
 	var parsed map[string]any
@@ -154,7 +154,7 @@ func TestDiff(t *testing.T) {
 	changed := strings.Replace(string(data), "interval: 120", "interval: 300", 1)
 	changed = strings.Replace(changed, "description: All our services", "description: Everything", 1)
 	os.WriteFile(file, []byte(changed), 0o644)
-	e, out, _ = testEnv(t, s, map[string]string{"MONITOR_HOMEPAGE_BASIC_AUTH_PASS": "rotated"})
+	e, out, _ = testEnv(t, s, map[string]string{"KUMA_MONITOR_HOMEPAGE_BASIC_AUTH_PASS": "rotated"})
 	code := Run(context.Background(), e, []string{"diff", file})
 	for _, want := range []string{"interval: 120 -> 300", "basic_auth_pass: (secret, changed)", "description: All our services -> Everything", "0 to create, 2 to change, 0 to delete."} {
 		if !strings.Contains(out.String(), want) {

@@ -124,3 +124,49 @@ func TestPendingCallsEndWithTheConnection(t *testing.T) {
 		t.Fatalf("got %v (ctx %v)", err, ctx.Err())
 	}
 }
+
+// silentServer accepts the WebSocket and then says nothing more than
+// wanted.
+func silentServer(t *testing.T, openAndConnect bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.CloseNow()
+		ctx := r.Context()
+		if openAndConnect {
+			ws.Write(ctx, websocket.MessageText, []byte(`0{"sid":"x","pingInterval":300,"pingTimeout":200}`))
+			ws.Read(ctx)
+			ws.Write(ctx, websocket.MessageText, []byte(`40{"sid":"y"}`))
+		}
+		<-ctx.Done()
+	}))
+}
+
+func TestNothingHangsForever(t *testing.T) {
+	HandshakeTimeout, CallTimeout = 300*time.Millisecond, 300*time.Millisecond
+	defer func() { HandshakeTimeout, CallTimeout = 30*time.Second, 2*time.Minute }()
+	mute := silentServer(t, false)
+	defer mute.Close()
+	start := time.Now()
+	if _, err := Dial(context.Background(), mute.URL, nil, nil); err == nil || time.Since(start) > 5*time.Second {
+		t.Fatalf("a server that never opens: %v after %s", err, time.Since(start))
+	}
+	quiet := silentServer(t, true)
+	defer quiet.Close()
+	c, err := Dial(context.Background(), quiet.URL, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Call(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "no answer") {
+		t.Fatalf("a call never answered: %v", err)
+	}
+	// No pings for longer than the server promised: the connection is
+	// given up.
+	select {
+	case <-c.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("a silent connection was kept")
+	}
+}

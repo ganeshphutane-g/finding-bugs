@@ -69,8 +69,16 @@ var unordered = map[string]map[string]bool{
 func Diff(want, have *Doc, prune bool) *Plan {
 	p := &Plan{}
 	for _, k := range Kinds {
+		moved := moves(k.Key, want, have)
+		taken := map[*Item]bool{}
+		for _, h := range moved {
+			taken[h] = true
+		}
 		for _, w := range want.Items[k.Key] {
 			h := have.Get(k.Key, w.Key)
+			if h == nil {
+				h = moved[w]
+			}
 			if h == nil {
 				p.Actions = append(p.Actions, Action{Kind: k, Op: Create, Want: w})
 				continue
@@ -80,17 +88,153 @@ func Diff(want, have *Doc, prune bool) *Plan {
 			}
 		}
 		for _, h := range have.Items[k.Key] {
-			if want.Get(k.Key, h.Key) == nil {
+			if want.Get(k.Key, h.Key) == nil && !taken[h] {
 				op := Keep
-				if prune {
+				if prune && want.Present[k.Key] {
 					op = Delete
 				}
 				p.Actions = append(p.Actions, Action{Kind: k, Op: op, Have: h})
 			}
 		}
 	}
-	p.Problems = references(want, have, prune)
+	p.Problems = append(references(want, have, prune), unknownFields(want, have)...)
+	p.Problems = append(p.Problems, unknownTypes(want, have)...)
 	return p
+}
+
+// moves pairs a monitor that is new to the file's place with the one
+// monitor of the same name and type that left its place on the instance:
+// it moved to another group, and is changed rather than made again (which
+// would lose its history).
+func moves(kind string, want, have *Doc) map[*Item]*Item {
+	out := map[*Item]*Item{}
+	if kind != "monitors" {
+		return out
+	}
+	byName := func(items []*Item, skip func(*Item) bool) map[string][]*Item {
+		m := map[string][]*Item{}
+		for _, it := range items {
+			if !skip(it) {
+				n := strings.ToLower(str(it.Fields["name"])) + "\x00" + str(it.Fields["type"])
+				m[n] = append(m[n], it)
+			}
+		}
+		return m
+	}
+	newcomers := byName(want.Items[kind], func(w *Item) bool { return have.Get(kind, w.Key) != nil })
+	leavers := byName(have.Items[kind], func(h *Item) bool { return want.Get(kind, h.Key) != nil })
+	for n, ws := range newcomers {
+		if hs := leavers[n]; len(ws) == 1 && len(hs) == 1 {
+			out[ws[0]] = hs[0]
+		}
+	}
+	return out
+}
+
+// unknownFields reports monitor fields neither kumafile nor the server
+// knows (often a typo).
+func unknownFields(want, have *Doc) []string {
+	known := map[string]bool{"active": true, "url": true}
+	for _, f := range managed["monitors"] {
+		known[f] = true
+	}
+	for f := range baseline {
+		known[f] = true
+	}
+	for _, t := range typeBaseline {
+		for f := range t {
+			known[f] = true
+		}
+	}
+	for f := range have.MonitorFields {
+		if !monitorDropped[f] {
+			known[f] = true
+		}
+	}
+	var out []string
+	for _, m := range want.Items["monitors"] {
+		var names []string
+		for f := range m.Fields {
+			if !known[f] {
+				names = append(names, f)
+			}
+		}
+		sort.Strings(names)
+		for _, f := range names {
+			msg := fmt.Sprintf("monitor %s: unknown field %q", m.Label, f)
+			if s := closest(f, known); s != "" {
+				msg += fmt.Sprintf(" (did you mean %q?)", s)
+			} else if have.MonitorFields != nil {
+				msg += " (this Uptime Kuma does not have it)"
+			}
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
+// builtinTypes are monitor types every 2.x server checks itself, without
+// announcing them.
+var builtinTypes = []string{"docker", "gamedig", "grpc-keyword", "http", "json-query", "kafka-producer", "keyword",
+	"mongodb", "mysql", "ping", "pm2", "port", "postgres", "push", "radius", "real-browser", "redis", "sqlserver",
+	"steam", "system-service"}
+
+// unknownTypes reports monitors of a type the server does not have (an
+// export of a newer Kuma applied to an older one).
+func unknownTypes(want, have *Doc) []string {
+	if have.MonitorTypes == nil {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, t := range builtinTypes {
+		known[t] = true
+	}
+	for t := range have.MonitorTypes {
+		known[t] = true
+	}
+	var out []string
+	for _, m := range want.Items["monitors"] {
+		if t := str(m.Fields["type"]); !known[t] {
+			out = append(out, fmt.Sprintf("monitor %s: this Uptime Kuma has no monitor type %q", m.Label, t))
+		}
+	}
+	return out
+}
+
+// closest is the known name nearest to s, if it is near.
+func closest(s string, known map[string]bool) string {
+	best, bestD := "", 3
+	for k := range known {
+		d := distance(strings.ToLower(s), strings.ToLower(k))
+		if d < bestD || (d == bestD && best != "" && k < best) {
+			best, bestD = k, d
+		}
+	}
+	if bestD > 2 {
+		return ""
+	}
+	return best
+}
+
+// distance is the Levenshtein distance.
+func distance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
 }
 
 // fieldsOf lists what to compare: the managed fields, the baseline, and
@@ -115,6 +259,18 @@ func fieldsOf(kind string, w, h *Item) []string {
 	}
 	for f := range w.Fields {
 		set[f] = true
+	}
+	// Markers of the instance's view, and what it cannot know.
+	for f := range set {
+		if strings.HasPrefix(f, "_") {
+			delete(set, f)
+		}
+	}
+	if kind == "monitors" && h.Fields[parentPaused] == true {
+		delete(set, "active")
+	}
+	if kind == "status_pages" && (w.Fields["logo"] != nil || h.Fields["logo"] != nil) {
+		delete(set, "icon") // the logo is compared instead
 	}
 	var out []string
 	relevant := maintenanceFields(str(w.Fields["strategy"]))
@@ -178,7 +334,7 @@ func compareSettings(w, h *Item) []Change {
 	var out []Change
 	for _, k := range names {
 		if !same(ws[k], hs[k]) {
-			out = append(out, Change{Field: "settings." + k, From: hs[k], To: ws[k], Secret: secretKey.MatchString(k) || w.Secret["settings."+k] || h.Secret["settings."+k]})
+			out = append(out, Change{Field: "settings." + k, From: hs[k], To: ws[k], Secret: secretSetting(k, ws[k]) || secretSetting(k, hs[k]) || w.Secret["settings."+k] || h.Secret["settings."+k]})
 		}
 	}
 	return out
@@ -205,6 +361,16 @@ func normalise(kind, f string, v any) any {
 	}
 	if kind == "maintenance" && (f == "monitors" || f == "status_pages") {
 		v = lower(v)
+	}
+	if kind == "monitors" && monitorSecrets[f] {
+		// Structured settings (Kafka SASL options) may be written as JSON
+		// text, as secrets are.
+		if s, ok := v.(string); ok && (strings.HasPrefix(strings.TrimSpace(s), "{") || strings.HasPrefix(strings.TrimSpace(s), "[")) {
+			var x any
+			if json.Unmarshal([]byte(s), &x) == nil {
+				v = x
+			}
+		}
 	}
 	if kind == "monitors" && f == "url" {
 		if s, ok := v.(string); ok && placeholderURL[s] {
@@ -255,7 +421,7 @@ func lowerGroupRefs(v any) any {
 			case string:
 				mons = append(mons, map[string]any{"monitor": strings.ToLower(x), "show_url": false})
 			case map[string]any:
-				mons = append(mons, map[string]any{"monitor": strings.ToLower(str(x["monitor"])), "show_url": x["show_url"] == true})
+				mons = append(mons, map[string]any{"monitor": strings.ToLower(str(x["monitor"])), "show_url": x["show_url"] == true, "url": x["url"]})
 			}
 		}
 		out = append(out, map[string]any{"name": gm["name"], "monitors": mons})
@@ -275,7 +441,7 @@ func references(want, have *Doc, prune bool) []string {
 		if want.Get(kind, strings.ToLower(key)) != nil {
 			return true
 		}
-		return !prune && have.Get(kind, strings.ToLower(key)) != nil
+		return (!prune || !want.Present[kind]) && have.Get(kind, strings.ToLower(key)) != nil
 	}
 	var problems []string
 	bad := func(it *Item, what, name string) {
@@ -284,7 +450,7 @@ func references(want, have *Doc, prune bool) []string {
 	for _, m := range want.Items["monitors"] {
 		if g := str(m.Fields["group"]); g != "" {
 			gi := want.Get("monitors", strings.ToLower(g))
-			if gi == nil && !prune {
+			if gi == nil && (!prune || !want.Present["monitors"]) {
 				gi = have.Get("monitors", strings.ToLower(g))
 			}
 			if gi == nil {

@@ -32,6 +32,30 @@ type Conn struct {
 	done    chan struct{}
 
 	connected chan struct{}
+	// silence is how long the server may say nothing (it pings every
+	// pingInterval and expects a pong within pingTimeout).
+	silence time.Duration
+}
+
+// Timeouts (variables so tests can shorten them).
+var (
+	// HandshakeTimeout bounds connecting, when the caller sets no deadline.
+	HandshakeTimeout = 30 * time.Second
+	// CallTimeout bounds one call, when the caller sets no deadline.
+	CallTimeout = 2 * time.Minute
+)
+
+// MaxMessage is the largest message accepted from the server.
+const MaxMessage = 64 << 20
+
+// redact drops a password from an address shown in a message.
+func redact(base string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.User == nil {
+		return base
+	}
+	u.User = nil
+	return u.String()
 }
 
 // Dial connects to a Socket.IO server at base (http or https URL of the
@@ -39,9 +63,15 @@ type Conn struct {
 // server sends, in order, on the reading goroutine: it must not block on
 // the connection.
 func Dial(ctx context.Context, base string, header http.Header, onEvent func(string, []json.RawMessage)) (*Conn, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, HandshakeTimeout)
+		defer cancel()
+	}
+	shown := redact(base)
 	u, err := url.Parse(base)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%q is not a valid address", shown)
 	}
 	switch u.Scheme {
 	case "http":
@@ -49,15 +79,15 @@ func Dial(ctx context.Context, base string, header http.Header, onEvent func(str
 	case "https":
 		u.Scheme = "wss"
 	default:
-		return nil, fmt.Errorf("%q is not an http(s) URL", base)
+		return nil, fmt.Errorf("%q is not an http(s) URL", shown)
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/") + "/socket.io/"
 	u.RawQuery = "EIO=4&transport=websocket"
 	ws, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
-		return nil, fmt.Errorf("connecting to %s: %w", base, err)
+		return nil, fmt.Errorf("connecting to %s: %w", shown, err)
 	}
-	ws.SetReadLimit(256 << 20)
+	ws.SetReadLimit(MaxMessage)
 	c := &Conn{ws: ws, pending: map[int]chan []json.RawMessage{}, onEvent: onEvent,
 		done: make(chan struct{}), connected: make(chan struct{})}
 
@@ -65,11 +95,20 @@ func Dial(ctx context.Context, base string, header http.Header, onEvent func(str
 	typ, data, err := ws.Read(ctx)
 	if err != nil {
 		ws.CloseNow()
-		return nil, fmt.Errorf("connecting to %s: %w", base, err)
+		return nil, fmt.Errorf("connecting to %s: %w", shown, err)
 	}
 	if typ != websocket.MessageText || len(data) == 0 || data[0] != '0' {
 		ws.CloseNow()
-		return nil, fmt.Errorf("connecting to %s: not a Socket.IO server", base)
+		return nil, fmt.Errorf("connecting to %s: not a Socket.IO server", shown)
+	}
+	var open struct {
+		PingInterval int `json:"pingInterval"`
+		PingTimeout  int `json:"pingTimeout"`
+	}
+	json.Unmarshal(data[1:], &open)
+	c.silence = time.Duration(open.PingInterval+open.PingTimeout)*time.Millisecond + 5*time.Second
+	if open.PingInterval <= 0 || c.silence > 5*time.Minute {
+		c.silence = 50 * time.Second
 	}
 	if err := c.write(ctx, "40"); err != nil {
 		ws.CloseNow()
@@ -124,13 +163,22 @@ func (c *Conn) Close() error {
 }
 
 func (c *Conn) readLoop() {
-	ctx := context.Background()
 	for {
+		// The server pings regularly: silence for longer means the
+		// connection is dead (a half-open proxy, a stopped server).
+		ctx, cancel := context.WithTimeout(context.Background(), c.silence)
 		typ, data, err := c.ws.Read(ctx)
+		timedOut := ctx.Err() != nil
+		cancel()
 		if err != nil {
-			c.fail(fmt.Errorf("connection lost: %w", err))
+			if timedOut {
+				c.fail(fmt.Errorf("connection lost: the server sent nothing for %s", c.silence.Round(time.Second)))
+			} else {
+				c.fail(fmt.Errorf("connection lost: %w", err))
+			}
 			return
 		}
+		ctx = context.Background()
 		if typ != websocket.MessageText || len(data) == 0 {
 			continue // binary attachments are not used by Uptime Kuma
 		}
@@ -219,6 +267,11 @@ func (c *Conn) handle(p string) error {
 // Call sends an event with arguments and waits for the server's answer
 // (its acknowledgement arguments).
 func (c *Conn) Call(ctx context.Context, event string, args ...any) ([]json.RawMessage, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, CallTimeout)
+		defer cancel()
+	}
 	payload, err := json.Marshal(append([]any{event}, args...))
 	if err != nil {
 		return nil, err
@@ -246,6 +299,9 @@ func (c *Conn) Call(ctx context.Context, event string, args ...any) ([]json.RawM
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("%s: no answer from the server in time", event)
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -258,6 +314,3 @@ func (c *Conn) Emit(ctx context.Context, event string, args ...any) error {
 	}
 	return c.write(ctx, "42"+string(payload))
 }
-
-// DefaultTimeout bounds a single call when the caller's context has none.
-const DefaultTimeout = 2 * time.Minute

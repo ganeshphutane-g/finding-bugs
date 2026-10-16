@@ -20,9 +20,22 @@ type index struct {
 	warnings []string
 }
 
+// probeName is the paused monitor apply makes for a moment (see apply).
+const probeName = "kumafile probe (temporary)"
+
 func newIndex(st *kuma.State) *index {
 	ix := &index{st: st, monitors: map[int64]kuma.Object{}, paths: map[int64][]string{}}
+	var ms []kuma.Object
 	for _, m := range st.Monitors {
+		if m.Str("name") == probeName && m["active"] != true && kuma.Int(m["parent"]) == 0 {
+			continue // left behind by an interrupted apply; not configuration
+		}
+		ms = append(ms, m)
+	}
+	cp := *st // the state itself is left as it is
+	cp.Monitors = ms
+	ix.st = &cp
+	for _, m := range ms {
 		ix.monitors[m.ID()] = m
 	}
 	for id := range ix.monitors {

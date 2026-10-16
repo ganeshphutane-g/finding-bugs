@@ -34,6 +34,7 @@ Commands:
   export    Write the instance's configuration to a file
   diff      Show how the instance differs from a file (changes nothing)
   apply     Make the instance match a file (shows the changes and asks first)
+  login     Log in once and print a token for KUMAFILE_TOKEN
   version   Show the version
 
   kumafile export [-o FILE]
@@ -52,12 +53,18 @@ Options:
                            environment takes precedence
       --prune              diff, apply: also delete what is only on the instance
   -y, --yes                apply: do not ask
+      --force              export, login: replace a file kumafile did not write
 
 Login comes from the environment, never from the command line:
   KUMAFILE_USERNAME and KUMAFILE_PASSWORD (or KUMAFILE_PASSWORD_FILE), and
   KUMAFILE_TOTP (a one-time code) or KUMAFILE_TOTP_SECRET(_FILE) with
   two-factor login; or KUMAFILE_TOKEN(_FILE), a token from an earlier login.
-  An instance with authentication turned off needs none.
+  An instance with authentication turned off needs none. Uptime Kuma allows
+  about 20 logins a minute; 'kumafile login' gives a token that saves them.
+
+${NAME} in a file is filled from the secrets file, or from the environment
+for names that start with KUMA_ (no other variable can be read by a file).
+--prune deletes only within the sections the file has.
 
 Exit codes: 0 done (diff: in sync), 1 error, 2 bad usage, 3 diff: differences.
 `
@@ -131,6 +138,7 @@ type options struct {
 	envFile     string
 	prune       bool
 	yes         bool
+	force       bool
 	help        bool
 	pos         []string
 }
@@ -148,6 +156,7 @@ func parse(args []string) (options, error) {
 	fs.BoolVar(&o.prune, "prune", false, "")
 	fs.BoolVar(&o.yes, "y", false, "")
 	fs.BoolVar(&o.yes, "yes", false, "")
+	fs.BoolVar(&o.force, "force", false, "")
 	rest := args
 	for {
 		if err := fs.Parse(rest); errors.Is(err, flag.ErrHelp) {
@@ -177,7 +186,7 @@ func run(ctx context.Context, env Env, args []string) error {
 	case "version", "--version":
 		fmt.Fprintf(env.Stdout, "kumafile %s\n", Version)
 		return nil
-	case "export", "diff", "apply":
+	case "export", "diff", "apply", "login":
 	default:
 		if strings.HasPrefix(cmd, "-") {
 			return usagef("the command comes first, as in: kumafile export %s ...", cmd)
@@ -191,6 +200,9 @@ func run(ctx context.Context, env Env, args []string) error {
 	if o.help {
 		fmt.Fprint(env.Stdout, usage)
 		return nil
+	}
+	if cmd == "login" {
+		return loginCmd(ctx, env, o)
 	}
 	if cmd == "diff" || cmd == "apply" {
 		return compareOrApply(ctx, env, o, cmd == "apply")
@@ -340,9 +352,13 @@ func loadFile(env Env, path, envFile string) (*config.Doc, error) {
 			return nil, err
 		}
 	}
+	// From the environment only KUMA_* names: a file must not be able to
+	// send, say, the login password or a CI secret to an address it names.
 	return config.Load(data, func(name string) (string, bool) {
-		if v := env.Getenv(name); v != "" {
-			return v, true
+		if strings.HasPrefix(name, "KUMA_") {
+			if v := env.Getenv(name); v != "" {
+				return v, true
+			}
 		}
 		v, ok := vars[name]
 		return v, ok
@@ -352,7 +368,7 @@ func loadFile(env Env, path, envFile string) (*config.Doc, error) {
 // liveDoc is the instance as a loaded file, made by the same export, so
 // both sides of a comparison look alike.
 func liveDoc(st *kuma.State) (*config.Doc, error) {
-	ex, err := config.Make(st, config.ExportOptions{InlineSecrets: true})
+	ex, err := config.Make(st, config.LiveOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -362,7 +378,26 @@ func liveDoc(st *kuma.State) (*config.Doc, error) {
 		return nil, err
 	}
 	enc.Close()
-	return config.Load(buf.Bytes(), func(string) (string, bool) { return "", false })
+	d, err := config.Load(buf.Bytes(), func(string) (string, bool) { return "", false })
+	if err != nil {
+		return nil, fmt.Errorf("the instance's own configuration could not be read back (please report this): %w", err)
+	}
+	d.MonitorFields = map[string]bool{}
+	for _, m := range st.Monitors {
+		for k := range m {
+			d.MonitorFields[k] = true
+		}
+	}
+	if len(st.Monitors) == 0 {
+		d.MonitorFields = nil
+	}
+	if st.MonitorTypes != nil {
+		d.MonitorTypes = map[string]bool{}
+		for _, t := range st.MonitorTypes {
+			d.MonitorTypes[t] = true
+		}
+	}
+	return d, nil
 }
 
 func instanceURL(env Env, o options) (string, error) {
@@ -458,6 +493,19 @@ func export(ctx context.Context, env Env, o options) error {
 	if secretsPath == "" && !o.withSecrets {
 		secretsPath = strings.TrimSuffix(strings.TrimSuffix(out, ".yaml"), ".yml") + ".env"
 	}
+	// Never overwrite a file kumafile did not write.
+	if !o.force {
+		if out != "-" {
+			if err := ownFile(env, out, config.FileHeader); err != nil {
+				return err
+			}
+		}
+		if secretsPath != "" {
+			if err := ownFile(env, secretsPath, config.EnvHeader); err != nil {
+				return err
+			}
+		}
+	}
 	c, err := connect(ctx, env, o)
 	if err != nil {
 		return err
@@ -491,7 +539,11 @@ func export(ctx context.Context, env Env, o options) error {
 	if out == "-" {
 		_, err = env.Stdout.Write(buf.Bytes())
 	} else {
-		err = env.WriteFile(out, buf.Bytes(), 0o644)
+		perm := os.FileMode(0o644)
+		if o.withSecrets {
+			perm = 0o600 // the secrets are in it
+		}
+		err = env.WriteFile(out, buf.Bytes(), perm)
 	}
 	if err != nil {
 		return err
@@ -506,6 +558,22 @@ func export(ctx context.Context, env Env, o options) error {
 		}
 	}
 	return nil
+}
+
+// ownFile refuses to replace a file that exists and was not written by
+// kumafile (it does not start with header).
+func ownFile(env Env, path, header string) error {
+	data, err := env.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 || bytes.HasPrefix(data, []byte(header)) {
+		return nil
+	}
+	return fmt.Errorf("%s exists and was not written by kumafile; choose another file or use --force to replace it", path)
 }
 
 // redact drops any password from a URL shown in the file.
@@ -539,4 +607,34 @@ func summary(st *kuma.State) string {
 		return "nothing configured"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// loginCmd logs in once and prints a token for KUMAFILE_TOKEN, which saves
+// a password login (and a one-time code) on every later run.
+func loginCmd(ctx context.Context, env Env, o options) error {
+	if len(o.pos) > 0 {
+		return usagef("login takes no file name; use -o FILE")
+	}
+	c, err := connect(ctx, env, o)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if c.token == "" {
+		return errors.New("this instance has authentication turned off: no token is needed")
+	}
+	if o.output == "" || o.output == "-" {
+		fmt.Fprintln(env.Stdout, c.token)
+		return nil
+	}
+	if !o.force {
+		if _, err := env.ReadFile(o.output); err == nil {
+			return fmt.Errorf("%s exists; use --force to replace it", o.output)
+		}
+	}
+	if err := env.WriteFile(o.output, []byte(c.token+"\n"), 0o600); err != nil {
+		return err
+	}
+	fmt.Fprintf(env.Stderr, "Wrote a login token to %s; use it with KUMAFILE_TOKEN_FILE=%s. It stays valid until the password changes.\n", o.output, o.output)
+	return nil
 }
