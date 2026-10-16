@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ganeshphutane-g/kumafile/internal/kuma"
 	"github.com/ganeshphutane-g/kumafile/internal/testkit"
 )
 
@@ -27,6 +28,50 @@ func ui(changes map[string]any) map[string]any {
 	return m
 }
 
+// addUI adds a monitor as the web interface would, leaving out fields an
+// older server does not have.
+func addUI(t *testing.T, s *testkit.Server, c *kuma.Client, changes map[string]any) map[string]any {
+	t.Helper()
+	m := ui(changes)
+	for range 20 {
+		var r map[string]any
+		if err := c.Call(t.Context(), &r, "add", m); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := r["ok"].(bool); ok {
+			return r
+		}
+		msg, _ := r["msg"].(string)
+		i := strings.Index(msg, "has no column named ")
+		if i < 0 {
+			t.Fatalf("add: %s", msg)
+		}
+		col := strings.Fields(msg[i+len("has no column named "):])[0]
+		for k := range m {
+			if snake(k) == col {
+				delete(m, k)
+			}
+		}
+	}
+	t.Fatal("add: too many unknown fields")
+	return nil
+}
+
+// snake is a field name as a database column (how the server maps them).
+func snake(s string) string {
+	var b strings.Builder
+	for i, r := range s {
+		if r >= 'A' && r <= 'Z' {
+			if i > 0 {
+				b.WriteByte('_')
+			}
+			r += 'a' - 'A'
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // onePixelPNG is a valid 1x1 PNG.
 const onePixelPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
@@ -39,16 +84,16 @@ func TestReviewedCases(t *testing.T) {
 	prod := a.Must(c, "addTag", map[string]any{"name": "prod", "color": "#059669"})["tag"].(map[string]any)["id"]
 	env := a.Must(c, "addTag", map[string]any{"name": "env", "color": "#2563eb"})["tag"].(map[string]any)["id"]
 	// Kafka with SASL (a structured secret).
-	a.Must(c, "add", ui(map[string]any{"type": "kafka-producer", "name": "Kafka", "kafkaProducerBrokers": []any{"k:9092"},
+	addUI(t, a, c, map[string]any{"type": "kafka-producer", "name": "Kafka", "kafkaProducerBrokers": []any{"k:9092"},
 		"kafkaProducerTopic": "t", "kafkaProducerMessage": "m", "timeout": 1,
-		"kafkaProducerSaslOptions": map[string]any{"mechanism": "plain", "username": "u", "password": "kafka-pass"}}))
+		"kafkaProducerSaslOptions": map[string]any{"mechanism": "plain", "username": "u", "password": "kafka-pass"}})
 	// A paused group with a child that is itself enabled.
-	g := a.Must(c, "add", ui(map[string]any{"type": "group", "name": "Paused group"}))
-	a.Must(c, "add", ui(map[string]any{"name": "Kid", "url": "https://kid.example", "parent": g["monitorID"]}))
+	g := addUI(t, a, c, map[string]any{"type": "group", "name": "Paused group"})
+	addUI(t, a, c, map[string]any{"name": "Kid", "url": "https://kid.example", "parent": g["monitorID"]})
 	a.Must(c, "pauseMonitor", g["monitorID"])
 	// Accepting any status code (an empty list), and tags in an order,
 	// one with a null value (as API clients add them).
-	m := a.Must(c, "add", ui(map[string]any{"name": "Any code", "url": "https://any.example", "accepted_statuscodes": []string{}}))
+	m := addUI(t, a, c, map[string]any{"name": "Any code", "url": "https://any.example", "accepted_statuscodes": []string{}})
 	a.Must(c, "addMonitorTag", env, m["monitorID"], "b")
 	a.Must(c, "addMonitorTag", prod, m["monitorID"], nil)
 	a.Must(c, "addMonitorTag", env, m["monitorID"], "a")
@@ -110,7 +155,7 @@ func TestReviewedCases(t *testing.T) {
 	// A probe left behind by an interrupted apply is removed, and never
 	// exported.
 	cb := b.Client()
-	b.Must(cb, "add", ui(map[string]any{"name": "kumafile probe (temporary)", "url": "https://example.com", "active": false}))
+	addUI(t, b, cb, map[string]any{"name": "kumafile probe (temporary)", "url": "https://example.com", "active": false})
 	if code, out := kf(t, b, nil, "export", "-o", fb, "--secrets", filepath.Join(dir, "b.env")); code != 0 || strings.Contains(body(t, fb), "probe") {
 		t.Fatalf("export with a leftover probe (exit %d): %s", code, out)
 	}
