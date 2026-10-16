@@ -1,17 +1,22 @@
 # State
 
-Current project: none (kumafile finished in run 6)
-Phase: research (round 7).
+Current project: #7, provisionally Grafana alerting as code (working name
+alertfile). Research round 7 is in IDEAS.md.
+Phase: research -> spec.
 
 ## Next step
 
-Research round 7, following the playbook:
-- at least 5 candidates scored in IDEAS.md;
-- pick one with at least 3 independent demand sources and a clear gap.
-
-Round 6's runner-up is npm-exit (Nginx Proxy Manager -> Caddy/Traefik config,
-scored 21; the demand evidence was thin). Re-check it alongside new ideas. Avoid
-ideas close to the six finished projects.
+1. Check whether Grafana is close to shipping Git Sync for alerting
+   (grafana#120686, labelled internal) and alerting support in grafanactl (#246):
+   look at release notes and the linked PRs.
+   - If one ships soon, choose a runner-up (dnsmove, oncall-exit) or research more.
+2. Otherwise:
+   - pick a free name;
+   - run Grafana OSS (grafana/grafana:12) in Docker and check the alerting
+     provisioning API: export, PUT, the disable_provenance header, and editing from
+     the UI afterwards;
+   - write the SPEC (export, diff, apply and copy, in Grafana's file-provisioning
+     format).
 
 Uptime Kuma test server, should a later project need one: `docker run -d -p
 127.0.0.1:3901:3001 louislam/uptime-kuma:2`, then POST /setup-database

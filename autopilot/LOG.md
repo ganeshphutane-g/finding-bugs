@@ -28,8 +28,10 @@ Newest first.
   - Kafka SASL, custom links, logos, paused groups and null tags.
 - The README shows a real demo run; CHANGELOG written.
 - Tests pass locally and in CI (aa90445) on Kuma 2.0.0 and the latest 2.x.
-- Research round 7 started at the end of the run; if it is not in IDEAS.md,
-  redo it.
+- Research round 7 done: 6 candidates in IDEAS.md.
+  - Provisional choice: Grafana alerting as code (grafana#120686, 166 👍).
+  - Risk: Grafana may build it itself (that issue is internal); the next run
+    checks before the spec.
 - Next: research round 7 (STATE.md).
 - Owner:
   - the finding-bugs repo is still public (your decision);

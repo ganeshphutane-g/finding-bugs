@@ -3,6 +3,70 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 7 — 2026-10-17 IST
+
+One research pass (GitHub search plus web search). "checked" means seen in GitHub
+search; everything else is from search summaries.
+
+### Chosen (provisional): Grafana alerting as code (project #7, working name alertfile)
+
+Export Grafana-managed alert rules, contact points, notification policies, mute
+timings and templates to YAML, diff them against an instance, apply through the
+provisioning API, and copy between instances. Same design as kumafile.
+
+**Demand:**
+- [grafana#120686](https://github.com/grafana/grafana/issues/120686) "Alerting:
+  Support for GitSync": 166 👍, open since 2026-03, labelled `internal` (checked).
+- [grafana#125463](https://github.com/grafana/grafana/issues/125463) "GitSync
+  support for rules": 27 👍, 2026-05 (checked).
+- [grafanactl#246](https://github.com/grafana/grafanactl/issues/246) "Add support
+  for alerting resources": 10 👍 (checked).
+- grafana#73437 added a UI export that only goes one way: 33 👍, closed (checked).
+- Grizzly is archived (707★, checked).
+
+**Gap:**
+- terraform-provider-grafana (513★) means adopting Terraform;
+- grafana-backup-tool (946★) only backs up and restores;
+- grafanactl (172★) has no alerting;
+- file provisioning is one-way and locks the rules in the UI.
+
+**Scores:** 4/3/4/3/4 = **18**.
+
+**Main risk:** #120686 is Grafana's own internal issue, so Grafana may build Git
+Sync for alerting itself.
+
+**Before the spec:**
+- check the state of Git Sync for alerting and of grafanactl alerting support;
+- use Grafana's file-provisioning format, so users are not locked in;
+- lead with copying between instances.
+
+If Grafana is close to shipping it, take a runner-up or keep researching.
+
+### Runners-up
+
+- **dnsmove** (convert Pi-hole v6 / AdGuard Home / Technitium), **20**.
+  - AdGuardHome#1147, settings import/export: 62 👍, open since 2019 (checked).
+  - The sync tools (nebula-sync 1.6k★, adguardhome-sync 1.8k★) only sync the same
+    product.
+  - Demand for converting between products is thin.
+- **npm-exit**, 18. Re-checked and still weak: no high-👍 request, users move to the
+  NPMplus fork, and caddyserver/nginx-adapter (358★) partly covers it.
+- **oncall-exit** (Opsgenie / Grafana OnCall OSS → GoAlert), 16.
+  - Real end-of-life deadlines: OnCall OSS was archived on 2026-03-24, and Opsgenie
+    support ends on 2027-04-05.
+  - The users are SRE teams rather than homelabbers.
+- **coolify-eject**, 15. **Gitea Actions janitor**, 15 (Gitea is closing the gap).
+
+### Rejected in round 7
+
+- Plex→Jellyfin history: crowded.
+- Gitea Pages: exists.
+- Certificate expiry monitor: covered.
+- GitHub→Gitea mirroring: strong demand (gitea#8424, 97 👍) but the mirror space was
+  set aside; maybe reconsider.
+- Forgejo Actions linter, HCP Terraform exit, Readarr exit, Umami GA import,
+  Nextcloud→OpenCloud, Bitwarden attachments: weak or no signal.
+
 ## Research round 6 — 2026-10-16 IST
 
 One research pass (GitHub search plus web search). "checked" means read from GitHub
