@@ -22,22 +22,20 @@ Milestone 2 is done (run 6):
   differences;
 - references are checked; secrets are never printed.
 
-Milestone 3, apply:
-- `kumafile apply [FILE] [--prune] [-y]`: show the diff, ask, then act in
-  dependency order (tags, notifications, proxies, Docker hosts, remote browsers,
-  groups parent-first, monitors, maintenance, status pages); deletes in reverse
-  order.
-- An update sends the live monitor object merged with the file's fields
-  (editMonitor copies 116 named fields, so leaving one out clears it). Use
-  pause/resume for active; notifications go in notificationIDList; tags via
-  add/edit/deleteMonitorTag.
-- Tests:
-  - round trip: export A, apply to a fresh B, export B, same file;
-  - a second apply changes nothing;
-  - prune;
-  - a monitor of every type the server lists.
+Milestone 3 (apply) is built (run 6):
+- `kumafile apply [FILE] [--prune] [-y]` creates and updates in dependency order
+  and deletes in reverse;
+- it re-reads the instance afterwards and reports anything the server did not
+  take;
+- the round trip A -> B is exact; a second apply changes nothing; prune, 16
+  monitor types and 2FA (the token is reused for the check) are tested.
+Two full reviews (correctness; security/usability) were started at about 01:20
+IST on 2026-10-17. If their findings are not in LOG.md, re-run them.
 
-Notes for apply (milestone 3):
+Then milestone 4: fix the review findings, a README from a real demo, CHANGELOG,
+CI green on 2.0.0 and 2.x, v1.0.0.
+
+Notes from building apply:
 - saveStatusPage(slug, config, imgDataUrl, groups) needs imgDataUrl = config.icon
   (null crashes the server).
 - statusPageList is not re-pushed after addStatusPage: read state on a fresh

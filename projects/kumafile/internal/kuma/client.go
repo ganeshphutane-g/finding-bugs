@@ -140,7 +140,11 @@ func (c *Client) Login(ctx context.Context, cr Credentials) (string, error) {
 		TokenRequired bool   `json:"tokenRequired"`
 	}
 	data := map[string]any{"username": cr.Username, "password": cr.Password, "token": ""}
-	if err := c.call(ctx, &r, "login", data); err != nil {
+	// The answer asking for a one-time code has no "ok" in it.
+	if err := c.Call(ctx, &r, "login", data); err != nil {
+		return "", fmt.Errorf("logging in as %s: %w", cr.Username, err)
+	}
+	if err := r.err(); err != nil && !r.TokenRequired {
 		return "", fmt.Errorf("logging in as %s: %w", cr.Username, err)
 	}
 	if r.TokenRequired {

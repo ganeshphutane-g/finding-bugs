@@ -218,11 +218,12 @@ func compareOrApply(ctx context.Context, env Env, o options, doApply bool) error
 	if err != nil {
 		return err
 	}
-	c, u, err := connect(ctx, env, o)
+	c, err := connect(ctx, env, o)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+	u := c.url
 	st, err := c.Read(ctx)
 	if err != nil {
 		return err
@@ -255,7 +256,7 @@ func compareOrApply(ctx context.Context, env Env, o options, doApply bool) error
 			return errors.New("stopped; nothing was changed")
 		}
 	}
-	err = apply.Run(ctx, apply.Options{Client: c, State: st, Want: want, Plan: p,
+	err = apply.Run(ctx, apply.Options{Client: c.Client, State: st, Want: want, Plan: p,
 		Log: func(s string) { fmt.Fprintln(env.Stdout, s) }})
 	if err != nil {
 		fmt.Fprintln(env.Stdout, "Apply stopped partway; what is above was done. Run it again to finish: it only changes what still differs.")
@@ -263,7 +264,11 @@ func compareOrApply(ctx context.Context, env Env, o options, doApply bool) error
 	}
 	// Check the result on a fresh connection (some lists are only sent on
 	// login).
-	c2, _, err := connect(ctx, env, o)
+	cr, _ := credentials(env)
+	if c.token != "" {
+		cr = kuma.Credentials{Token: c.token}
+	}
+	c2, err := login(ctx, u, cr)
 	if err != nil {
 		return fmt.Errorf("applied, but could not check the result: %w", err)
 	}
@@ -408,25 +413,37 @@ func credentials(env Env) (kuma.Credentials, error) {
 	return cr, nil
 }
 
+// session is a logged-in connection, and the token to log in again (a
+// one-time code works only once).
+type session struct {
+	*kuma.Client
+	url, token string
+}
+
 // connect opens a logged-in connection.
-func connect(ctx context.Context, env Env, o options) (*kuma.Client, string, error) {
+func connect(ctx context.Context, env Env, o options) (*session, error) {
 	u, err := instanceURL(env, o)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	cr, err := credentials(env)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
+	return login(ctx, u, cr)
+}
+
+func login(ctx context.Context, u string, cr kuma.Credentials) (*session, error) {
 	c, err := kuma.Connect(ctx, u)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	if _, err := c.Login(ctx, cr); err != nil {
+	token, err := c.Login(ctx, cr)
+	if err != nil {
 		c.Close()
-		return nil, "", err
+		return nil, err
 	}
-	return c, u, nil
+	return &session{Client: c, url: u, token: token}, nil
 }
 
 func export(ctx context.Context, env Env, o options) error {
@@ -441,11 +458,12 @@ func export(ctx context.Context, env Env, o options) error {
 	if secretsPath == "" && !o.withSecrets {
 		secretsPath = strings.TrimSuffix(strings.TrimSuffix(out, ".yaml"), ".yml") + ".env"
 	}
-	c, u, err := connect(ctx, env, o)
+	c, err := connect(ctx, env, o)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+	u := c.url
 	st, err := c.Read(ctx)
 	if err != nil {
 		return err
