@@ -138,17 +138,21 @@ func unknownFields(want, have *Doc) []string {
 	for _, f := range managed["monitors"] {
 		known[f] = true
 	}
-	for f := range baseline {
-		known[f] = true
-	}
-	for _, t := range typeBaseline {
-		for f := range t {
+	if have.MonitorFields != nil {
+		// What this server has (a field of a newer Kuma is not known).
+		for f := range have.MonitorFields {
+			if !monitorDropped[f] {
+				known[f] = true
+			}
+		}
+	} else {
+		for f := range baseline {
 			known[f] = true
 		}
-	}
-	for f := range have.MonitorFields {
-		if !monitorDropped[f] {
-			known[f] = true
+		for _, t := range typeBaseline {
+			for f := range t {
+				known[f] = true
+			}
 		}
 	}
 	var out []string

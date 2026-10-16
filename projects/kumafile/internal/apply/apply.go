@@ -55,6 +55,28 @@ func Run(ctx context.Context, o Options) error {
 		}
 	}
 
+	// Before writing anything: every monitor field the file sets must be
+	// one this server has (an export of a newer Kuma applied to an older
+	// one would otherwise lose them).
+	if acts := a.actions("monitors", config.Create, config.Update); len(acts) > 0 {
+		if err := a.knowFields(ctx); err != nil {
+			return err
+		}
+		var unknown []string
+		for _, act := range acts {
+			for f, v := range act.Want.Fields {
+				if !refFields[f] && !a.fields[f] && f != "active" && !strings.HasPrefix(f, "_") && v != nil {
+					unknown = append(unknown, fmt.Sprintf("monitor %s: %s", act.Want.Label, f))
+				}
+			}
+		}
+		if len(unknown) > 0 {
+			sort.Strings(unknown)
+			return fmt.Errorf("this Uptime Kuma (%s) does not have these fields, so nothing was changed:\n  - %s",
+				o.State.Info.Version, strings.Join(unknown, "\n  - "))
+		}
+	}
+
 	// Creates and updates, what others refer to first; groups before what
 	// they contain.
 	for _, k := range config.Kinds {
