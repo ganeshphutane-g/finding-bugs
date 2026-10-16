@@ -1,23 +1,46 @@
 # State
 
-Current project: #6 Uptime Kuma v2 config as code (name to be chosen; "kumactl"
-is taken by Kong's Kuma)
-Phase: spec. Research round 6 is in IDEAS.md.
+Current project: #6 kumafile (config as code for Uptime Kuma 2.x: export, diff,
+apply)
+Phase: build. Spec: projects/kumafile/SPEC.md (written in run 6).
+Repo: projects/kumafile/ inside finding-bugs (creating repos is blocked).
 
 ## Next step
 
-1. Re-verify the round 6 evidence:
-   - uptime-kuma#1354 and #6045 counts and the maintainer comments;
-   - whether a newer export/diff tool exists for v2.
-2. Pick a free name.
-3. Start Uptime Kuma 2.x in Docker (louislam/uptime-kuma:2) and check two things:
-   - the SQLite schema;
-   - the Socket.IO events for adding, editing and deleting monitors, notifications,
-     status pages, maintenance windows and tags, including whether a client can log
-     in with an API key or needs a password plus 2FA.
-4. Write SPEC.md in projects/<name>/:
-   - export (read-only), diff and apply, plus copy between instances;
-   - pinned, tested Kuma versions.
+Milestone 1, the client:
+- Socket.IO v5 over WebSocket (github.com/coder/websocket): connect, events, acks,
+  ping;
+- login with a password, a TOTP code, a JWT, or no auth;
+- reading every list;
+- `kumafile export` with secrets split into a .env file.
+
+Facts checked on Uptime Kuma 2.5.6 (2026-10-17):
+- No REST API for config. Socket events:
+  - monitors: add, editMonitor, deleteMonitor(id, deleteChildren);
+  - tags: addTag, editTag, deleteTag, addMonitorTag/editMonitorTag/deleteMonitorTag
+    (tagID, monitorID, value);
+  - notifications: addNotification(obj, id|null), deleteNotification;
+  - maintenance: addMaintenance, editMaintenance, addMonitorMaintenance,
+    addMaintenanceStatusPage, deleteMaintenance;
+  - status pages: saveStatusPage, addStatusPage, deleteStatusPage;
+  - addProxy/deleteProxy, addDockerHost/deleteDockerHost,
+    addRemoteBrowser/deleteRemoteBrowser.
+- Login: `login {username,password,token}` returns {ok, token(JWT)} or
+  {tokenRequired}; `loginByToken(jwt)`. A fresh server needs `POST
+  /setup-database {"dbConfig":{"type":"sqlite"}}`, then `setup(user, pass)`.
+- After login the server pushes monitorList, maintenanceList, notificationList
+  (config is a JSON string), proxyList, dockerHostList, apiKeyList,
+  remoteBrowserList and statusPageList.
+- A monitor object has 125 fields. Secret fields come after the
+  `includeSensitiveData` marker in Monitor.toJSON. Server-derived fields: id, path,
+  pathName, childrenIDs, weight, maintenance, forceInactive, dns_last_result,
+  includeSensitiveData.
+- editMonitor copies 116 named fields; notificationIDList, accepted_statuscodes and
+  active are handled separately (pause/resume for active).
+- The JSON backup is gone in 2.x: no settings page and no server handler.
+- A test server: `docker run -d -p 127.0.0.1:3901:3001 louislam/uptime-kuma:2`, then
+  POST setup-database and wait about 15 s. A probe script with the bundled
+  socket.io-client works inside the container (node).
 
 Gitea test server, should a later project need one: `docker run -d --name gt1 -p
 127.0.0.1:3001:3000 -e GITEA__security__INSTALL_LOCK=true -e
