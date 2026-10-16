@@ -1,75 +1,24 @@
 # State
 
-Current project: #6 kumafile (config as code for Uptime Kuma 2.x: export, diff,
-apply)
-Phase: build. Spec: projects/kumafile/SPEC.md (written in run 6).
-Repo: projects/kumafile/ inside finding-bugs (creating repos is blocked).
+Current project: none (kumafile finished in run 6)
+Phase: research (round 7).
 
 ## Next step
 
-Milestone 1 is done (run 6):
-- internal/sio is a Socket.IO client;
-- internal/kuma does login (password, TOTP, JWT, no auth) and reads all lists;
-- `kumafile export` writes YAML plus a 0600 .env with the secrets;
-- tests pass on Kuma 2.0.0 and 2.5.6.
+Research round 7, following the playbook:
+- at least 5 candidates scored in IDEAS.md;
+- pick one with at least 3 independent demand sources and a clear gap.
 
-Milestone 2 is done (run 6):
-- the baseline (what a UI-created monitor looks like, plus per-type tweaks;
-  internal/config/defaults.go) trims the export;
-- Load reads a file and expands ${NAME} ($${ is a literal);
-- Diff compares the file with the instance, which is loaded through its own
-  export, so both sides look alike; `kumafile diff` exits 0 in sync, 3 on
-  differences;
-- references are checked; secrets are never printed.
+Round 6's runner-up is npm-exit (Nginx Proxy Manager -> Caddy/Traefik config,
+scored 21; the demand evidence was thin). Re-check it alongside new ideas. Avoid
+ideas close to the six finished projects.
 
-Milestone 3 (apply) is built (run 6):
-- `kumafile apply [FILE] [--prune] [-y]` creates and updates in dependency order
-  and deletes in reverse;
-- it re-reads the instance afterwards and reports anything the server did not
-  take;
-- the round trip A -> B is exact; a second apply changes nothing; prune, 16
-  monitor types and 2FA (the token is reused for the check) are tested.
-Two full reviews (correctness; security/usability) were started at about 01:20
-IST on 2026-10-17. If their findings are not in LOG.md, re-run them.
-
-Then milestone 4: fix the review findings, a README from a real demo, CHANGELOG,
-CI green on 2.0.0 and 2.x, v1.0.0.
-
-Notes from building apply:
-- saveStatusPage(slug, config, imgDataUrl, groups) needs imgDataUrl = config.icon
-  (null crashes the server).
-- statusPageList is not re-pushed after addStatusPage: read state on a fresh
-  connection.
-- Notification settings are a JSON text on the server.
-- kafkaProducerSaslOptions is exported as JSON text when it is a secret.
-
-Facts checked on Uptime Kuma 2.5.6 (2026-10-17):
-- No REST API for config. Socket events:
-  - monitors: add, editMonitor, deleteMonitor(id, deleteChildren);
-  - tags: addTag, editTag, deleteTag, addMonitorTag/editMonitorTag/deleteMonitorTag
-    (tagID, monitorID, value);
-  - notifications: addNotification(obj, id|null), deleteNotification;
-  - maintenance: addMaintenance, editMaintenance, addMonitorMaintenance,
-    addMaintenanceStatusPage, deleteMaintenance;
-  - status pages: saveStatusPage, addStatusPage, deleteStatusPage;
-  - addProxy/deleteProxy, addDockerHost/deleteDockerHost,
-    addRemoteBrowser/deleteRemoteBrowser.
-- Login: `login {username,password,token}` returns {ok, token(JWT)} or
-  {tokenRequired}; `loginByToken(jwt)`. A fresh server needs `POST
-  /setup-database {"dbConfig":{"type":"sqlite"}}`, then `setup(user, pass)`.
-- After login the server pushes monitorList, maintenanceList, notificationList
-  (config is a JSON string), proxyList, dockerHostList, apiKeyList,
-  remoteBrowserList and statusPageList.
-- A monitor object has 125 fields. Secret fields come after the
-  `includeSensitiveData` marker in Monitor.toJSON. Server-derived fields: id, path,
-  pathName, childrenIDs, weight, maintenance, forceInactive, dns_last_result,
-  includeSensitiveData.
-- editMonitor copies 116 named fields; notificationIDList, accepted_statuscodes and
-  active are handled separately (pause/resume for active).
-- The JSON backup is gone in 2.x: no settings page and no server handler.
-- A test server: `docker run -d -p 127.0.0.1:3901:3001 louislam/uptime-kuma:2`, then
-  POST setup-database and wait about 15 s. A probe script with the bundled
-  socket.io-client works inside the container (node).
+Uptime Kuma test server, should a later project need one: `docker run -d -p
+127.0.0.1:3901:3001 louislam/uptime-kuma:2`, then POST /setup-database
+{"dbConfig":{"type":"sqlite"}}, wait about 20 s, and call setup(user, pass)
+until needSetup is false (an early call is lost while the server restarts). A
+probe script with the bundled socket.io-client works inside the container
+(`docker exec X node script.js`).
 
 Gitea test server, should a later project need one: `docker run -d --name gt1 -p
 127.0.0.1:3001:3000 -e GITEA__security__INSTALL_LOCK=true -e
@@ -161,6 +110,22 @@ Actions as codeberg.org/forgejo/forgejo:16.
    - **CI:** green on Gitea 1.24 and Forgejo 16.
    - **Owner checks before going public:** read the README; try `plan` and then a
      `move` of one test issue on their own instance.
+
+6. **kumafile** (projects/kumafile, v1.0.0 at commit aa90445). Config as code for
+   Uptime Kuma 2.x (uptime-kuma#1354, 91 👍; the JSON backup is gone in 2.0).
+   - **Commands:** `export` (readable YAML, defaults left out, secrets in a 0600
+     env file), `diff`, `apply` (dependency order, prune per section, moved
+     monitors changed in place, the result checked) and `login` (token).
+   - **How:** Kuma's own Socket.IO API, with a client written here, so it works
+     remotely and with MariaDB.
+   - **Reviews:** two full reviews (correctness; security/usability), with about 25
+     findings fixed and regression tests.
+   - **Tests:** a copy to an empty instance is exact; a second apply changes
+     nothing; 2FA; 16 monitor types; tested on Kuma 2.0.0 and 2.5.6, locally and
+     in CI.
+   - **Owner checks before going public:** read the README; export your own
+     instance and run `diff` (it should say in sync); try `apply` on a test
+     instance first.
 
 ## Blockers for the owner
 

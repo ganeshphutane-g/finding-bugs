@@ -2,6 +2,39 @@
 
 Newest first.
 
+## 2026-10-17 (IST) — run 6
+
+- Project #6 kumafile, from spec to v1.0.0 in one run.
+  - Research re-checked: uptime-kuma#1354 has 91 👍 and #6045 has 28 👍. 2.x has
+    no backup and no REST API for config, so the tool talks to Kuma over its own
+    Socket.IO API.
+  - Name: "kumactl" is taken (Kong).
+  - Milestones:
+    - a Socket.IO client;
+    - login (password, TOTP, JWT);
+    - export with a baseline, so files only list what differs from the web
+      interface's defaults;
+    - load and diff;
+    - apply, with a check of the result.
+- Two full reviews against real servers found about 25 problems, all fixed with
+  tests. The worst:
+  - an apply that hung forever on Kuma 2.0.0;
+  - secrets missed for many notification providers, and printed by diff;
+  - no timeouts;
+  - a file could read any environment variable (now only KUMA_*);
+  - prune too broad;
+  - export overwriting files;
+  - YAML that could not be read back;
+  - Kafka SASL, custom links, logos, paused groups and null tags.
+- The README shows a real demo run; CHANGELOG written.
+- Tests pass locally on Kuma 2.0.0 and 2.5.6. CI for the final commit was still
+  running when this was written.
+- Next: research round 7 (STATE.md).
+- Owner:
+  - the finding-bugs repo is still public (your decision);
+  - v1.0.0 tags have to be made in the web UI;
+  - optionally, give projects their own repos.
+
 ## 2026-10-16 (IST) — run 5
 
 - issuemove (project #5) built and finished:
