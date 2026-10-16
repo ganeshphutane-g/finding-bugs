@@ -1,0 +1,32 @@
+name: kumafile
+
+on:
+  push:
+    paths: ["projects/kumafile/**", ".github/workflows/kumafile.yml"]
+  pull_request:
+    paths: ["projects/kumafile/**", ".github/workflows/kumafile.yml"]
+
+defaults:
+  run:
+    working-directory: projects/kumafile
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["louislam/uptime-kuma:2.0.0", "louislam/uptime-kuma:2"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/kumafile/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet ./...
+      - name: pull ${{ matrix.image }}
+        run: docker pull ${{ matrix.image }}
+      - name: tests against ${{ matrix.image }}
+        run: KUMAFILE_INTEGRATION=1 KUMAFILE_IMAGE=${{ matrix.image }} go test -race -timeout 30m ./...

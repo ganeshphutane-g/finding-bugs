@@ -7,12 +7,34 @@ Repo: projects/kumafile/ inside finding-bugs (creating repos is blocked).
 
 ## Next step
 
-Milestone 1, the client:
-- Socket.IO v5 over WebSocket (github.com/coder/websocket): connect, events, acks,
-  ping;
-- login with a password, a TOTP code, a JWT, or no auth;
-- reading every list;
-- `kumafile export` with secrets split into a .env file.
+Milestone 1 is done (run 6):
+- internal/sio is a Socket.IO client;
+- internal/kuma does login (password, TOTP, JWT, no auth) and reads all lists;
+- `kumafile export` writes YAML plus a 0600 .env with the secrets;
+- tests pass on Kuma 2.0.0 and 2.5.6.
+
+Milestone 2, model and diff:
+1. Defaults per monitor type, so the export leaves them out. Get them by creating
+   a monitor of each type with the web UI's defaults (the EditMonitor.vue default
+   object) and reading it back; a field equal to the default is dropped.
+2. Read a kumafile back: YAML, then ${NAME} expansion from the env file and the
+   environment ($${ is a literal), then the same model as an export.
+3. Identity keys:
+   - monitor: group path + name, case-insensitive;
+   - notification, tag, Docker host, remote browser: name;
+   - maintenance: title;
+   - status page: slug;
+   - proxy: protocol://host:port.
+4. `kumafile diff FILE`: create, change (field by field) and, with `--prune`,
+   delete.
+
+Notes for apply (milestone 3):
+- saveStatusPage(slug, config, imgDataUrl, groups) needs imgDataUrl = config.icon
+  (null crashes the server).
+- statusPageList is not re-pushed after addStatusPage: read state on a fresh
+  connection.
+- Notification settings are a JSON text on the server.
+- kafkaProducerSaslOptions is exported as JSON text when it is a secret.
 
 Facts checked on Uptime Kuma 2.5.6 (2026-10-17):
 - No REST API for config. Socket events:
