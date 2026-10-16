@@ -117,7 +117,11 @@ func fieldsOf(kind string, w, h *Item) []string {
 		set[f] = true
 	}
 	var out []string
+	relevant := maintenanceFields(str(w.Fields["strategy"]))
 	for f := range set {
+		if kind == "maintenance" && !relevant[f] {
+			continue
+		}
 		out = append(out, f)
 	}
 	sort.Strings(out)
@@ -201,6 +205,14 @@ func normalise(kind, f string, v any) any {
 	}
 	if kind == "maintenance" && (f == "monitors" || f == "status_pages") {
 		v = lower(v)
+	}
+	if kind == "monitors" && f == "url" {
+		if s, ok := v.(string); ok && placeholderURL[s] {
+			v = nil
+		}
+	}
+	if kind == "maintenance" && f == "timeRange" {
+		v = timeRange(v)
 	}
 	if kind == "status_pages" && f == "groups" {
 		v = lowerGroupRefs(v)

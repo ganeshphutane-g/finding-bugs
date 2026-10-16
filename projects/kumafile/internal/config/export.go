@@ -314,6 +314,9 @@ func (e *exporter) monitor(m kuma.Object, ix *index) Obj {
 		fields[k] = v
 	}
 	typ := m.Str("type")
+	if u, _ := fields["url"].(string); placeholderURL[u] {
+		delete(fields, "url") // the web interface's empty address
+	}
 	o := Obj{}
 	put := func(k string, v any) {
 		if dv, known := defaultFor(typ, k); known && k != "name" {
@@ -398,11 +401,15 @@ func (e *exporter) monitor(m kuma.Object, ix *index) Obj {
 
 func maintenance(mt kuma.Maintenance, ix *index) Obj {
 	o := Obj{{"title", value(mt.Str("title"))}}
+	relevant := maintenanceFields(mt.Str("strategy"))
 	for _, k := range []string{"description", "strategy", "active", "intervalDay", "dateRange", "timeRange", "weekdays",
 		"daysOfMonth", "cron", "durationMinutes", "timezoneOption"} {
 		v, ok := mt.Object[k]
-		if !ok {
+		if !ok || !relevant[k] {
 			continue
+		}
+		if k == "timeRange" {
+			v = timeRange(v)
 		}
 		if a, isList := v.([]any); isList && len(a) == 1 && a[0] == nil {
 			continue // dateRange [null]: no dates

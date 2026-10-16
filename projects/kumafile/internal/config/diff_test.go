@@ -131,3 +131,39 @@ func TestSame(t *testing.T) {
 		}
 	}
 }
+
+func TestMaintenanceAndPlaceholders(t *testing.T) {
+	st := state()
+	st.Monitors[1]["url"] = "https://"
+	st.Maintenance[0].Object = map[string]any{"id": num(1), "title": "Night", "strategy": "recurring-weekday",
+		"weekdays": []any{num(7)}, "cron": "0 3 * * 7", "durationMinutes": num(60), "intervalDay": num(1),
+		"timeRange": []any{map[string]any{"hours": num(3), "minutes": num(0), "seconds": num(0)}, map[string]any{"hours": num(4), "minutes": num(0), "seconds": num(0)}}}
+	ex, err := Make(st, ExportOptions{InlineSecrets: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := render(t, ex)
+	for _, gone := range []string{"https://\n", "cron:", "durationMinutes", "seconds", "intervalDay"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("%q is in the export:\n%s", gone, out)
+		}
+	}
+	have, err := Load([]byte(out), func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := load(t, out+"", nil)
+	// A hand-written window without seconds, and a cron the strategy does
+	// not use, are no change.
+	mt := want.Items["maintenance"][0]
+	mt.Fields["cron"] = "5 5 * * *"
+	if p := Diff(want, have, false); !p.InSync() {
+		var b strings.Builder
+		p.Render(&b)
+		t.Fatalf("differs:\n%s", b.String())
+	}
+	mt.Fields["weekdays"] = []any{1, 7}
+	if p := Diff(want, have, false); p.InSync() {
+		t.Fatal("a change of weekdays was not seen")
+	}
+}

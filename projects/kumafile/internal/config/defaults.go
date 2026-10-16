@@ -148,7 +148,7 @@ func defaultFor(typ, field string) (any, bool) {
 var kindBaseline = map[string]map[string]any{
 	"notifications": {"default": false},
 	"proxies":       {"auth": false, "default": false},
-	"maintenance":   {"active": true, "timezoneOption": "SAME_AS_SERVER"},
+	"maintenance":   {"active": true, "timezoneOption": "SAME_AS_SERVER", "description": "", "intervalDay": num(1)},
 	"status_pages": {"icon": "/icon.svg", "theme": "auto", "autoRefreshInterval": num(300),
 		"showTags": false, "showPoweredBy": true, "showCertificateExpiry": false, "showOnlyLastHeartbeat": false},
 }
@@ -177,4 +177,58 @@ func kindDefault(kind, typ, field string) (any, bool) {
 	}
 	v, ok := kindBaseline[kind][field]
 	return v, ok
+}
+
+// placeholderURL are addresses the web interface fills in before one is
+// typed; they mean no address.
+var placeholderURL = map[string]bool{"https://": true, "http://": true, "wss://": true}
+
+// maintenanceFields are the settings a maintenance strategy uses; the
+// server keeps (or makes up) the others, and they are ignored.
+func maintenanceFields(strategy string) map[string]bool {
+	f := map[string]bool{"title": true, "description": true, "strategy": true, "active": true, "timezoneOption": true,
+		"monitors": true, "status_pages": true}
+	switch strategy {
+	case "single":
+		f["dateRange"] = true
+	case "recurring-interval":
+		f["dateRange"], f["timeRange"], f["intervalDay"] = true, true, true
+	case "recurring-weekday":
+		f["dateRange"], f["timeRange"], f["weekdays"] = true, true, true
+	case "recurring-day-of-month":
+		f["dateRange"], f["timeRange"], f["daysOfMonth"] = true, true, true
+	case "cron":
+		f["dateRange"], f["cron"], f["durationMinutes"] = true, true, true
+	case "manual", "":
+	default: // a strategy this version does not know: compare everything
+		for _, k := range managed["maintenance"] {
+			f[k] = true
+		}
+	}
+	return f
+}
+
+// timeRange writes times as hours and minutes (the server adds seconds: 0).
+func timeRange(v any) any {
+	list, ok := v.([]any)
+	if !ok {
+		return v
+	}
+	out := make([]any, len(list))
+	for i, e := range list {
+		m, ok := e.(map[string]any)
+		if !ok {
+			out[i] = e
+			continue
+		}
+		c := map[string]any{}
+		for k, x := range m {
+			if k == "seconds" && same(x, 0) {
+				continue
+			}
+			c[k] = x
+		}
+		out[i] = c
+	}
+	return out
 }
