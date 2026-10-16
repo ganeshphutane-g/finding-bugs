@@ -195,3 +195,32 @@ func (ix *index) browserName(v any) string {
 	}
 	return ""
 }
+
+// MonitorKeys maps each monitor's id to its identity in a file (its place,
+// lower case) for a state.
+func MonitorKeys(st *kuma.State) map[int64]string {
+	ix := newIndex(st)
+	out := map[int64]string{}
+	for id, p := range ix.paths {
+		out[id] = strings.ToLower(strings.Join(p, PathSep))
+	}
+	return out
+}
+
+// ProxyKey is a proxy's identity in a file.
+func ProxyKey(p kuma.Object) string { return strings.ToLower(proxyKey(p)) }
+
+// DefaultFor is the baseline of a field (see defaults.go).
+func DefaultFor(kind, typ, field string) (any, bool) { return kindDefault(kind, typ, field) }
+
+// BaselineFields are the monitor fields the baseline knows, for a type.
+func BaselineFields(typ string) map[string]any {
+	out := map[string]any{}
+	for k, v := range baseline {
+		out[k] = v
+	}
+	for k, v := range typeBaseline[typ] {
+		out[k] = v
+	}
+	return out
+}

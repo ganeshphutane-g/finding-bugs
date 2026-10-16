@@ -27,8 +27,8 @@ var Kinds = []Kind{
 	{Key: "docker_hosts", One: "Docker host", ID: []string{"name"}},
 	{Key: "remote_browsers", One: "remote browser", ID: []string{"name"}},
 	{Key: "monitors", One: "monitor", ID: []string{"name"}},
-	{Key: "maintenance", One: "maintenance window", ID: []string{"title"}},
 	{Key: "status_pages", One: "status page", ID: []string{"slug"}},
+	{Key: "maintenance", One: "maintenance window", ID: []string{"title"}},
 }
 
 // KindOf finds a kind by its file key.

@@ -283,3 +283,29 @@ func totp(secret string, now time.Time) (string, error) {
 	code := binary.BigEndian.Uint32(sum[off:off+4]) & 0x7fffffff
 	return fmt.Sprintf("%06d", code%1000000), nil
 }
+
+// Do sends a change and returns the server's answer, or its refusal as an
+// error.
+func (c *Client) Do(ctx context.Context, event string, args ...any) (Object, error) {
+	var r struct {
+		result
+		rest Object
+	}
+	res, err := c.conn.Call(ctx, event, args...)
+	if err != nil {
+		return nil, err
+	}
+	if len(res) == 0 {
+		return nil, fmt.Errorf("%s: no answer", event)
+	}
+	if err := decode(res[0], &r.rest); err != nil {
+		return nil, fmt.Errorf("%s: unreadable answer: %w", event, err)
+	}
+	r.OK, _ = r.rest["ok"].(bool)
+	r.Msg, _ = r.rest["msg"].(string)
+	r.MsgI18n, _ = r.rest["msgi18n"].(bool)
+	if err := r.err(); err != nil {
+		return nil, err
+	}
+	return r.rest, nil
+}

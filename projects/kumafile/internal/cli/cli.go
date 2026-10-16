@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -15,6 +16,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ganeshphutane-g/kumafile/internal/apply"
 	"github.com/ganeshphutane-g/kumafile/internal/config"
 	"github.com/ganeshphutane-g/kumafile/internal/kuma"
 )
@@ -31,10 +33,12 @@ and remote browsers.
 Commands:
   export    Write the instance's configuration to a file
   diff      Show how the instance differs from a file (changes nothing)
+  apply     Make the instance match a file (shows the changes and asks first)
   version   Show the version
 
   kumafile export [-o FILE]
   kumafile diff [FILE]      (FILE defaults to kumafile.yaml; - reads stdin)
+  kumafile apply [FILE]
 
 Options:
       --url URL            The instance (default $KUMAFILE_URL)
@@ -43,10 +47,11 @@ Options:
       --secrets FILE       export: where to write secrets (default: the output
                            file with .env instead of .yaml)
       --with-secrets       export: keep secrets in the file itself
-      --env-file FILE      diff: where ${NAME} values are (default: the file
+      --env-file FILE      diff, apply: where ${NAME} values are (default: the file
                            with .env instead of .yaml, if it exists); the
                            environment takes precedence
-      --prune              diff: also delete what is only on the instance
+      --prune              diff, apply: also delete what is only on the instance
+  -y, --yes                apply: do not ask
 
 Login comes from the environment, never from the command line:
   KUMAFILE_USERNAME and KUMAFILE_PASSWORD (or KUMAFILE_PASSWORD_FILE), and
@@ -125,6 +130,7 @@ type options struct {
 	withSecrets bool
 	envFile     string
 	prune       bool
+	yes         bool
 	help        bool
 	pos         []string
 }
@@ -140,6 +146,8 @@ func parse(args []string) (options, error) {
 	fs.BoolVar(&o.withSecrets, "with-secrets", false, "")
 	fs.StringVar(&o.envFile, "env-file", "", "")
 	fs.BoolVar(&o.prune, "prune", false, "")
+	fs.BoolVar(&o.yes, "y", false, "")
+	fs.BoolVar(&o.yes, "yes", false, "")
 	rest := args
 	for {
 		if err := fs.Parse(rest); errors.Is(err, flag.ErrHelp) {
@@ -169,7 +177,7 @@ func run(ctx context.Context, env Env, args []string) error {
 	case "version", "--version":
 		fmt.Fprintf(env.Stdout, "kumafile %s\n", Version)
 		return nil
-	case "export", "diff":
+	case "export", "diff", "apply":
 	default:
 		if strings.HasPrefix(cmd, "-") {
 			return usagef("the command comes first, as in: kumafile export %s ...", cmd)
@@ -184,8 +192,8 @@ func run(ctx context.Context, env Env, args []string) error {
 		fmt.Fprint(env.Stdout, usage)
 		return nil
 	}
-	if cmd == "diff" {
-		return diff(ctx, env, o)
+	if cmd == "diff" || cmd == "apply" {
+		return compareOrApply(ctx, env, o, cmd == "apply")
 	}
 	if len(o.pos) > 0 {
 		return usagef("export takes no file name; use -o FILE")
@@ -195,13 +203,16 @@ func run(ctx context.Context, env Env, args []string) error {
 
 var errDifferent = errors.New("the instance differs from the file")
 
-func diff(ctx context.Context, env Env, o options) error {
+func compareOrApply(ctx context.Context, env Env, o options, doApply bool) error {
 	if len(o.pos) > 1 {
-		return usagef("diff takes one file")
+		return usagef("give one file")
 	}
 	path := "kumafile.yaml"
 	if len(o.pos) == 1 {
 		path = o.pos[0]
+	}
+	if doApply && path == "-" && !o.yes {
+		return usagef("reading the file from standard input needs --yes (there is nobody to ask)")
 	}
 	want, err := loadFile(env, path, o.envFile)
 	if err != nil {
@@ -226,10 +237,73 @@ func diff(ctx context.Context, env Env, o options) error {
 	if len(p.Problems) > 0 {
 		return fmt.Errorf("the file refers to things that do not exist (listed above with !)")
 	}
-	if !p.InSync() {
-		return errDifferent
+	if !doApply {
+		if !p.InSync() {
+			return errDifferent
+		}
+		return nil
 	}
+	if p.InSync() {
+		return nil
+	}
+	if !o.yes {
+		yes, err := confirm(ctx, env.Stdin, env.Stdout, fmt.Sprintf("Apply these changes to %s?", redact(u)))
+		if err != nil {
+			return err
+		}
+		if !yes {
+			return errors.New("stopped; nothing was changed")
+		}
+	}
+	err = apply.Run(ctx, apply.Options{Client: c, State: st, Want: want, Plan: p,
+		Log: func(s string) { fmt.Fprintln(env.Stdout, s) }})
+	if err != nil {
+		fmt.Fprintln(env.Stdout, "Apply stopped partway; what is above was done. Run it again to finish: it only changes what still differs.")
+		return err
+	}
+	// Check the result on a fresh connection (some lists are only sent on
+	// login).
+	c2, _, err := connect(ctx, env, o)
+	if err != nil {
+		return fmt.Errorf("applied, but could not check the result: %w", err)
+	}
+	defer c2.Close()
+	st2, err := c2.Read(ctx)
+	if err != nil {
+		return fmt.Errorf("applied, but could not check the result: %w", err)
+	}
+	have2, err := liveDoc(st2)
+	if err != nil {
+		return err
+	}
+	if p2 := config.Diff(want, have2, o.prune); !p2.InSync() {
+		fmt.Fprintln(env.Stdout, "\nThe server did not take all of it; still different:")
+		p2.Render(env.Stdout)
+		return errors.New("the instance still differs from the file (this server may not support some fields)")
+	}
+	fmt.Fprintln(env.Stdout, "Done: the instance matches the file.")
 	return nil
+}
+
+// confirm asks a yes/no question; Ctrl-C while waiting stops the program.
+func confirm(ctx context.Context, in io.Reader, out io.Writer, q string) (bool, error) {
+	fmt.Fprintf(out, "\n%s [y/N] ", q)
+	answer := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(in).ReadString('\n')
+		answer <- line
+	}()
+	select {
+	case <-ctx.Done():
+		fmt.Fprintln(out)
+		return false, ctx.Err()
+	case line := <-answer:
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "y", "yes":
+			return true, nil
+		}
+		return false, nil
+	}
 }
 
 // loadFile reads a kumafile, filling ${NAME} from the environment and then

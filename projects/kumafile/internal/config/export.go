@@ -205,9 +205,6 @@ func Make(st *kuma.State, opt ExportOptions) (*Export, error) {
 			if kuma.Int(n["isDefault"]) != 0 || cfg["isDefault"] == true {
 				o = append(o, KV{"default", true})
 			}
-			if a, ok := n["active"]; ok && kuma.Int(a) == 0 && a != true {
-				o = append(o, KV{"active", false})
-			}
 			rest := map[string]any{}
 			for k, v := range cfg {
 				switch k {
@@ -446,8 +443,8 @@ func statusPage(sp kuma.StatusPage, ix *index) Obj {
 	var rest []string
 	for k := range sp.Object {
 		switch k {
-		case "id", "slug", "title":
-			continue
+		case "id", "slug", "title", "published":
+			continue // (published cannot be changed through the API)
 		}
 		rest = append(rest, k)
 	}

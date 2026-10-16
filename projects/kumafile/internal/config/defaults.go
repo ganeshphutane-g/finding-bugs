@@ -146,10 +146,10 @@ func defaultFor(typ, field string) (any, bool) {
 
 // kindBaseline is what a fresh object of the other kinds looks like.
 var kindBaseline = map[string]map[string]any{
-	"notifications": {"default": false, "active": true},
+	"notifications": {"default": false},
 	"proxies":       {"auth": false, "default": false},
 	"maintenance":   {"active": true, "timezoneOption": "SAME_AS_SERVER"},
-	"status_pages": {"icon": "/icon.svg", "theme": "auto", "autoRefreshInterval": num(300), "published": true,
+	"status_pages": {"icon": "/icon.svg", "theme": "auto", "autoRefreshInterval": num(300),
 		"showTags": false, "showPoweredBy": true, "showCertificateExpiry": false, "showOnlyLastHeartbeat": false},
 }
 
@@ -158,13 +158,13 @@ var kindBaseline = map[string]map[string]any{
 // plus their references.
 var managed = map[string][]string{
 	"tags":            {"name", "color"},
-	"notifications":   {"name", "type", "default", "active", "settings"},
+	"notifications":   {"name", "type", "default", "settings"},
 	"proxies":         {"protocol", "host", "port", "auth", "username", "password", "default"},
 	"docker_hosts":    {"name", "dockerType", "dockerDaemon"},
 	"remote_browsers": {"name", "url"},
 	"maintenance": {"title", "description", "strategy", "active", "intervalDay", "dateRange", "timeRange", "weekdays",
 		"daysOfMonth", "cron", "durationMinutes", "timezoneOption", "monitors", "status_pages"},
-	"status_pages": {"slug", "title", "description", "icon", "theme", "published", "showTags", "domainNameList",
+	"status_pages": {"slug", "title", "description", "icon", "theme", "showTags", "domainNameList",
 		"customCSS", "footerText", "showPoweredBy", "analyticsId", "analyticsScriptUrl", "analyticsType",
 		"showCertificateExpiry", "showOnlyLastHeartbeat", "rssTitle", "autoRefreshInterval", "groups"},
 	"monitors": {"name", "group", "type", "notifications", "tags", "proxy", "docker_host", "remote_browser"},
