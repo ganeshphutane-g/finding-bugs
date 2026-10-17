@@ -3,6 +3,69 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 8 — 2026-10-18 IST
+
+A stricter bar this time. Each idea needs:
+- a user request with 50+ 👍, open for over a year or declined, on a project with
+  2k+ stars;
+- two more sources;
+- upstream not building it;
+- no good tool;
+- local tests possible.
+
+Four ideas qualified.
+
+### Chosen: docker-edit (project #7)
+
+Change a container in place (ports, env, mounts, restart, labels, image, networks)
+by recreating it exactly, with a plan, a safe swap and a rollback.
+
+**Demand:**
+- moby#21282 (port changes): 50 👍, open since 2016 (checked);
+- moby#8838 (env on an existing container): 104 👍 (checked);
+- the Stack Overflow question 19335444, copied by Baeldung, Better Stack and
+  Edureka;
+- Docker forum threads.
+
+**Upstream:** by design (a container's configuration is fixed when it is created);
+no PRs found.
+
+**Gap:**
+- runlike (2.9k★) and docker-autocompose (2.6k★) only print a command or a Compose
+  file;
+- Portainer can do it only in its GUI;
+- the docker-recreate attempts have 0–8★.
+
+**Scores:** 4/4/4/3/5 = **20**.
+
+**Risks:** exact recreation is fiddly (image defaults, anonymous volumes, several
+networks), and new API fields need tracking.
+
+### Runners-up
+
+- **Swarm rebalancer**, 21: moby#24103, 62 👍, open since 2016; the only attempts
+  are 0★ scripts. Swarm is a shrinking niche, and the core action is close to a
+  one-liner.
+- **Wildcard DNS sidecar for Docker networks**, 20:
+  - compose#7493, 85 👍, closed not_planned;
+  - moby#43442, 74 👍, open;
+  - mageddo/dns-proxy-server (853★) partly overlaps.
+- **Shared Let's Encrypt for several Traefik instances**, 17: traefik#3749, 52 👍,
+  open since 2018, labelled contributor/wanted (upstream would accept a pull
+  request).
+
+### Near-misses in round 8
+
+- autoheal: moby#28400 has 324 👍, but docker-autoheal has 2k★.
+- Bind mounts as another user: moby#2259 has 938 👍, but upstream PR #53368 is open.
+- Swarm secret rotation: doco-cd does it.
+- Prometheus per-series retention: done upstream in 2026-10.
+- Traefik cache: souin.
+- Container reading its own ports: one source only.
+- Keycloak live export: upstream help wanted.
+- Image last-used tracking: close to docker-mop.
+- Zero-downtime Compose deploys: docker-rollout has 3.4k★.
+
 ## Research round 7 — 2026-10-17 IST
 
 One research pass (GitHub search plus web search). "checked" means seen in GitHub

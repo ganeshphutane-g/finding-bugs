@@ -1,21 +1,29 @@
 # State
 
-Current project: none.
-Phase: research (round 8). In run 7, Grafana alerting as code was dropped
-(Grafana is building it) and so was oncall-exit (no user demand); see IDEAS.md.
+Current project: #7 docker-edit (change an existing container's ports, env,
+mounts, restart, labels, image or networks by recreating it exactly, with a safe
+swap and a rollback).
+Phase: build. Spec: projects/docker-edit/SPEC.md. Research round 8 is in IDEAS.md.
+Repo: projects/docker-edit/ inside finding-bugs.
 
 ## Next step
 
-Research round 8 with a stricter bar:
-- a user request with 50+ 👍, open for over a year or declined, on a project
-  with 2k+ stars;
-- two more independent demand sources;
-- evidence that upstream is not building it;
-- no good existing tool;
-- testable locally with Docker images.
+Milestone 1, exact recreation:
+- the Engine client (copy and trim docker-mop's internal/engine; it is the owner's
+  own code);
+- inspect -> create request:
+  - leave out what came from the image (Env, Labels, Cmd, Entrypoint,
+    ExposedPorts, Volumes, WorkingDir, User, Healthcheck when they equal the
+    image's);
+  - reattach anonymous volumes by name;
+  - all networks with aliases, IPs and MAC (API >= 1.44 takes several endpoints
+    at create);
+  - leave the hostname out when it is the old ID prefix;
+- a test matrix of container shapes proving that a no-change recreation leaves
+  `docker inspect` equal except for the ID, times and state.
 
-A pass was started at about 00:45 IST on 2026-10-18. If its results are not in
-IDEAS.md as round 8, redo it.
+The Docker daemon here is 29.8.2 (API 1.56). Start it with `sudo nohup dockerd >
+/tmp/claude-0/dockerd.log 2>&1 &`.
 
 Uptime Kuma test server, should a later project need one: `docker run -d -p
 127.0.0.1:3901:3001 louislam/uptime-kuma:2`, then POST /setup-database
