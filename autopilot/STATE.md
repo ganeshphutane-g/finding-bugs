@@ -1,22 +1,21 @@
 # State
 
-Current project: #7, provisionally Grafana alerting as code (working name
-alertfile). Research round 7 is in IDEAS.md.
-Phase: research -> spec.
+Current project: none.
+Phase: research (round 8). In run 7, Grafana alerting as code was dropped
+(Grafana is building it) and so was oncall-exit (no user demand); see IDEAS.md.
 
 ## Next step
 
-1. Check whether Grafana is close to shipping Git Sync for alerting
-   (grafana#120686, labelled internal) and alerting support in grafanactl (#246):
-   look at release notes and the linked PRs.
-   - If one ships soon, choose a runner-up (dnsmove, oncall-exit) or research more.
-2. Otherwise:
-   - pick a free name;
-   - run Grafana OSS (grafana/grafana:12) in Docker and check the alerting
-     provisioning API: export, PUT, the disable_provenance header, and editing from
-     the UI afterwards;
-   - write the SPEC (export, diff, apply and copy, in Grafana's file-provisioning
-     format).
+Research round 8 with a stricter bar:
+- a user request with 50+ 👍, open for over a year or declined, on a project
+  with 2k+ stars;
+- two more independent demand sources;
+- evidence that upstream is not building it;
+- no good existing tool;
+- testable locally with Docker images.
+
+A pass was started at about 00:45 IST on 2026-10-18. If its results are not in
+IDEAS.md as round 8, redo it.
 
 Uptime Kuma test server, should a later project need one: `docker run -d -p
 127.0.0.1:3901:3001 louislam/uptime-kuma:2`, then POST /setup-database

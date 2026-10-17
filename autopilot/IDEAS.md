@@ -8,7 +8,21 @@ Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = 
 One research pass (GitHub search plus web search). "checked" means seen in GitHub
 search; everything else is from search summaries.
 
-### Chosen (provisional): Grafana alerting as code (project #7, working name alertfile)
+### Dropped in run 7 (2026-10-18): Grafana alerting as code
+
+Grafana is building it.
+- grafana#120686 is open, internal and labelled area/gitsync (updated 2026-09-25).
+- Groundwork merged in 2026: "Alerting: Map provenance to ManagerProperties for app
+  platform compatibility" (#126737, 2026-07) and the rules.alerting.grafana.app
+  k8s-style API (#128579, #130494, #133295).
+- "Add ClassicAlerting resource parsing support to Git Sync" (#129688) was opened.
+- With terraform-provider-grafana already there, the gap would likely close within
+  a release or two.
+
+Also checked: oncall-exit has no user requests on GitHub (0 issues); all the web
+results are vendor marketing.
+
+### Originally chosen in round 7: Grafana alerting as code (working name alertfile)
 
 Export Grafana-managed alert rules, contact points, notification policies, mute
 timings and templates to YAML, diff them against an instance, apply through the
