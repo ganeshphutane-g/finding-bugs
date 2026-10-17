@@ -243,7 +243,7 @@ func editContainer(ctx context.Context, env Env, c *engine.Client, o options) er
 	if deps, err := dependents(ctx, c, id, name); err != nil {
 		return err
 	} else if len(deps) > 0 {
-		return fmt.Errorf("%s shares its network with %s (--network container:%s); they would lose it", name, strings.Join(deps, ", "), name)
+		return fmt.Errorf("other containers depend on %s and would break: %s. Recreate them together, or move them to a user-defined network", name, strings.Join(deps, ", "))
 	}
 	if !o.changes.Empty() && !o.changes.OnlyRestart() && !o.discardChanges {
 		changed, err := lostFiles(ctx, c, id, list(ctr["Mounts"]))
@@ -377,7 +377,17 @@ func dependents(ctx context.Context, c *engine.Client, id, name string) ([]strin
 		mode := str(asDoc(x["HostConfig"])["NetworkMode"])
 		if mode == "container:"+id || mode == "container:"+name {
 			for _, n := range list(x["Names"]) {
-				out = append(out, strings.TrimPrefix(str(n), "/"))
+				out = append(out, strings.TrimPrefix(str(n), "/")+" (--network container:"+name+")")
+			}
+		}
+		// A legacy link shows as "/linker/alias" among the linked
+		// container's names. Renaming the container moves the link to the
+		// old one, so the linker would break when it is removed.
+		if str(x["Id"]) == id {
+			for _, n := range list(x["Names"]) {
+				if linker, _, ok := strings.Cut(strings.TrimPrefix(str(n), "/"), "/"); ok {
+					out = append(out, linker+" (--link)")
+				}
 			}
 		}
 	}

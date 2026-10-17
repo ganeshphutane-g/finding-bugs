@@ -139,8 +139,15 @@ func TestRefusals(t *testing.T) {
 	docker(t, "run", "-d", "--name", host, "de-app:1")
 	side := name(t, "sidecar")
 	docker(t, "run", "-d", "--name", side, "--network", "container:"+host, "de-app:1")
-	if code, out := de(t, host, "-y", "--env", "A=1"); code != 1 || !strings.Contains(out, side) {
+	if code, out := de(t, host, "-y", "--env", "A=1"); code != 1 || !strings.Contains(out, side+" (--network container:") {
 		t.Errorf("shared network: exit %d %s", code, out)
+	}
+	linked := name(t, "linked")
+	docker(t, "run", "-d", "--name", linked, "de-app:1")
+	linker := name(t, "linker")
+	docker(t, "run", "-d", "--name", linker, "--link", linked+":backend", "de-app:1")
+	if code, out := de(t, linked, "-y", "--env", "A=1"); code != 1 || !strings.Contains(out, linker+" (--link)") {
+		t.Errorf("linked: exit %d %s", code, out)
 	}
 	dirty := name(t, "dirty")
 	id := docker(t, "run", "-d", "--name", dirty, "de-app:1")
