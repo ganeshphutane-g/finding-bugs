@@ -1,6 +1,7 @@
 package edit
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -189,6 +190,24 @@ func TestDisconnectTheMainNetwork(t *testing.T) {
 	}
 }
 
+func TestMask(t *testing.T) {
+	for _, c := range [][3]string{
+		{"API_TOKEN", "abc", "(hidden)"},
+		{"traefik.http.middlewares.auth.basicauth.users", "admin:$apr1$x", "(hidden)"},
+		{"db.password", "hunter2", "(hidden)"},
+		{"DATABASE_URL", "postgres://app:s3cret@db:5432/app", "postgres://app:(hidden)@db:5432/app"},
+		{"REDIS", "redis://:s3cret@cache", "redis://:(hidden)@cache"},
+		{"SITE", "https://example.com/a@b", "https://example.com/a@b"},
+	} {
+		if got := display(mask(c[0], c[1])); got != c[2] {
+			t.Errorf("%s=%s: %s", c[0], c[1], got)
+		}
+	}
+	if mask("DATABASE_URL", "postgres://a:one@db") == mask("DATABASE_URL", "postgres://a:two@db") {
+		t.Error("a changed password in a URL is not seen as a change")
+	}
+}
+
 func TestOnlyRestart(t *testing.T) {
 	if !(Changes{Restart: "always"}).OnlyRestart() || (Changes{Restart: "always", Env: []string{"A=1"}}).OnlyRestart() || (Changes{}).OnlyRestart() {
 		t.Fatal("OnlyRestart")
@@ -209,5 +228,58 @@ func TestEffectiveDoesNotChangeTheSpec(t *testing.T) {
 	}
 	if e := Effective(s, Doc{}); e == s {
 		t.Fatal("Effective without an image config returns the spec itself")
+	}
+}
+
+func TestNetworkAliasesKeepTheEndpoint(t *testing.T) {
+	s := spec()
+	s.Networks[0].Config = Doc{"IPAMConfig": Doc{"IPv4Address": "172.31.77.10"}, "MacAddress": "02:42:00:00:00:01", "Aliases": []any{"old"}}
+	if err := Apply(s, Changes{Networks: []string{"app:svc,api"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := jsonText(s.Networks[0].Config)
+	if got != `{"Aliases":["svc","api"],"IPAMConfig":{"IPv4Address":"172.31.77.10"},"MacAddress":"02:42:00:00:00:01"}` {
+		t.Fatalf("%s", got)
+	}
+	if lines := Diff(spec(), s); !strings.Contains(fmt.Sprint(lines), "mac 02:42:00:00:00:01") {
+		t.Fatalf("the plan does not show the MAC address: %v", lines)
+	}
+}
+
+func TestPublishingTwiceAddsOneBinding(t *testing.T) {
+	s := spec()
+	if err := Apply(s, Changes{Publish: []string{"8080:80", "8081:80"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := jsonText(s.Host["PortBindings"]); got != `{"80/tcp":[{"HostIp":"","HostPort":"8080"},{"HostIp":"","HostPort":"8081"}]}` {
+		t.Fatalf("%s", got)
+	}
+}
+
+func TestUnmountUndeclaresTheVolume(t *testing.T) {
+	s := spec()
+	s.Config["Volumes"] = Doc{"/anon": Doc{}}
+	s.Host["Mounts"] = []any{Doc{"Type": "volume", "Source": strings.Repeat("a", 64), "Target": "/anon"}}
+	if err := Apply(s, Changes{Unmount: []string{"/anon"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := asDoc(s.Config["Volumes"])["/anon"]; ok || MountedAt(s.Host, "/anon") {
+		t.Fatalf("%v %v", s.Config["Volumes"], s.Host["Mounts"])
+	}
+	if !MountedAt(s.Host, "/srv") {
+		t.Fatal("MountedAt misses a bind")
+	}
+}
+
+func TestEffectiveCommandFollowsTheEntrypoint(t *testing.T) {
+	s := spec()
+	s.Config["Entrypoint"] = []any{"/usr/bin/env"}
+	img := Doc{"Config": Doc{"Cmd": []any{"nginx"}}}
+	if e := Effective(s, img); e.Config["Cmd"] != nil {
+		t.Fatalf("an own entrypoint took the image's command: %v", e.Config["Cmd"])
+	}
+	delete(s.Config, "Entrypoint")
+	if e := Effective(s, img); jsonText(e.Config["Cmd"]) != `["nginx"]` {
+		t.Fatalf("%v", e.Config["Cmd"])
 	}
 }

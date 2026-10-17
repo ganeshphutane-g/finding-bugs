@@ -225,3 +225,86 @@ func TestPluginMetadata(t *testing.T) {
 	}
 	_ = engine.Doc{}
 }
+
+func TestReviewFixes(t *testing.T) {
+	integration(t)
+	build(t, "de-app:1", fmt.Sprintf(base, 1, 1))
+	build(t, "de-app:2", fmt.Sprintf(base, 2, 2))
+	build(t, "de-vol:1", "FROM alpine:3\nVOLUME /data\nCMD [\"sleep\", \"3600\"]\n")
+
+	t.Run("keep-old", func(t *testing.T) {
+		n := name(t, "keep")
+		docker(t, "run", "-d", "--name", n, "--restart", "always", "de-app:1")
+		if code, out := de(t, n, "-y", "-e", "A=1", "--keep-old"); code != 0 || !strings.Contains(out, "kept the old container") {
+			t.Fatalf("exit %d %s", code, out)
+		}
+		backup := docker(t, "ps", "-a", "--filter", "name="+n+".old-", "--format", "{{.Names}}")
+		if got := inspect(t, backup, "{{.HostConfig.RestartPolicy.Name}}"); got != "no" {
+			t.Errorf("the backup restarts: %s", got)
+		}
+		if got := inspect(t, n, "{{.HostConfig.RestartPolicy.Name}}"); got != "always" {
+			t.Errorf("the new container: %s", got)
+		}
+	})
+	t.Run("own entrypoint", func(t *testing.T) {
+		n := name(t, "entry")
+		docker(t, "run", "-d", "--name", n, "--entrypoint", "env", "de-app:1", "sleep", "3600")
+		if code, out := de(t, n, "-y", "--image", "de-app:2"); code != 0 {
+			t.Fatalf("exit %d %s", code, out)
+		}
+		if got := inspect(t, n, "{{json .Config.Entrypoint}} {{json .Config.Cmd}} {{.State.Running}}"); got != `["env"] ["sleep","3600"] true` {
+			t.Errorf("after: %s", got)
+		}
+	})
+	t.Run("refusals", func(t *testing.T) {
+		paused := name(t, "paused")
+		docker(t, "run", "-d", "--name", paused, "de-app:1")
+		docker(t, "pause", paused)
+		if code, out := de(t, paused, "-y", "-e", "A=1"); code != 1 || !strings.Contains(out, "paused") {
+			t.Errorf("paused: exit %d %s", code, out)
+		}
+		vol := name(t, "imgvol")
+		docker(t, "run", "-d", "--name", vol, "-v", t.TempDir()+":/data", "de-vol:1")
+		if code, out := de(t, vol, "-y", "--unmount", "/data"); code != 1 || !strings.Contains(out, "new, empty volume") {
+			t.Errorf("unmounting an image volume: exit %d %s", code, out)
+		}
+		if code, out := de(t, vol, "-y", "--unmount", "/data", "-v", t.TempDir()+":/data"); code != 0 {
+			t.Errorf("replacing it: exit %d %s", code, out)
+		}
+	})
+	t.Run("init", func(t *testing.T) {
+		n := name(t, "init")
+		docker(t, "run", "-d", "--name", n, "--init", "de-app:1")
+		if code, out := de(t, n, "-y", "-e", "A=1"); code != 0 {
+			t.Errorf("exit %d %s", code, out)
+		}
+	})
+	t.Run("no answer", func(t *testing.T) {
+		n := name(t, "noanswer")
+		id := docker(t, "run", "-d", "--name", n, "de-app:1")
+		if code, out := de(t, n, "-e", "A=1"); code != 1 || !strings.Contains(out, "Use -y") {
+			t.Errorf("exit %d %s", code, out)
+		}
+		if inspect(t, n, "{{.Id}}") != id {
+			t.Error("changed without an answer")
+		}
+	})
+	t.Run("leaving the host network", func(t *testing.T) {
+		n := name(t, "hostnet")
+		docker(t, "run", "-d", "--name", n, "--network", "host", "de-app:1")
+		host, _ := os.Hostname()
+		if code, out := de(t, n, "-y", "--network", "bridge"); code != 0 {
+			t.Fatalf("exit %d %s", code, out)
+		}
+		if got := inspect(t, n, "{{.Config.Hostname}} {{.HostConfig.NetworkMode}}"); strings.HasPrefix(got, host+" ") || !strings.HasSuffix(got, " bridge") {
+			t.Errorf("after: %s (host %s)", got, host)
+		}
+	})
+	t.Run("stopped", func(t *testing.T) {
+		n := name(t, "stopped")
+		docker(t, "create", "--name", n, "de-app:1")
+		if code, out := de(t, n, "-y", "-e", "A=1"); code != 0 || !strings.Contains(out, "it stays stopped") {
+			t.Errorf("exit %d %s", code, out)
+		}
+	})
+}

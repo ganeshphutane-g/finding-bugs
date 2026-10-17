@@ -1,6 +1,9 @@
 package cli
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // globalFlags applies the docker CLI's global flags that come before the
 // plugin name (docker --context prod edit web ...), by overriding the matching
@@ -31,11 +34,18 @@ func globalFlags(args []string, env Env) ([]string, Env, error) {
 			overrides["DOCKER_CONFIG"], err = takeValue()
 		case "-l", "--log-level":
 			_, err = takeValue()
-		case "--tls":
-			overrides["DOCKER_TLS"] = "1"
-			args = args[1:]
-		case "--tlsverify":
-			overrides["DOCKER_TLS_VERIFY"] = "1"
+		case "--tls", "--tlsverify":
+			on := true
+			if hasValue {
+				if on, err = strconv.ParseBool(value); err != nil {
+					return nil, env, usagef("docker flag %s=%s: expected true or false", name, value)
+				}
+			}
+			key := map[string]string{"--tls": "DOCKER_TLS", "--tlsverify": "DOCKER_TLS_VERIFY"}[name]
+			overrides[key] = ""
+			if on {
+				overrides[key] = "1"
+			}
 			args = args[1:]
 		case "-D", "--debug":
 			args = args[1:]
@@ -55,7 +65,8 @@ func globalFlags(args []string, env Env) ([]string, Env, error) {
 			return base(k)
 		}
 		// An explicit host or context wins over the other source.
-		if _, ok := overrides["DOCKER_CONTEXT"]; ok {
+		// (The default context is DOCKER_HOST, if set.)
+		if ctx, ok := overrides["DOCKER_CONTEXT"]; ok && ctx != "default" {
 			if _, hostSet := overrides["DOCKER_HOST"]; !hostSet {
 				overrides["DOCKER_HOST"] = ""
 			}

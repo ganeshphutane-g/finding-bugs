@@ -61,7 +61,7 @@ func comparable(t *testing.T, d Doc) map[string]any {
 	// mounts below compare what matters.
 	var keep []any
 	for _, m := range list(host["Mounts"]) {
-		if md := asDoc(m); !(str(md["Type"]) == "volume" && anonymousName.MatchString(str(md["Source"]))) {
+		if md := asDoc(m); !(str(md["Type"]) == "volume" && (str(md["Source"]) == "" || anonymousName.MatchString(str(md["Source"])))) {
 			keep = append(keep, m)
 		}
 	}
@@ -138,6 +138,10 @@ func TestRecreateIsExact(t *testing.T) {
 		exec.Command("docker", "volume", "rm", vol).Run()
 	})
 
+	sharedHost := unique(t, "sharedhost")
+	docker(t, "run", "-d", "--name", sharedHost, "alpine:3", "sleep", "3600")
+	t.Cleanup(func() { exec.Command("docker", "rm", "-f", sharedHost).Run() })
+
 	shapes := map[string][]string{
 		"minimal": {"alpine:3", "sleep", "3600"},
 		"web": {"-p", "18081:80", "-p", "127.0.0.1:18443:443/tcp", "-e", "FOO=bar", "-e", "WITH=equals=sign", "-l", "app=web",
@@ -152,6 +156,10 @@ func TestRecreateIsExact(t *testing.T) {
 		"isolated": {"--network", "none", "--device", "/dev/null:/dev/xnull", "--pids-limit", "50", "alpine:3", "sleep", "3600"},
 		"host-net": {"--network", "host", "alpine:3", "sleep", "3600"},
 		"mac":      {"--network", n2, "--mac-address", "02:42:ac:11:00:99", "alpine:3", "sleep", "3600"},
+		"mac2": {"--network", "name=" + n1 + ",ip=172.31.250.20", "--network", "name=" + n2 + ",mac-address=02:42:ac:11:00:98",
+			"alpine:3", "sleep", "3600"},
+		"anon-mount": {"--mount", "type=volume,dst=/data", "alpine:3", "sleep", "3600"},
+		"shared-net": {"--network", "container:" + sharedHost, "nginx:alpine"},
 	}
 	for shape, args := range shapes {
 		t.Run(shape, func(t *testing.T) {
@@ -161,6 +169,9 @@ func TestRecreateIsExact(t *testing.T) {
 			if shape == "web" {
 				docker(t, "network", "connect", "--alias", "w2", n2, name)
 				docker(t, "exec", name, "sh", "-c", "echo kept > /anon/file")
+			}
+			if shape == "anon-mount" {
+				docker(t, "exec", name, "sh", "-c", "echo kept > /data/file")
 			}
 			before, err := Read(ctx, c, name)
 			if err != nil {
@@ -180,6 +191,16 @@ func TestRecreateIsExact(t *testing.T) {
 			}
 			if d := diff(comparable(t, before), comparable(t, after)); d != "" {
 				t.Fatalf("the new container differs:\n%s", d)
+			}
+			if shape == "anon-mount" {
+				if got := docker(t, "exec", name, "cat", "/data/file"); got != "kept" {
+					t.Fatalf("the anonymous volume's data: %q", got)
+				}
+			}
+			if shape == "mac2" {
+				if got := docker(t, "inspect", "--format", "{{(index .NetworkSettings.Networks \""+n2+"\").MacAddress}}", name); got != "02:42:ac:11:00:98" {
+					t.Fatalf("the MAC address on the second network is %s", got)
+				}
 			}
 			if shape == "mac" {
 				if got := docker(t, "inspect", "--format", "{{range .NetworkSettings.Networks}}{{.MacAddress}}{{end}}", name); got != "02:42:ac:11:00:99" {
@@ -258,7 +279,12 @@ func TestInterruptPutsTheOldOneBack(t *testing.T) {
 			defer cancel()
 			_, err := Swap(cctx, c, before, spec, SwapOptions{
 				Log: func(s string) {
-					if strings.HasPrefix(s, at) {
+					switch {
+					case at == "stopping" && strings.HasPrefix(s, at):
+						// While the daemon is stopping it (sleep ignores
+						// SIGTERM, so that takes 10 seconds).
+						time.AfterFunc(time.Second, cancel)
+					case strings.HasPrefix(s, at):
 						cancel()
 					}
 				},
@@ -276,6 +302,13 @@ func TestInterruptPutsTheOldOneBack(t *testing.T) {
 			back, err := c.InspectContainer(ctx, name)
 			if err != nil || str(back["Id"]) != str(before["Id"]) || asDoc(back["State"])["Running"] != true {
 				t.Fatalf("the old container is not back: %v", err)
+			}
+			if at == "stopping" {
+				// It must still run once a stop that was under way is over.
+				time.Sleep(11 * time.Second)
+				if back, _ := c.InspectContainer(ctx, name); asDoc(back["State"])["Running"] != true {
+					t.Fatal("the old container stopped after it was put back")
+				}
 			}
 			all, _ := c.ListContainers(ctx)
 			for _, x := range all {

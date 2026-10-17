@@ -69,7 +69,14 @@ func Apply(s *recreate.Spec, c Changes) error {
 			return err
 		}
 		pb := doc(host, "PortBindings")
-		pb[key] = append(list(pb[key]), binding)
+		dup := false
+		for _, b := range list(pb[key]) {
+			bd := asDoc(b)
+			dup = dup || (str(bd["HostIp"]) == str(binding["HostIp"]) && str(bd["HostPort"]) == str(binding["HostPort"]))
+		}
+		if !dup {
+			pb[key] = append(list(pb[key]), binding)
+		}
 		doc(cfg, "ExposedPorts")[key] = Doc{}
 	}
 	if len(c.Env) > 0 || len(c.UnsetEnv) > 0 {
@@ -111,6 +118,9 @@ func Apply(s *recreate.Spec, c Changes) error {
 		if !removeMount(host, dst) {
 			return fmt.Errorf("--unmount %s: nothing is mounted there", dst)
 		}
+		// An anonymous volume is also declared; undeclare it, or Docker
+		// would mount a new one.
+		delete(asDoc(cfg["Volumes"]), dst)
 	}
 	for _, v := range c.Volumes {
 		parts := strings.Split(v, ":")
@@ -192,7 +202,15 @@ func Apply(s *recreate.Spec, c Changes) error {
 		if strings.HasPrefix(s.NetworkMode, "container:") || s.NetworkMode == "host" {
 			return fmt.Errorf("--network %s: the container uses the network of %s", name, s.NetworkMode)
 		}
+		// On a network it is already on, only the aliases change.
 		ep := Doc{}
+		for _, existing := range s.Networks {
+			if existing.Network == name {
+				for k, v := range existing.Config {
+					ep[k] = v
+				}
+			}
+		}
 		if aliases != "" {
 			var as []any
 			for _, a := range strings.Split(aliases, ",") {
@@ -359,6 +377,22 @@ func removeMount(host Doc, dst string) bool {
 		}
 	}
 	return found
+}
+
+// MountedAt reports whether something is mounted at dst.
+func MountedAt(host Doc, dst string) bool {
+	for _, b := range list(host["Binds"]) {
+		if parts := strings.Split(str(b), ":"); len(parts) >= 2 && parts[1] == dst {
+			return true
+		}
+	}
+	for _, m := range list(host["Mounts"]) {
+		if str(asDoc(m)["Target"]) == dst {
+			return true
+		}
+	}
+	_, ok := asDoc(host["Tmpfs"])[dst]
+	return ok
 }
 
 func doc(parent Doc, key string) Doc {

@@ -114,7 +114,11 @@ func New(ep Endpoint) (*Client, error) {
 		return nil, fmt.Errorf("docker host %q: the %q scheme is not supported yet (use unix:// or tcp://)", ep.Host, u.Scheme)
 	}
 
-	c.http = &http.Client{Transport: transport}
+	c.http = &http.Client{Transport: transport,
+		// The Engine API does not redirect; a redirect means a name led
+		// somewhere else (such as "../containers/x").
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	return c, nil
 }
 

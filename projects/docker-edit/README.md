@@ -73,8 +73,10 @@ Before anything changes, docker-edit lists every setting that will differ: `+`
 added, `-` removed, `~` changed. The list compares the container as it is with
 the container as it will be, including what the (new) image supplies, so nothing
 changes that is not on the list. `--dry-run` stops after the plan. Values of
-variables whose names look secret (`PASSWORD`, `TOKEN`, `KEY`, `SECRET` and the
-like) are shown as `(hidden)`.
+variables and labels whose names look secret (containing `PASS`, `TOKEN`, `KEY`,
+`SECRET`, `AUTH`, `CREDENTIAL`, `COOKIE`, `SESSION` or `PRIVATE`) are shown as
+`(hidden)`, and so are passwords in URLs (`postgres://app:(hidden)@db/app`). A
+secret in another setting, such as the command line, is shown as it is.
 
 ### Exact recreation
 
@@ -86,7 +88,8 @@ change and compare `docker inspect` field by field:
 - published ports, binds, named volumes, tmpfs mounts and devices;
 - anonymous volumes, which are reattached so their data stays;
 - capabilities, security options, sysctls, ulimits, limits and log settings;
-- every network with its aliases, fixed IPs and a MAC address you set;
+- every network with its aliases, fixed IPs and MAC address (on the first
+  network only one you set; see Limits);
 - DNS settings, extra hosts, legacy links and labels;
 - `host` and `none` networking.
 
@@ -113,7 +116,8 @@ shows both image IDs.
    was running).
 3. Wait until it has run for 3 seconds, or until it is healthy if it has a
    healthcheck (up to `--wait`).
-4. Remove the old container, or keep it with `--keep-old`.
+4. Remove the old container, or keep it with `--keep-old` (its restart policy is
+   then set to `no`, so it never starts by itself and competes with the new one).
 
 If any step fails, or the new container exits or turns unhealthy, docker-edit
 removes the new container, gives the old one back its name and starts it again,
@@ -145,6 +149,9 @@ something:
   container. Move them into a volume, or pass `--discard-changes`.
 - **Containers started with `--rm`**: stopping one deletes it, so there would be
   nothing to roll back to.
+- **Paused containers**: unpause first.
+- **`--unmount` where the image declares a `VOLUME`**: Docker would mount a new,
+  empty volume there. Mount something else in its place instead.
 - **Docker Compose containers**: edit the Compose file and run `docker compose
   up` instead.
 - **Containers others depend on**: those that share its network (`--network
@@ -169,12 +176,14 @@ It works with Docker Engine 20.10 or newer (API 1.41+) on Linux and macOS. It
 connects the same way the docker CLI does: `DOCKER_HOST`, `DOCKER_CONTEXT`, the
 current context, then `/var/run/docker.sock`. Docker's own `--context`, `-H` and
 `--tls`/`--tlsverify` flags work too (`docker --context prod edit web -p 80:80`).
+For client certificates use `DOCKER_CERT_PATH` or a context; `--tlscacert`,
+`--tlscert` and `--tlskey` are not supported.
 
 ## Examples
 
 ```sh
 docker edit web -p 8080:80                       # publish another port
-docker edit web --unpublish 8080 -p 127.0.0.1:8080:80   # only on localhost
+docker edit web --unpublish 80 -p 127.0.0.1:8080:80     # only on localhost
 docker edit api -e LOG_LEVEL=debug --unset-env DEBUG_SQL
 docker edit db --restart unless-stopped          # in place, no restart
 docker edit app -v /srv/uploads:/app/uploads:ro
@@ -193,10 +202,11 @@ interrupted (the old container is put back).
   stop timeout.
 - **Not for Compose or Swarm.** Compose containers are refused; Swarm services
   have `docker service update`.
-- **A MAC address you set** is found by asking the daemon as API 1.43, because
-  newer API versions no longer tell it apart from an automatic one. A future
-  Docker that drops API 1.43 would make docker-edit stop with an error rather
-  than lose it.
+- **MAC addresses.** Since API 1.44 Docker no longer reports whether a MAC
+  address was set or made up. docker-edit asks as API 1.43 for the first
+  network's, so an automatic one there stays automatic; a future Docker that
+  drops API 1.43 makes docker-edit stop with an error rather than lose a set one.
+  On further networks the current MAC address is always kept.
 - **Changing what `docker update` changes** (memory, CPU) is left to
   `docker update`.
 

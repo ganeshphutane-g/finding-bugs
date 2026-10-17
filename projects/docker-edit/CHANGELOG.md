@@ -8,17 +8,19 @@ First release.
   mounts, restart policy, labels, image and networks by making it again exactly as
   it was, with only the changes. Works as a Docker CLI plugin or on its own.
 - A plan of every setting that will differ, including the new image's defaults,
-  before asking; `--dry-run` stops there. Secret-looking values are hidden.
+  before asking; `--dry-run` stops there. Secret-looking variables and labels, and
+  passwords in URLs, are hidden.
 - Exact recreation, checked against `docker inspect` for many container shapes:
   anonymous volumes are reattached with their data, every network keeps its
-  aliases, fixed IPs and a set MAC address, automatic hostnames and MACs stay
+  aliases, fixed IPs and MAC address, automatic hostnames and MACs stay
   automatic, and image defaults are not frozen in.
 - A safe swap: the old container is stopped and renamed, the new one must run (or
   become healthy) within `--wait`, and any failure or Ctrl-C puts the old one
   back. `--keep-old` keeps it afterwards.
 - Refuses, with the reason, when something would be lost: files changed outside
-  volumes (unless `--discard-changes`), `--rm` containers, Compose containers,
-  and containers others depend on (`--network container:`, `--link`).
+  volumes (unless `--discard-changes`), `--rm` and paused containers, Compose
+  containers, containers others depend on (`--network container:`, `--link`),
+  and `--unmount` of a path the image declares as a volume.
 - A restart policy change alone is made in place.
 - A tag that moved keeps the image the container runs, unless `--image` asks
   for the new one.

@@ -105,16 +105,29 @@ func TestMACAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.Config["MacAddress"]; ok || s.Networks[0].Config["MacAddress"] != "02:00:00:00:00:01" || s.Networks[1].Config["MacAddress"] != nil {
+	if _, ok := s.Config["MacAddress"]; ok || s.Networks[0].Config["MacAddress"] != "02:00:00:00:00:01" || s.Networks[1].Config["MacAddress"] != "02:00:00:00:00:02" {
 		t.Fatalf("%v %v", s.Config, s.Networks)
 	}
 	newer, _ := json.Marshal(s.Body("1.44"))
 	older, _ := json.Marshal(s.Body("1.43"))
-	if string(newer) != `{"HostConfig":{"NetworkMode":"app"},"Image":"x","NetworkingConfig":{"EndpointsConfig":{"app":{"MacAddress":"02:00:00:00:00:01"},"back":{}}}}` ||
+	if string(newer) != `{"HostConfig":{"NetworkMode":"app"},"Image":"x","NetworkingConfig":{"EndpointsConfig":{"app":{"MacAddress":"02:00:00:00:00:01"},"back":{"MacAddress":"02:00:00:00:00:02"}}}}` ||
 		string(older) != `{"HostConfig":{"NetworkMode":"app"},"Image":"x","MacAddress":"02:00:00:00:00:01","NetworkingConfig":{"EndpointsConfig":{"app":{}}}}` {
 		t.Fatalf("bodies:\n%s\n%s", newer, older)
 	}
 	if s.Networks[0].Config["MacAddress"] == nil {
 		t.Fatal("Body changed the spec")
+	}
+}
+
+func TestOwnEntrypointKeepsTheCommand(t *testing.T) {
+	s := &Spec{Config: Doc{"Entrypoint": []any{"/usr/bin/env"}, "Cmd": []any{"nginx", "-g", "daemon off;"}}}
+	s.DropImageDefaults(Doc{"Config": Doc{"Entrypoint": []any{"/docker-entrypoint.sh"}, "Cmd": []any{"nginx", "-g", "daemon off;"}}})
+	if fmt.Sprint(s.Config["Cmd"]) != "[nginx -g daemon off;]" || s.Config["Entrypoint"] == nil {
+		t.Fatalf("%v", s.Config)
+	}
+	s = &Spec{Config: Doc{"Entrypoint": []any{"/docker-entrypoint.sh"}, "Cmd": []any{"nginx"}}}
+	s.DropImageDefaults(Doc{"Config": Doc{"Entrypoint": []any{"/docker-entrypoint.sh"}, "Cmd": []any{"nginx"}}})
+	if _, ok := s.Config["Cmd"]; ok {
+		t.Fatalf("the image's command was kept: %v", s.Config)
 	}
 }

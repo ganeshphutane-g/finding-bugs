@@ -44,13 +44,10 @@ func Settings(s *recreate.Spec) map[string]string {
 	}
 	for _, e := range list(cfg["Env"]) {
 		k, v, _ := strings.Cut(str(e), "=")
-		if secretName.MatchString(k) {
-			v = hidden + hash(v)
-		}
-		out["env "+k] = v
+		out["env "+k] = mask(k, v)
 	}
 	for k, v := range asDoc(cfg["Labels"]) {
-		out["label "+k] = fmt.Sprint(v)
+		out["label "+k] = mask(k, fmt.Sprint(v))
 	}
 	for port, bs := range asDoc(host["PortBindings"]) {
 		var parts []string
@@ -113,6 +110,15 @@ func Settings(s *recreate.Spec) map[string]string {
 			if a := str(ip["IPv4Address"]); a != "" {
 				desc += ", ip " + a
 			}
+			if a := str(ip["IPv6Address"]); a != "" {
+				desc += ", ipv6 " + a
+			}
+		}
+		if m := str(ep.Config["MacAddress"]); m != "" {
+			desc += ", mac " + m
+		}
+		if l := list(ep.Config["Links"]); len(l) > 0 {
+			desc += ", links " + jsonText(l)
 		}
 		out["network "+ep.Network] = desc
 	}
@@ -166,6 +172,20 @@ func Diff(before, after *recreate.Spec) []Line {
 }
 
 func blank(v string) bool { return v == "" || v == "null" || v == "{}" || v == "[]" }
+
+// urlPassword is the password in a URL (scheme://user:password@host).
+var urlPassword = regexp.MustCompile(`(://[^/@\s:]*:)[^/@\s]+@`)
+
+// mask hides a value whose name looks secret, and passwords in URLs.
+func mask(name, v string) string {
+	if secretName.MatchString(name) {
+		return hidden + hash(v)
+	}
+	if m := urlPassword.ReplaceAllString(v, "${1}(hidden)@"); m != v {
+		return m + "\x00" + hash(v)
+	}
+	return v
+}
 
 // hidden is shown for a secret value. The value's hash follows it, after a
 // NUL, so a change is still noticed; the hash is not shown.
@@ -227,7 +247,12 @@ func Effective(s *recreate.Spec, image Doc) *recreate.Spec {
 		labels[k] = v
 	}
 	cfg["Labels"] = labels
+	// (Docker takes the image's command only with its entrypoint.)
+	_, ownEntrypoint := cfg["Entrypoint"]
 	for _, k := range []string{"Cmd", "Entrypoint", "WorkingDir", "User", "Healthcheck", "StopSignal", "Shell", "OnBuild"} {
+		if k == "Cmd" && ownEntrypoint && cfg["Entrypoint"] != nil {
+			continue
+		}
 		if _, ok := cfg[k]; !ok {
 			if v, ok := img[k]; ok {
 				cfg[k] = v

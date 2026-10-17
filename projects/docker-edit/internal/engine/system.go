@@ -31,6 +31,8 @@ type Info struct {
 	// SystemTime is the daemon's clock, in the daemon's time zone. Docker
 	// evaluates "until" filters against it.
 	SystemTime time.Time
+	// Name is the daemon host's name.
+	Name string
 }
 
 // Info returns facts about the daemon that change how prunes behave.
@@ -38,11 +40,12 @@ func (c *Client) Info(ctx context.Context) (Info, error) {
 	var raw struct {
 		DriverStatus [][2]string `json:"DriverStatus"`
 		SystemTime   string      `json:"SystemTime"`
+		Name         string      `json:"Name"`
 	}
 	if err := c.Call(ctx, Request{Method: http.MethodGet, Path: "/info"}, &raw); err != nil {
 		return Info{}, err
 	}
-	var info Info
+	info := Info{Name: raw.Name}
 	for _, kv := range raw.DriverStatus {
 		if kv[0] == "driver-type" && kv[1] == "io.containerd.snapshotter.v1" {
 			info.ContainerdStore = true

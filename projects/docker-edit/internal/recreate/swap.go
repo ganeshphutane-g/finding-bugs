@@ -3,6 +3,8 @@ package recreate
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/ganeshphutane-g/docker-edit/internal/engine"
@@ -46,7 +48,8 @@ func Swap(ctx context.Context, c *engine.Client, old Doc, spec *Spec, o SwapOpti
 		defer cancel()
 		for i := len(undo) - 1; i >= 0; i-- {
 			if uerr := undo[i](rctx); uerr != nil {
-				return fmt.Errorf("%w; putting the old container back also failed: %v (it is %s, stopped)", cause, uerr, backup)
+				// (Not wrapping the cause: this is no plain interruption.)
+				return fmt.Errorf("%v; putting the old container back also failed: %v (it is %s, stopped)", cause, uerr, backup)
 			}
 		}
 		log("put the old container back")
@@ -58,8 +61,13 @@ func Swap(ctx context.Context, c *engine.Client, old Doc, spec *Spec, o SwapOpti
 	if running {
 		undo = append(undo, func(ctx context.Context) error { return c.StartContainer(ctx, oldID) })
 		log("stopping %s", spec.Name)
-		if err := c.StopContainer(ctx, oldID, -1); err != nil {
+		// The daemon goes on stopping when the call is cancelled, so the
+		// stop is not cancelled: the rollback then starts it again.
+		if err := c.StopContainer(context.WithoutCancel(ctx), oldID, -1); err != nil {
 			return "", rollback(fmt.Errorf("stopping the container: %w", err))
+		}
+		if err := ctx.Err(); err != nil {
+			return "", rollback(err)
 		}
 	}
 	undo = append(undo, func(ctx context.Context) error {
@@ -112,7 +120,12 @@ func Swap(ctx context.Context, c *engine.Client, old Doc, spec *Spec, o SwapOpti
 		}
 	}
 	if o.KeepOld {
-		log("kept the old container as %s", backup)
+		// A kept backup must not start again when Docker restarts.
+		if err := c.Call(ctx, engine.Request{Method: http.MethodPost, Path: "/containers/" + url.PathEscape(oldID) + "/update",
+			JSON: Doc{"RestartPolicy": Doc{"Name": "no"}}}, nil); err != nil {
+			log("warning: the old container %s keeps its restart policy, so it may start again when Docker restarts: %v", backup, err)
+		}
+		log("kept the old container as %s (stopped, never restarted)", backup)
 		return newID, nil
 	}
 	if err := c.RemoveContainer(ctx, oldID, false); err != nil {

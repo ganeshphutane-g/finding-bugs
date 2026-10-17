@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,6 +108,47 @@ type multi []string
 func (m *multi) String() string     { return strings.Join(*m, ",") }
 func (m *multi) Set(v string) error { *m = append(*m, v); return nil }
 
+// once is a flag given at most once.
+type once struct{ v *string }
+
+func (o once) String() string {
+	if o.v == nil {
+		return ""
+	}
+	return *o.v
+}
+
+func (o once) Set(v string) error {
+	if *o.v != "" {
+		return fmt.Errorf("given twice (%s and %s)", *o.v, v)
+	}
+	*o.v = v
+	return nil
+}
+
+// seconds is a duration, or a number of seconds.
+type seconds struct{ d *time.Duration }
+
+func (s seconds) String() string {
+	if s.d == nil {
+		return ""
+	}
+	return s.d.String()
+}
+
+func (s seconds) Set(v string) error {
+	if n, err := strconv.Atoi(v); err == nil {
+		*s.d = time.Duration(n) * time.Second
+		return nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fmt.Errorf("expected a duration such as 30s or 2m")
+	}
+	*s.d = d
+	return nil
+}
+
 type options struct {
 	changes        edit.Changes
 	dryRun, yes    bool
@@ -114,6 +157,35 @@ type options struct {
 	wait           time.Duration
 	help           bool
 	container      string
+}
+
+// imageName is the characters of an image reference (name[:tag][@digest] or
+// an ID).
+var imageName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$`)
+
+var longFlag = regexp.MustCompile(`(^|\s)-(\w[\w-]+)`)
+
+// pluginCall reports docker CLI arguments: docker's flags, then "edit".
+func pluginCall(args []string) bool {
+	skip := false
+	for _, a := range args {
+		if skip {
+			skip = false
+			continue
+		}
+		if a == pluginName {
+			return true
+		}
+		name, _, hasValue := strings.Cut(a, "=")
+		switch name {
+		case "-c", "--context", "-H", "--host", "--config", "-l", "--log-level":
+			skip = !hasValue
+		case "--tls", "--tlsverify", "-D", "--debug":
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func parse(args []string) (options, error) {
@@ -134,12 +206,12 @@ func parse(args []string) (options, error) {
 	}
 	fs.Var((*multi)(&c.Mounts), "mount", "")
 	fs.Var((*multi)(&c.Unmount), "unmount", "")
-	fs.StringVar(&c.Restart, "restart", "", "")
+	fs.Var(once{&c.Restart}, "restart", "")
 	for _, name := range []string{"l", "label"} {
 		fs.Var((*multi)(&c.Labels), name, "")
 	}
 	fs.Var((*multi)(&c.Unlabel), "unlabel", "")
-	fs.StringVar(&c.Image, "image", "", "")
+	fs.Var(once{&c.Image}, "image", "")
 	fs.Var((*multi)(&c.Networks), "network", "")
 	fs.Var((*multi)(&c.Disconnect), "disconnect", "")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "")
@@ -147,7 +219,8 @@ func parse(args []string) (options, error) {
 	fs.BoolVar(&o.yes, "yes", false, "")
 	fs.BoolVar(&o.keepOld, "keep-old", false, "")
 	fs.BoolVar(&o.discardChanges, "discard-changes", false, "")
-	fs.DurationVar(&o.wait, "wait", 30*time.Second, "")
+	o.wait = 30 * time.Second
+	fs.Var(seconds{&o.wait}, "wait", "")
 	var pos []string
 	rest := args
 	for {
@@ -155,7 +228,8 @@ func parse(args []string) (options, error) {
 			o.help = true
 			return o, nil
 		} else if err != nil {
-			return o, usagef("%v", err)
+			// The flag package names long flags with one dash.
+			return o, usagef("%s", longFlag.ReplaceAllString(err.Error(), "${1}--${2}"))
 		}
 		if fs.NArg() == 0 {
 			break
@@ -182,22 +256,30 @@ func run(ctx context.Context, env Env, args []string) error {
 		})
 	}
 	// Called by the docker CLI: docker's global flags, then the plugin name.
-	if len(args) > 0 && strings.HasPrefix(args[0], "-") && contains(args, pluginName) {
-		var err error
-		if args, env, err = globalFlags(args, env); err != nil {
-			return err
+	// (Docker CLIs before 24 do not say so; then only docker's own flags
+	// before "edit" count as a plugin call.)
+	plugin := env.Getenv("DOCKER_CLI_PLUGIN_ORIGINAL_CLI_COMMAND") != "" || pluginCall(args)
+	if plugin {
+		if len(args) > 0 && strings.HasPrefix(args[0], "-") {
+			var err error
+			if args, env, err = globalFlags(args, env); err != nil {
+				return err
+			}
+		}
+		if len(args) > 0 && args[0] == pluginName {
+			args = args[1:]
 		}
 	}
-	if len(args) > 0 && args[0] == pluginName {
-		args = args[1:]
-	}
-	if len(args) > 0 && (args[0] == "version" || args[0] == "--version") {
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
 		fmt.Fprintf(env.Stdout, "docker-edit %s\n", Version)
 		return nil
 	}
-	if len(args) == 0 || args[0] == "help" {
+	if len(args) == 1 && args[0] == "help" {
 		fmt.Fprint(env.Stdout, usage)
 		return nil
+	}
+	if len(args) == 0 {
+		return usagef("name the container to change")
 	}
 	o, err := parse(args)
 	if err != nil {
@@ -236,6 +318,9 @@ func editContainer(ctx context.Context, env Env, c *engine.Client, o options) er
 	// What docker edit will not do.
 	if p := str(asDoc(cfg["Labels"])["com.docker.compose.project"]); p != "" {
 		return fmt.Errorf("%s belongs to the Compose project %q: change its Compose file and run docker compose up instead", name, p)
+	}
+	if state["Paused"] == true {
+		return fmt.Errorf("%s is paused: unpause it first (docker unpause %s)", name, name)
 	}
 	if host["AutoRemove"] == true {
 		return fmt.Errorf("%s was started with --rm, so it is deleted as soon as it stops: there would be nothing to go back to if the new one failed", name)
@@ -276,6 +361,9 @@ func editContainer(ctx context.Context, env Env, c *engine.Client, o options) er
 	oldImageGone := err != nil
 	newImg := oldImg
 	if o.changes.Image != "" {
+		if !imageName.MatchString(o.changes.Image) || strings.Contains(o.changes.Image, "..") || strings.Contains(o.changes.Image, "//") {
+			return usagef("--image %q is not an image name", o.changes.Image)
+		}
 		if newImg, err = c.InspectImage(ctx, o.changes.Image); engine.IsNotFound(err) {
 			return fmt.Errorf("there is no image %s here: pull it first (docker pull %s)", o.changes.Image, o.changes.Image)
 		} else if err != nil {
@@ -304,6 +392,11 @@ func editContainer(ctx context.Context, env Env, c *engine.Client, o options) er
 	}
 	if err := edit.Apply(after, o.changes); err != nil {
 		return usagef("%v", err)
+	}
+	for _, dst := range o.changes.Unmount {
+		if _, ok := asDoc(asDoc(newImg["Config"])["Volumes"])[dst]; ok && !edit.MountedAt(after.Host, dst) {
+			return fmt.Errorf("--unmount %s: the image declares a volume there, so Docker would mount a new, empty volume in its place. Mount something else there instead (--volume or --mount)", dst)
+		}
 	}
 	// Show what the new container will really have: what it leaves to its
 	// image comes from the (new) image.
@@ -366,7 +459,11 @@ func editContainer(ctx context.Context, env Env, c *engine.Client, o options) er
 	if err != nil {
 		return err
 	}
-	out("Done: %s (%s) runs with the changes.", name, short(newID))
+	if state["Running"] == true {
+		out("Done: %s (%s) runs with the changes.", name, short(newID))
+	} else {
+		out("Done: %s (%s) was made again with the changes; it stays stopped.", name, short(newID))
+	}
 	return nil
 }
 
@@ -422,7 +519,8 @@ func lostFiles(ctx context.Context, c *engine.Client, id string, mounts []any) (
 	var out []string
 	for _, ch := range changes {
 		p := str(ch["Path"])
-		if underAny(p, runtimePaths) || mountPoint(p, dests) {
+		// (Docker adds its init program for --init.)
+		if underAny(p, runtimePaths) || mountPoint(p, dests) || p == "/sbin/docker-init" {
 			continue
 		}
 		// A directory marked changed only because something in it changed.
@@ -535,7 +633,10 @@ func confirm(ctx context.Context, in io.Reader, out io.Writer, q string) (bool, 
 	fmt.Fprintf(out, "%s [y/N] ", q)
 	answer := make(chan string, 1)
 	go func() {
-		line, _ := bufio.NewReader(in).ReadString('\n')
+		line, err := bufio.NewReader(in).ReadString('\n')
+		if err != nil && line == "" {
+			line = "\x00" // no answer at all
+		}
 		answer <- line
 	}()
 	select {
@@ -543,6 +644,10 @@ func confirm(ctx context.Context, in io.Reader, out io.Writer, q string) (bool, 
 		fmt.Fprintln(out)
 		return false, ctx.Err()
 	case line := <-answer:
+		if line == "\x00" {
+			fmt.Fprintln(out)
+			return false, errors.New("no answer (nothing to read from the input); nothing was changed. Use -y to go ahead without asking")
+		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "y", "yes":
 			return true, nil
@@ -561,15 +666,6 @@ func short(id string) string {
 		return id[:12]
 	}
 	return id
-}
-
-func contains(args []string, want string) bool {
-	for _, a := range args {
-		if a == want {
-			return true
-		}
-	}
-	return false
 }
 
 func str(v any) string {

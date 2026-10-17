@@ -45,11 +45,24 @@ type Endpoint struct {
 // Read is the container's description for FromInspect. Since API 1.44 the
 // description no longer tells a MAC address that was set (--mac-address)
 // from one Docker made up; asking as API 1.43 does, so Read adds it as
-// Config.MacAddress.
+// Config.MacAddress. With host networking it leaves out the hostname when it
+// is only the host's.
 func Read(ctx context.Context, c *engine.Client, name string) (Doc, error) {
 	ctr, err := c.InspectContainer(ctx, name)
 	if err != nil {
 		return nil, err
+	}
+	if str(asDoc(ctr["HostConfig"])["NetworkMode"]) == "host" {
+		// With host networking the hostname is the host's, unless one was
+		// set: leave the host's out, or it would stay after leaving the host
+		// network.
+		info, err := c.Info(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if cfg := asDoc(ctr["Config"]); info.Name != "" && str(cfg["Hostname"]) == info.Name {
+			delete(cfg, "Hostname")
+		}
 	}
 	api, err := c.APIVersion(ctx)
 	if err != nil || engine.CompareVersions(api, "1.44") < 0 {
@@ -129,6 +142,21 @@ func FromInspect(ctr Doc) (*Spec, error) {
 
 	// Anonymous volumes are not in the host config; name them, so their
 	// data stays.
+	anonymous := map[string]string{} // destination -> volume name
+	for _, m := range list(ctr["Mounts"]) {
+		if md, _ := m.(Doc); str(md["Type"]) == "volume" && anonymousName.MatchString(str(md["Name"])) {
+			anonymous[str(md["Destination"])] = str(md["Name"])
+		}
+	}
+	// A volume mount without a source (--mount type=volume,dst=/x) made an
+	// anonymous volume: name it, or the new container would get an empty one.
+	for _, m := range list(host["Mounts"]) {
+		if md, ok := m.(Doc); ok && str(md["Type"]) == "volume" && str(md["Source"]) == "" {
+			if name := anonymous[str(md["Target"])]; name != "" {
+				md["Source"] = name
+			}
+		}
+	}
 	taken := map[string]bool{}
 	for _, b := range list(host["Binds"]) {
 		if parts := strings.Split(str(b), ":"); len(parts) >= 2 {
@@ -185,6 +213,14 @@ func FromInspect(ctr Doc) (*Spec, error) {
 	mac := str(cfg["MacAddress"])
 	delete(cfg, "MacAddress")
 
+	// Sharing another container's network: the hostname and ports are that
+	// container's, and the create request must not name them.
+	if strings.HasPrefix(s.NetworkMode, "container:") {
+		for _, k := range []string{"Hostname", "Domainname", "ExposedPorts"} {
+			delete(cfg, k)
+		}
+	}
+
 	// Networks.
 	mode := s.NetworkMode
 	if mode != "host" && mode != "none" && !strings.HasPrefix(mode, "container:") {
@@ -230,8 +266,14 @@ func FromInspect(ctr Doc) (*Spec, error) {
 			if p, ok := ep["GwPriority"].(json.Number); ok && p.String() != "0" {
 				conf["GwPriority"] = p
 			}
-			if mac != "" && len(s.Networks) == 0 {
-				conf["MacAddress"] = mac
+			if len(s.Networks) == 0 {
+				if mac != "" {
+					conf["MacAddress"] = mac
+				}
+			} else if m := str(ep["MacAddress"]); m != "" {
+				// For further networks the description does not tell a set
+				// MAC address from an automatic one: keep it either way.
+				conf["MacAddress"] = m
 			}
 			s.Networks = append(s.Networks, Endpoint{Network: n, Config: conf})
 		}
@@ -293,8 +335,14 @@ func (s *Spec) dropDefaults(image Doc, byName bool) []string {
 			}
 		}
 	}
-	// Whole settings equal to the image's.
+	// Whole settings equal to the image's. Docker takes the image's command
+	// only along with its entrypoint, so a command stays with an entrypoint
+	// of the container's own.
+	ownEntrypoint := s.Config["Entrypoint"] != nil && !same(s.Config["Entrypoint"], img["Entrypoint"])
 	for _, k := range []string{"Cmd", "Entrypoint", "WorkingDir", "User", "Healthcheck", "StopSignal", "Shell", "OnBuild", "ExposedPorts", "Volumes"} {
+		if k == "Cmd" && ownEntrypoint {
+			continue
+		}
 		if same(s.Config[k], img[k]) {
 			delete(s.Config, k)
 		}
