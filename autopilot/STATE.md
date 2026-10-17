@@ -8,19 +8,26 @@ Repo: projects/docker-edit/ inside finding-bugs.
 
 ## Next step
 
-Milestone 1, exact recreation:
-- the Engine client (copy and trim docker-mop's internal/engine; it is the owner's
-  own code);
-- inspect -> create request:
-  - leave out what came from the image (Env, Labels, Cmd, Entrypoint,
-    ExposedPorts, Volumes, WorkingDir, User, Healthcheck when they equal the
-    image's);
-  - reattach anonymous volumes by name;
-  - all networks with aliases, IPs and MAC (API >= 1.44 takes several endpoints
-    at create);
-  - leave the hostname out when it is the old ID prefix;
-- a test matrix of container shapes proving that a no-change recreation leaves
-  `docker inspect` equal except for the ID, times and state.
+The core of milestone 1 is done (run 7):
+- the Engine client, copied from docker-mop;
+- internal/recreate: FromInspect, DropImageDefaults, Swap with rollback;
+- recreating five shapes (minimal, web with ports, binds, named and anonymous
+  volumes, tmpfs, a static IP, aliases on two networks, a healthcheck, limits and
+  logs; process options; isolated; host network) leaves `docker inspect` equal,
+  and anonymous volume data survives;
+- a failed start puts the old container back.
+
+Still to do for milestone 1: the CLI (`docker edit NAME`, which also works as a Docker
+CLI plugin with docker-cli-plugin-metadata) with `--dry-run`.
+
+Then milestone 2, the edits:
+- --publish/--unpublish, --env/--unset-env, --mount/--volume/--unmount,
+  --restart, --label/--unlabel, --image (DropImageDefaults), --network/--disconnect;
+- the settings diff shown before asking;
+- the `docker update` fast path for restart and resource limits.
+
+Image handling: when Config.Image no longer resolves to the container's image ID
+(the tag moved), keep the old image ID and say so, unless --image is given.
 
 The Docker daemon here is 29.8.2 (API 1.56). Start it with `sudo nohup dockerd >
 /tmp/claude-0/dockerd.log 2>&1 &`.

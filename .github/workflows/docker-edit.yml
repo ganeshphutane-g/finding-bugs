@@ -1,0 +1,25 @@
+name: docker-edit
+
+on:
+  push:
+    paths: ["projects/docker-edit/**", ".github/workflows/docker-edit.yml"]
+  pull_request:
+    paths: ["projects/docker-edit/**", ".github/workflows/docker-edit.yml"]
+
+defaults:
+  run:
+    working-directory: projects/docker-edit
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/docker-edit/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: tests against the runner's Docker daemon
+        run: DOCKEREDIT_INTEGRATION=1 go test -race -count=1 -timeout 20m ./...

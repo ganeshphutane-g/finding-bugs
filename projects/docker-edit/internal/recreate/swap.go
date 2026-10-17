@@ -1,0 +1,98 @@
+package recreate
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/ganeshphutane-g/docker-edit/internal/engine"
+)
+
+// SwapOptions control a swap.
+type SwapOptions struct {
+	KeepOld bool               // keep the old container (renamed) after success
+	Log     func(string)       // progress
+	Now     func() time.Time   // for the backup name
+	Started func(string) error // checks the new container once started (nil: none)
+}
+
+// Swap replaces the container described by old with one created from spec:
+// the old one is stopped and renamed, the new one created under its name
+// and started (if the old one was running). On any failure the new one is
+// removed and the old one gets its name back and is started again.
+func Swap(ctx context.Context, c *engine.Client, old Doc, spec *Spec, o SwapOptions) (newID string, err error) {
+	log := func(f string, a ...any) {
+		if o.Log != nil {
+			o.Log(fmt.Sprintf(f, a...))
+		}
+	}
+	now := time.Now
+	if o.Now != nil {
+		now = o.Now
+	}
+	api, err := c.APIVersion(ctx)
+	if err != nil {
+		return "", err
+	}
+	oldID := str(old["Id"])
+	running := asDoc(old["State"])["Running"] == true
+	backup := fmt.Sprintf("%s.old-%s", spec.Name, now().UTC().Format("20060102-150405"))
+
+	// Undo, step by step, whatever was done. It runs on a fresh context:
+	// the caller's may be cancelled (Ctrl-C) by then.
+	var undo []func(context.Context) error
+	rollback := func(cause error) error {
+		rctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		for i := len(undo) - 1; i >= 0; i-- {
+			if uerr := undo[i](rctx); uerr != nil {
+				return fmt.Errorf("%w; putting the old container back also failed: %v (it is %s, stopped)", cause, uerr, backup)
+			}
+		}
+		log("put the old container back")
+		return cause
+	}
+
+	if running {
+		log("stopping %s", spec.Name)
+		if err := c.StopContainer(ctx, oldID, -1); err != nil {
+			return "", fmt.Errorf("stopping the container: %w", err)
+		}
+		undo = append(undo, func(ctx context.Context) error { return c.StartContainer(ctx, oldID) })
+	}
+	if err := c.RenameContainer(ctx, oldID, backup); err != nil {
+		return "", rollback(fmt.Errorf("renaming the container: %w", err))
+	}
+	undo = append(undo, func(ctx context.Context) error { return c.RenameContainer(ctx, oldID, spec.Name) })
+
+	log("creating the new %s", spec.Name)
+	newID, err = c.CreateContainer(ctx, spec.Name, spec.Body(api))
+	if err != nil {
+		return "", rollback(fmt.Errorf("creating the new container: %w", err))
+	}
+	undo = append(undo, func(ctx context.Context) error { return c.RemoveContainer(ctx, newID, true) })
+	for _, ep := range spec.Later(api) {
+		if err := c.ConnectNetwork(ctx, ep.Network, newID, ep.Config); err != nil {
+			return "", rollback(fmt.Errorf("connecting the new container to %s: %w", ep.Network, err))
+		}
+	}
+	if running {
+		log("starting the new %s", spec.Name)
+		if err := c.StartContainer(ctx, newID); err != nil {
+			return "", rollback(fmt.Errorf("starting the new container: %w", err))
+		}
+		if o.Started != nil {
+			if err := o.Started(newID); err != nil {
+				return "", rollback(err)
+			}
+		}
+	}
+	if o.KeepOld {
+		log("kept the old container as %s", backup)
+		return newID, nil
+	}
+	if err := c.RemoveContainer(ctx, oldID, false); err != nil {
+		log("the old container is kept as %s: removing it failed: %v", backup, err)
+	}
+	return newID, nil
+}
