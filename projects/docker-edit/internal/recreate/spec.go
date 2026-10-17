@@ -194,33 +194,56 @@ func FromInspect(ctr Doc) (*Spec, error) {
 	return s, nil
 }
 
-// FromImageDefaults removes what the container only has because its image
+// DropImageDefaults removes what the container only has because its image
 // set it, so another image's defaults can apply. It is used when the
 // image changes.
 func (s *Spec) DropImageDefaults(oldImage Doc) {
-	img := asDoc(oldImage["Config"])
+	s.dropDefaults(oldImage, false)
+}
+
+// DropNewImageNames is DropImageDefaults for when the old image is gone, so
+// its defaults are unknown: environment variables and labels the new image
+// sets are taken to be image defaults and dropped, whatever their value. It
+// returns the ones whose value will change.
+func (s *Spec) DropNewImageNames(newImage Doc) []string {
+	return s.dropDefaults(newImage, true)
+}
+
+func (s *Spec) dropDefaults(image Doc, byName bool) []string {
+	img := asDoc(image["Config"])
 	if img == nil {
-		return
+		return nil
 	}
-	// Environment: entries equal to the image's.
+	var changed []string
+	// Environment: entries equal to the image's (or of the same name).
 	if env := list(s.Config["Env"]); env != nil {
-		defaults := map[string]bool{}
+		defaults := map[string]string{}
 		for _, e := range list(img["Env"]) {
-			defaults[str(e)] = true
+			k, _, _ := strings.Cut(str(e), "=")
+			defaults[k] = str(e)
 		}
 		var keep []any
 		for _, e := range env {
-			if !defaults[str(e)] {
+			k, _, _ := strings.Cut(str(e), "=")
+			d, ok := defaults[k]
+			switch {
+			case ok && d == str(e):
+			case ok && byName:
+				changed = append(changed, "env "+k)
+			default:
 				keep = append(keep, e)
 			}
 		}
 		s.Config["Env"] = keep
 	}
-	// Labels: those equal to the image's.
+	// Labels: those equal to the image's (or of the same name).
 	if labels := asDoc(s.Config["Labels"]); labels != nil {
 		il := asDoc(img["Labels"])
 		for k, v := range labels {
-			if iv, ok := il[k]; ok && iv == v {
+			if iv, ok := il[k]; ok && (iv == v || byName) {
+				if iv != v {
+					changed = append(changed, "label "+k)
+				}
 				delete(labels, k)
 			}
 		}
@@ -231,6 +254,8 @@ func (s *Spec) DropImageDefaults(oldImage Doc) {
 			delete(s.Config, k)
 		}
 	}
+	sort.Strings(changed)
+	return changed
 }
 
 func str(v any) string {

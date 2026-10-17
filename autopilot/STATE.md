@@ -8,26 +8,20 @@ Repo: projects/docker-edit/ inside finding-bugs.
 
 ## Next step
 
-The core of milestone 1 is done (run 7):
-- the Engine client, copied from docker-mop;
-- internal/recreate: FromInspect, DropImageDefaults, Swap with rollback;
-- recreating five shapes (minimal, web with ports, binds, named and anonymous
-  volumes, tmpfs, a static IP, aliases on two networks, a healthcheck, limits and
-  logs; process options; isolated; host network) leaves `docker inspect` equal,
-  and anonymous volume data survives;
-- a failed start puts the old container back.
+Milestones 1 and 2 are done (run 7), with integration tests passing:
+- internal/recreate: exact recreation of five shapes, Swap with rollback;
+- internal/edit: every v1 flag (Apply), the settings plan (Diff, Effective),
+  secret-like env values hidden;
+- internal/cli: `docker edit NAME` and the Docker CLI plugin, --dry-run, -y,
+  --keep-old, --wait, refusals (Compose, --rm, `--network container:` dependents,
+  changed files outside volumes unless --discard-changes), restart-only edits in
+  place, a moved tag keeps the old image (or refuses when Docker removed it),
+  --image with the same name shows the image IDs.
 
-Still to do for milestone 1: the CLI (`docker edit NAME`, which also works as a Docker
-CLI plugin with docker-cli-plugin-metadata) with `--dry-run`.
-
-Then milestone 2, the edits:
-- --publish/--unpublish, --env/--unset-env, --mount/--volume/--unmount,
-  --restart, --label/--unlabel, --image (DropImageDefaults), --network/--disconnect;
-- the settings diff shown before asking;
-- the `docker update` fast path for restart and resource limits.
-
-Image handling: when Config.Image no longer resolves to the container's image ID
-(the tag moved), keep the old image ID and say so, unless --image is given.
+Next: unit tests for internal/edit (parsePublish, parseMount, parseRestart, Apply
+errors, Diff); interrupt handling (Ctrl-C during the swap rolls back); README
+with real demo output, CHANGELOG; two full reviews (data loss and correctness;
+security and usability) with findings fixed; CI green.
 
 The Docker daemon here is 29.8.2 (API 1.56). Start it with `sudo nohup dockerd >
 /tmp/claude-0/dockerd.log 2>&1 &`.
