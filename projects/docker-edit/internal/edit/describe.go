@@ -39,6 +39,9 @@ func Settings(s *recreate.Spec) map[string]string {
 	out := map[string]string{}
 	cfg, host := s.Config, s.Host
 	out["image"] = str(cfg["Image"])
+	if id, ok := strings.CutPrefix(out["image"], "sha256:"); ok && len(id) > 12 {
+		out["image"] = id[:12] // an image kept by ID, as docker images shows it
+	}
 	for _, e := range list(cfg["Env"]) {
 		k, v, _ := strings.Cut(str(e), "=")
 		if secretName.MatchString(k) {

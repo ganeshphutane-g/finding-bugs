@@ -315,7 +315,11 @@ func editContainer(ctx context.Context, env Env, c *engine.Client, o options) er
 	}
 	lines := edit.Diff(before, shown)
 	status := str(state["Status"])
-	out("%s (%s, %s)", name, imageRef, status)
+	shownRef := imageRef
+	if strings.HasPrefix(imageRef, "sha256:") {
+		shownRef = shortImage(imageRef)
+	}
+	out("%s (%s, %s)", name, shownRef, status)
 	for _, n := range notes {
 		out("  note: %s", n)
 	}

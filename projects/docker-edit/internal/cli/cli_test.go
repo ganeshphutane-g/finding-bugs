@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -208,8 +209,11 @@ func TestMovedTagKeepsTheImage(t *testing.T) {
 	} else if code != 1 || !strings.Contains(out, "no longer here") {
 		t.Fatalf("old image gone: exit %d:\n%s", code, out)
 	}
-	// Moving on deliberately works either way.
-	if code, out := de(t, n, "-y", "--image", "de-moving:1"); code != 0 || !strings.Contains(out, "~ env APP_VERSION: 1 -> 9") || !strings.Contains(out, "~ image: de-moving:1 (") {
+	// Moving on deliberately works either way. (The plan shows the image
+	// IDs; with the classic store the container already runs the old image
+	// by ID.)
+	if code, out := de(t, n, "-y", "--image", "de-moving:1"); code != 0 || !strings.Contains(out, "~ env APP_VERSION: 1 -> 9") ||
+		!regexp.MustCompile(`~ image: (de-moving:1 \(\w{12}\)|\w{12}) -> de-moving:1`).MatchString(out) {
 		t.Fatalf("--image: exit %d:\n%s", code, out)
 	}
 }
