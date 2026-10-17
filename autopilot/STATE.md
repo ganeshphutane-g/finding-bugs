@@ -1,27 +1,15 @@
 # State
 
-Current project: #7 docker-edit (change an existing container's ports, env,
-mounts, restart, labels, image or networks by recreating it exactly, with a safe
-swap and a rollback).
-Phase: build. Spec: projects/docker-edit/SPEC.md. Research round 8 is in IDEAS.md.
-Repo: projects/docker-edit/ inside finding-bugs.
+Current project: none in build. #7 docker-edit is done (see Finished projects);
+research round 9 for project #8 is under way.
 
 ## Next step
 
-Milestones 1 and 2 are done (run 7), with integration tests passing:
-- internal/recreate: exact recreation of five shapes, Swap with rollback;
-- internal/edit: every v1 flag (Apply), the settings plan (Diff, Effective),
-  secret-like env values hidden;
-- internal/cli: `docker edit NAME` and the Docker CLI plugin, --dry-run, -y,
-  --keep-old, --wait, refusals (Compose, --rm, `--network container:` dependents,
-  changed files outside volumes unless --discard-changes), restart-only edits in
-  place, a moved tag keeps the old image (or refuses when Docker removed it),
-  --image with the same name shows the image IDs.
-
-Next: unit tests for internal/edit (parsePublish, parseMount, parseRestart, Apply
-errors, Diff); interrupt handling (Ctrl-C during the swap rolls back); README
-with real demo output, CHANGELOG; two full reviews (data loss and correctness;
-security and usability) with findings fixed; CI green.
+Research round 9 (round 8's bar: a 50+ 👍 request on a 2k+★ project, two more
+sources, upstream not building it, no good tool, testable locally). Re-check the
+round 8 runners-up in IDEAS.md (wildcard DNS sidecar, shared Traefik ACME, Swarm
+rebalancer) and find at least 5 new candidates. Record the round in IDEAS.md, then
+write the spec for the pick.
 
 The Docker daemon here is 29.8.2 (API 1.56). Start it with `sudo nohup dockerd >
 /tmp/claude-0/dockerd.log 2>&1 &`.
@@ -139,6 +127,25 @@ Actions as codeberg.org/forgejo/forgejo:16.
    - **Owner checks before going public:** read the README; export your own
      instance and run `diff` (it should say in sync); try `apply` on a test
      instance first.
+
+7. **docker-edit** (projects/docker-edit, v1.0.0 at commit cdc7019). Change an
+   existing container's ports, env, mounts, restart policy, labels, image or
+   networks (moby#21282, 50 👍; moby#8838, 104 👍).
+   - **How:** the container is made again from its full `docker inspect`, with only
+     the changes; a plan first; a swap with rollback (failure, unhealthy, Ctrl-C);
+     image defaults are not frozen in; restart-only changes in place.
+   - **Refuses** when something would be lost: changed files outside volumes,
+     `--rm`, paused, Compose, `--network container:` and `--link` dependents, an
+     image VOLUME left empty.
+   - **Reviews:** two full reviews (correctness and data loss; security and
+     usability), 20 findings, all fixed. Two only in part, the rest documented
+     as limits: secrets in command lines are shown; --tlscacert/--tlscert/--tlskey
+     are refused. Each fix has a regression test except the message for a
+     failed rollback.
+   - **Tests:** exact recreation of 9 container shapes, interrupts at every step,
+     every edit; green on both image stores locally and in CI.
+   - **Owner checks before going public:** read the README; try `--dry-run` and
+     then an edit on a throwaway container on your own machine.
 
 ## Blockers for the owner
 
