@@ -9,7 +9,7 @@ Round 8's bar. One research pass (GitHub search plus web search); "checked" mean
 seen in a GitHub search result on 2026-10-18, the rest is from search summaries.
 The pick's numbers were checked twice.
 
-### Chosen: remote probe agent for Uptime Kuma and Gatus (project #8, working name kumaprobe)
+### Chosen: pushprobe, a remote probe agent for Uptime Kuma and Gatus (project #8)
 
 A small Go agent run inside other networks or sites. It runs HTTP, TCP, ping, DNS,
 TLS-expiry and host checks there and reports each result to an Uptime Kuma push
@@ -38,8 +38,8 @@ not agents for it.
 
 **Risks:** push monitors carry only up/down, a message and a ping time; creating
 monitors relies on Kuma's unofficial Socket.IO API (already handled in kumafile);
-upstream could still build #84. The name "kumaprobe" is used by an archived 0★
-repo, so pick another before release.
+upstream could still build #84. Named pushprobe ("kumaprobe" is an archived 0★
+repo; no exact "pushprobe" repo found).
 
 ### Runners-up
 

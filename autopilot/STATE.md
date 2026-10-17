@@ -1,22 +1,25 @@
 # State
 
-Current project: #8, a remote probe agent for Uptime Kuma and Gatus (working name
-kumaprobe; the name is taken by an archived repo, so choose another). Phase: spec.
-Research round 9 is in IDEAS.md.
+Current project: #8 pushprobe (a remote probe agent: runs checks inside other
+networks and pushes results to Uptime Kuma push monitors and Gatus external
+endpoints). Phase: build. Spec: projects/pushprobe/SPEC.md. Research round 9 is
+in IDEAS.md.
 
 ## Next step
 
-Write projects/<name>/SPEC.md. Verify first, with real servers:
-- Kuma 2.x push monitors: the URL, the status/msg/ping parameters, and how a
-  missed push turns a monitor down (the heartbeat interval and retries);
-- Gatus external endpoints: the push API, its token, and how a missing result is
-  treated;
-- whether Kuma 2.1's Globalping probes or anything else upstream covers private
-  networks.
-Then scope v1: the checks (http, tcp, ping, dns, tls expiry, disk/memory), one
-YAML file, an optional `sync` that creates the push monitors through kumafile's
-client, a Docker image and a systemd unit; tests against louislam/uptime-kuma:2
-and twinproduction/gatus.
+Milestone 1 (SPEC.md): go.mod `github.com/ganeshphutane-g/pushprobe`, LICENSE,
+Makefile, CI workflow (.github/workflows/pushprobe.yml); config with validation
+and `${VAR}` limited to PUSHPROBE_/KUMA_/GATUS_; the check runner; the http, tcp,
+dns, tls, disk and memory checks; `pushprobe check`.
+
+Verified on 2026-10-18 (details in SPEC.md): the Kuma 2.5.6 push API (GET/POST,
+404 for unknown tokens, any status accepted) and the Gatus external-endpoint API
+(Bearer token, 401, at least one ordinary endpoint required). Still to check in
+the tests: a missed push turning a Kuma push monitor down.
+
+For a Kuma test server, use kumafile's internal/testkit approach (setup-database,
+then the Socket.IO "setup" call); copy it into pushprobe. A Gatus test server needs
+a config with at least one ordinary endpoint.
 
 The Docker daemon here is 29.8.2 (API 1.56). Start it with `sudo nohup dockerd >
 /tmp/claude-0/dockerd.log 2>&1 &`.

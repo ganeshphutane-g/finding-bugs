@@ -35,8 +35,9 @@ Newest first.
   CHANGELOG.
 - Research round 9 chose a remote probe agent for Uptime Kuma and Gatus:
   uptime-kuma#84, 411 👍; gatus#64, 88 👍; the existing tools have 20★ at most.
-- Next: verify the Kuma push and Gatus external-endpoint APIs, then write the spec
-  (STATE.md).
+- Verified the Kuma 2.5.6 push API and the Gatus external-endpoint API against
+  real servers. Wrote projects/pushprobe/SPEC.md (project #8, named pushprobe).
+- Next: pushprobe milestone 1 (STATE.md).
 - Owner:
   - the finding-bugs repo is still public (your decision);
   - v1.0.0 tags have to be made in the web UI (docker-edit: cdc7019);
