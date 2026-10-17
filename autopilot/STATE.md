@@ -1,15 +1,22 @@
 # State
 
-Current project: none in build. #7 docker-edit is done (see Finished projects);
-research round 9 for project #8 is under way.
+Current project: #8, a remote probe agent for Uptime Kuma and Gatus (working name
+kumaprobe; the name is taken by an archived repo, so choose another). Phase: spec.
+Research round 9 is in IDEAS.md.
 
 ## Next step
 
-Research round 9 (round 8's bar: a 50+ 👍 request on a 2k+★ project, two more
-sources, upstream not building it, no good tool, testable locally). Re-check the
-round 8 runners-up in IDEAS.md (wildcard DNS sidecar, shared Traefik ACME, Swarm
-rebalancer) and find at least 5 new candidates. Record the round in IDEAS.md, then
-write the spec for the pick.
+Write projects/<name>/SPEC.md. Verify first, with real servers:
+- Kuma 2.x push monitors: the URL, the status/msg/ping parameters, and how a
+  missed push turns a monitor down (the heartbeat interval and retries);
+- Gatus external endpoints: the push API, its token, and how a missing result is
+  treated;
+- whether Kuma 2.1's Globalping probes or anything else upstream covers private
+  networks.
+Then scope v1: the checks (http, tcp, ping, dns, tls expiry, disk/memory), one
+YAML file, an optional `sync` that creates the push monitors through kumafile's
+client, a Docker image and a systemd unit; tests against louislam/uptime-kuma:2
+and twinproduction/gatus.
 
 The Docker daemon here is 29.8.2 (API 1.56). Start it with `sudo nohup dockerd >
 /tmp/claude-0/dockerd.log 2>&1 &`.

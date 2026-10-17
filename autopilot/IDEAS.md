@@ -3,6 +3,70 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 9 — 2026-10-18 IST
+
+Round 8's bar. One research pass (GitHub search plus web search); "checked" means
+seen in a GitHub search result on 2026-10-18, the rest is from search summaries.
+The pick's numbers were checked twice.
+
+### Chosen: remote probe agent for Uptime Kuma and Gatus (project #8, working name kumaprobe)
+
+A small Go agent run inside other networks or sites. It runs HTTP, TCP, ping, DNS,
+TLS-expiry and host checks there and reports each result to an Uptime Kuma push
+monitor (or a Gatus external endpoint); optionally it creates those monitors itself
+(kumafile's client).
+
+**Demand:**
+- uptime-kuma#84 "Remote Executors": 411 👍, open since 2021-07, updated
+  2026-08-14, on a 92k★ project (checked);
+- gatus#64 "Distributed Deployment Configuration": 88 👍, open since 2020-12,
+  updated 2026-09 (checked);
+- uptime-kuma#819 (resource-usage heartbeats), 63 👍; duplicates #528, #390 and
+  #2609 closed as not planned (checked);
+- blog posts with home-made cron agents (search summary).
+
+**Upstream:** no executor or agent PR in uptime-kuma (checked). Kuma 2.1's
+Globalping probes are public, so they cannot reach private networks (search
+summary; verify before the spec).
+
+**Gap:** small attempts only (checked): tobias-carlbom/uptime-kuma-agent 20★
+(Python), kuma-scout 16★ (Python), t0mer/uptimekuma-agent 6★, kuma-sentinel 9★,
+uptime-koguma 1★. uptimy/agent (36★) and asura (18★) are Kuma alternatives,
+not agents for it.
+
+**Scores:** 5/4/5/4/5 = **23**.
+
+**Risks:** push monitors carry only up/down, a message and a ping time; creating
+monitors relies on Kuma's unofficial Socket.IO API (already handled in kumafile);
+upstream could still build #84. The name "kumaprobe" is used by an archived 0★
+repo, so pick another before release.
+
+### Runners-up
+
+- **docker cpx** (a better `docker cp`: globs, several sources, `--chown`,
+  container to container, distroless), 21: moby#7710 165 👍 open since 2014,
+  #25977 37, #40925 22 (checked); no tool found. Small scope; may fit docker-mop.
+- **stackmove** (move a Compose project to another host), 19: docker/cli#1436 59
+  👍, moby#25245 60 (closed); docker-vackup 493★ does single volumes only.
+- **Swarm companion** (modern Compose files for stack deploy, stack exec/logs,
+  rebalance), 18: moby#31101 575 👍, #29133 164 and more (checked), but docker/cli
+  PR #4863 (compose-go loading) is open and doco-cd (1.7k★) deploys Swarm stacks.
+  Replaces round 8's Swarm rebalancer.
+- **Gitea webhook reshaper**, 16: gitea#1089 53 👍; ntfy templates, n8n and
+  Node-RED cover much of it.
+- **Traefik maintenance toggle**, 16: traefik#41 68, #3520 53; about 8 plugins
+  exist.
+- Round 8's wildcard DNS sidecar and shared Traefik ACME: unchanged.
+
+### Rejected in round 9
+
+Upstream building it: Alertmanager Block Kit (PR #5592), restic .gitignore (PR
+#4227), Authelia admin UI (PR #12654), Headscale WireGuard-only peers (PR #2892).
+Covered: Traefik config UI (Mantrae 493★). One source: wildcard credHelpers. Too
+large: Gitea proxy registries. Below 50 👍: Nextcloud S3 orphans, InfluxDB 2→3,
+MongoDB stepwise upgrades, Compose start order after reboot, Alertmanager silences
+in a file. No 👍 data: Syncthing, Immich (forums).
+
 ## Research round 8 — 2026-10-18 IST
 
 A stricter bar this time. Each idea needs:
