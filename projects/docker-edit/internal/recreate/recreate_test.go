@@ -151,6 +151,7 @@ func TestRecreateIsExact(t *testing.T) {
 			"alpine:3", "-c", "sleep 3600"},
 		"isolated": {"--network", "none", "--device", "/dev/null:/dev/xnull", "--pids-limit", "50", "alpine:3", "sleep", "3600"},
 		"host-net": {"--network", "host", "alpine:3", "sleep", "3600"},
+		"mac":      {"--network", n2, "--mac-address", "02:42:ac:11:00:99", "alpine:3", "sleep", "3600"},
 	}
 	for shape, args := range shapes {
 		t.Run(shape, func(t *testing.T) {
@@ -161,7 +162,7 @@ func TestRecreateIsExact(t *testing.T) {
 				docker(t, "network", "connect", "--alias", "w2", n2, name)
 				docker(t, "exec", name, "sh", "-c", "echo kept > /anon/file")
 			}
-			before, err := c.InspectContainer(ctx, name)
+			before, err := Read(ctx, c, name)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -173,12 +174,17 @@ func TestRecreateIsExact(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			after, err := c.InspectContainer(ctx, newID)
+			after, err := Read(ctx, c, newID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if d := diff(comparable(t, before), comparable(t, after)); d != "" {
 				t.Fatalf("the new container differs:\n%s", d)
+			}
+			if shape == "mac" {
+				if got := docker(t, "inspect", "--format", "{{range .NetworkSettings.Networks}}{{.MacAddress}}{{end}}", name); got != "02:42:ac:11:00:99" {
+					t.Fatalf("the MAC address is %s", got)
+				}
 			}
 			if shape == "web" {
 				if got := docker(t, "exec", name, "cat", "/anon/file"); got != "kept" {

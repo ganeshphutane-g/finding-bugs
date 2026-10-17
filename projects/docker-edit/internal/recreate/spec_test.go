@@ -97,3 +97,24 @@ func TestDropNewImageNames(t *testing.T) {
 		t.Fatal("the image's Cmd was kept")
 	}
 }
+
+func TestMACAddress(t *testing.T) {
+	s, err := FromInspect(doc(t, `{"Id": "0123456789abcdef", "Name": "/m", "Config": {"Image": "x", "MacAddress": "02:00:00:00:00:01"},
+		"HostConfig": {"NetworkMode": "app"},
+		"NetworkSettings": {"Networks": {"app": {"MacAddress": "02:00:00:00:00:01"}, "back": {"MacAddress": "02:00:00:00:00:02"}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Config["MacAddress"]; ok || s.Networks[0].Config["MacAddress"] != "02:00:00:00:00:01" || s.Networks[1].Config["MacAddress"] != nil {
+		t.Fatalf("%v %v", s.Config, s.Networks)
+	}
+	newer, _ := json.Marshal(s.Body("1.44"))
+	older, _ := json.Marshal(s.Body("1.43"))
+	if string(newer) != `{"HostConfig":{"NetworkMode":"app"},"Image":"x","NetworkingConfig":{"EndpointsConfig":{"app":{"MacAddress":"02:00:00:00:00:01"},"back":{}}}}` ||
+		string(older) != `{"HostConfig":{"NetworkMode":"app"},"Image":"x","MacAddress":"02:00:00:00:00:01","NetworkingConfig":{"EndpointsConfig":{"app":{}}}}` {
+		t.Fatalf("bodies:\n%s\n%s", newer, older)
+	}
+	if s.Networks[0].Config["MacAddress"] == nil {
+		t.Fatal("Body changed the spec")
+	}
+}

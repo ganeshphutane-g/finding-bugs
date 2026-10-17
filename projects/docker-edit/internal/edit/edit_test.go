@@ -113,7 +113,7 @@ func TestApplyAndDiff(t *testing.T) {
 	for _, want := range []string{
 		"~ env A: 1 -> 2",
 		"+ env B: new",
-		"~ env API_TOKEN: (hidden, 6 characters)",
+		"~ env API_TOKEN: (hidden) -> (hidden)",
 		"~ image: nginx:1 -> nginx:2",
 		"+ label new: yes",
 		"- label keep (was 1)",
@@ -123,11 +123,13 @@ func TestApplyAndDiff(t *testing.T) {
 		"- port 80/tcp (was 8080)",
 		"+ port 443/tcp: 127.0.0.1:8443",
 		"~ restart: no -> unless-stopped",
-		`+ config ExposedPorts: {"443/tcp":{}}`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("plan lacks %q:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "ExposedPorts") {
+		t.Errorf("published ports show as exposed too:\n%s", text)
 	}
 	if strings.Contains(text, "s3cret") || strings.Contains(text, "other") {
 		t.Errorf("a secret value is shown:\n%s", text)

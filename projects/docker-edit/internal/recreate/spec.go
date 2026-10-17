@@ -8,8 +8,11 @@
 package recreate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -36,7 +39,31 @@ type Spec struct {
 // Endpoint is one network connection.
 type Endpoint struct {
 	Network string
-	Config  Doc // Aliases, IPAMConfig, Links, DriverOpts, GwPriority
+	Config  Doc // Aliases, IPAMConfig, Links, DriverOpts, GwPriority, MacAddress
+}
+
+// Read is the container's description for FromInspect. Since API 1.44 the
+// description no longer tells a MAC address that was set (--mac-address)
+// from one Docker made up; asking as API 1.43 does, so Read adds it as
+// Config.MacAddress.
+func Read(ctx context.Context, c *engine.Client, name string) (Doc, error) {
+	ctr, err := c.InspectContainer(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	api, err := c.APIVersion(ctx)
+	if err != nil || engine.CompareVersions(api, "1.44") < 0 {
+		return ctr, err
+	}
+	var old Doc
+	err = c.Call(ctx, engine.Request{Method: http.MethodGet, Path: "/containers/" + url.PathEscape(str(ctr["Id"])) + "/json", Version: "1.43"}, &old)
+	if err != nil {
+		return nil, fmt.Errorf("reading the container's MAC address setting: %w", err)
+	}
+	if mac := str(asDoc(old["Config"])["MacAddress"]); mac != "" {
+		asDoc(ctr["Config"])["MacAddress"] = mac
+	}
+	return ctr, nil
 }
 
 // Body is the create request.
@@ -48,11 +75,22 @@ func (s *Spec) Body(apiVersion string) Doc {
 	body["HostConfig"] = s.Host
 	if len(s.Networks) > 0 {
 		eps := Doc{}
+		old := engine.CompareVersions(apiVersion, "1.44") < 0
 		for i, ep := range s.Networks {
-			if i > 0 && engine.CompareVersions(apiVersion, "1.44") < 0 {
+			if i > 0 && old {
 				break
 			}
-			eps[ep.Network] = ep.Config
+			conf := ep.Config
+			if mac := str(conf["MacAddress"]); mac != "" && old {
+				// Older APIs take the MAC address at the top level.
+				conf = Doc{}
+				for k, v := range ep.Config {
+					conf[k] = v
+				}
+				delete(conf, "MacAddress")
+				body["MacAddress"] = mac
+			}
+			eps[ep.Network] = conf
 		}
 		body["NetworkingConfig"] = Doc{"EndpointsConfig": eps}
 	}
@@ -143,6 +181,10 @@ func FromInspect(ctr Doc) (*Spec, error) {
 		host["Links"] = out
 	}
 
+	// A MAC address that was set goes with the primary network.
+	mac := str(cfg["MacAddress"])
+	delete(cfg, "MacAddress")
+
 	// Networks.
 	mode := s.NetworkMode
 	if mode != "host" && mode != "none" && !strings.HasPrefix(mode, "container:") {
@@ -187,6 +229,9 @@ func FromInspect(ctr Doc) (*Spec, error) {
 			}
 			if p, ok := ep["GwPriority"].(json.Number); ok && p.String() != "0" {
 				conf["GwPriority"] = p
+			}
+			if mac != "" && len(s.Networks) == 0 {
+				conf["MacAddress"] = mac
 			}
 			s.Networks = append(s.Networks, Endpoint{Network: n, Config: conf})
 		}

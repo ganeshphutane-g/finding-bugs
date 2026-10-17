@@ -60,6 +60,8 @@ func Apply(s *recreate.Spec, c Changes) error {
 			return fmt.Errorf("--unpublish %s: the container does not publish %s", p, key)
 		}
 		delete(pb, key)
+		// (Docker adds back the ports the image exposes.)
+		delete(doc(cfg, "ExposedPorts"), key)
 	}
 	for _, p := range c.Publish {
 		key, binding, err := parsePublish(p)

@@ -97,7 +97,8 @@ Options:
       --discard-changes   Go ahead although files were changed inside the
                           container (outside its volumes), which are lost
 
-Exit codes: 0 done (or nothing to change), 1 error, 2 bad usage.
+Exit codes: 0 done (or nothing to change), 1 error or refused, 2 bad usage,
+130 interrupted (the old container is put back).
 `
 
 type multi []string
@@ -219,7 +220,7 @@ func run(ctx context.Context, env Env, args []string) error {
 
 func editContainer(ctx context.Context, env Env, c *engine.Client, o options) error {
 	out := func(f string, a ...any) { fmt.Fprintf(env.Stdout, f+"\n", a...) }
-	ctr, err := c.InspectContainer(ctx, o.container)
+	ctr, err := recreate.Read(ctx, c, o.container)
 	if engine.IsNotFound(err) {
 		return fmt.Errorf("no container %q", o.container)
 	}

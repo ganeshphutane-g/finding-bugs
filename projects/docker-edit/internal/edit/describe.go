@@ -1,6 +1,10 @@
 package edit
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"sort"
@@ -17,13 +21,14 @@ type Line struct {
 }
 
 func (l Line) String() string {
+	from, to := display(l.From), display(l.To)
 	switch l.Op {
 	case "+":
-		return fmt.Sprintf("  + %s: %s", l.Key, l.To)
+		return fmt.Sprintf("  + %s: %s", l.Key, to)
 	case "-":
-		return fmt.Sprintf("  - %s (was %s)", l.Key, l.From)
+		return fmt.Sprintf("  - %s (was %s)", l.Key, from)
 	}
-	return fmt.Sprintf("  ~ %s: %s -> %s", l.Key, l.From, l.To)
+	return fmt.Sprintf("  ~ %s: %s -> %s", l.Key, from, to)
 }
 
 // secretName matches variable names whose values are not shown.
@@ -37,10 +42,7 @@ func Settings(s *recreate.Spec) map[string]string {
 	for _, e := range list(cfg["Env"]) {
 		k, v, _ := strings.Cut(str(e), "=")
 		if secretName.MatchString(k) {
-			v = "(hidden, " + fmt.Sprint(len(v)) + " characters)"
-			if h := hash(str(e)); h != "" {
-				v += " " + h
-			}
+			v = hidden + hash(v)
 		}
 		out["env "+k] = v
 	}
@@ -116,6 +118,15 @@ func Settings(s *recreate.Spec) map[string]string {
 		switch k {
 		case "Image", "Env", "Labels":
 			continue
+		case "ExposedPorts":
+			// A published port is exposed anyway; the port lines show it.
+			rest := Doc{}
+			for p, x := range asDoc(v) {
+				if _, ok := asDoc(host["PortBindings"])[p]; !ok {
+					rest[p] = x
+				}
+			}
+			v = rest
 		}
 		out["config "+k] = jsonText(v)
 	}
@@ -153,15 +164,29 @@ func Diff(before, after *recreate.Spec) []Line {
 
 func blank(v string) bool { return v == "" || v == "null" || v == "{}" || v == "[]" }
 
-// hash gives a short fingerprint of a hidden value, so a change shows
-// without the value.
-func hash(s string) string {
-	var h uint32 = 2166136261
-	for i := 0; i < len(s); i++ {
-		h ^= uint32(s[i])
-		h *= 16777619
+// hidden is shown for a secret value. The value's hash follows it, after a
+// NUL, so a change is still noticed; the hash is not shown.
+const hidden = "(hidden)\x00"
+
+// hashKey is new on every run: a hash cannot be checked against guesses.
+var hashKey = func() []byte {
+	k := make([]byte, 32)
+	if _, err := rand.Read(k); err != nil {
+		panic(err)
 	}
-	return fmt.Sprintf("#%04x", h&0xffff)
+	return k
+}()
+
+func hash(s string) string {
+	m := hmac.New(sha256.New, hashKey)
+	m.Write([]byte(s))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// display is a value as shown.
+func display(v string) string {
+	v, _, _ = strings.Cut(v, "\x00")
+	return v
 }
 
 // Effective is the spec as the new container will have it: what the spec

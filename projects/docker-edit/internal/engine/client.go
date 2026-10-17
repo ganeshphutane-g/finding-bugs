@@ -188,6 +188,7 @@ type Request struct {
 	Body        io.Reader
 	JSON        any // marshalled as the body when set
 	ContentType string
+	Version     string // the API version to ask for, instead of the daemon's
 }
 
 // Do sends a request and returns the raw response. The caller closes the body.
@@ -196,6 +197,9 @@ func (c *Client) Do(ctx context.Context, r Request) (*http.Response, error) {
 	version, err := c.APIVersion(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if r.Version != "" {
+		version = r.Version
 	}
 
 	body := r.Body
