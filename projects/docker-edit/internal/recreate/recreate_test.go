@@ -235,3 +235,50 @@ func TestFailedStartPutsTheOldOneBack(t *testing.T) {
 		}
 	}
 }
+
+// TestInterruptPutsTheOldOneBack cancels the swap (as Ctrl-C does) at each
+// step and checks the old container is back as it was.
+func TestInterruptPutsTheOldOneBack(t *testing.T) {
+	c := client(t)
+	for _, at := range []string{"stopping", "creating", "starting", "checking"} {
+		t.Run(at, func(t *testing.T) {
+			name := unique(t, "interrupt")
+			docker(t, "run", "-d", "--name", name, "alpine:3", "sleep", "3600")
+			t.Cleanup(func() { exec.Command("docker", "rm", "-f", name).Run() })
+			before, _ := c.InspectContainer(ctx, name)
+			spec, _ := FromInspect(before)
+			spec.Config["Env"] = append(list(spec.Config["Env"]), "CHANGED=1")
+			cctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			_, err := Swap(cctx, c, before, spec, SwapOptions{
+				Log: func(s string) {
+					if strings.HasPrefix(s, at) {
+						cancel()
+					}
+				},
+				Started: func(string) error {
+					if at == "checking" {
+						cancel()
+					}
+					<-cctx.Done()
+					return cctx.Err()
+				},
+			})
+			if err == nil {
+				t.Fatal("the swap went through although it was cancelled")
+			}
+			back, err := c.InspectContainer(ctx, name)
+			if err != nil || str(back["Id"]) != str(before["Id"]) || asDoc(back["State"])["Running"] != true {
+				t.Fatalf("the old container is not back: %v", err)
+			}
+			all, _ := c.ListContainers(ctx)
+			for _, x := range all {
+				for _, n := range list(x["Names"]) {
+					if strings.Contains(str(n), name) && str(x["Id"]) != str(before["Id"]) {
+						t.Fatalf("left over: %v", n)
+					}
+				}
+			}
+		})
+	}
+}

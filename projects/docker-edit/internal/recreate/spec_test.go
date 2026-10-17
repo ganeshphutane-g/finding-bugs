@@ -2,6 +2,8 @@ package recreate
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +69,31 @@ func TestDropImageDefaults(t *testing.T) {
 	}
 	if s.Config["User"] != "app" {
 		t.Error("a user set on the container was dropped")
+	}
+}
+
+func TestDropNewImageNames(t *testing.T) {
+	s := &Spec{Config: Doc{
+		"Env":    []any{"PATH=/bin", "APP_VERSION=1", "MINE=yes"},
+		"Labels": Doc{"app.version": "1", "keep": "1"},
+		"Cmd":    []any{"sleep", "3600"},
+	}}
+	newImage := Doc{"Config": Doc{
+		"Env":    []any{"PATH=/bin", "APP_VERSION=9"},
+		"Labels": Doc{"app.version": "9"},
+		"Cmd":    []any{"sleep", "3600"},
+	}}
+	changed := s.DropNewImageNames(newImage)
+	if got := strings.Join(changed, ","); got != "env APP_VERSION,label app.version" {
+		t.Fatalf("changed %q", got)
+	}
+	if env := fmt.Sprint(s.Config["Env"]); env != "[MINE=yes]" {
+		t.Fatalf("env %s", env)
+	}
+	if labels := fmt.Sprint(s.Config["Labels"]); labels != "map[keep:1]" {
+		t.Fatalf("labels %s", labels)
+	}
+	if _, ok := s.Config["Cmd"]; ok {
+		t.Fatal("the image's Cmd was kept")
 	}
 }

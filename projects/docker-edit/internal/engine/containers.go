@@ -66,7 +66,12 @@ func (c *Client) CreateContainer(ctx context.Context, name string, body Doc) (st
 
 // StartContainer starts a container.
 func (c *Client) StartContainer(ctx context.Context, id string) error {
-	return c.Call(ctx, Request{Method: http.MethodPost, Path: "/containers/" + url.PathEscape(id) + "/start"}, nil)
+	err := c.Call(ctx, Request{Method: http.MethodPost, Path: "/containers/" + url.PathEscape(id) + "/start"}, nil)
+	var apiErr *APIError
+	if asAPIError(err, &apiErr) && apiErr.StatusCode == http.StatusNotModified {
+		return nil // already running
+	}
+	return err
 }
 
 // StopContainer stops a container, waiting up to timeout seconds (-1: the

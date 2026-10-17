@@ -53,24 +53,48 @@ func Swap(ctx context.Context, c *engine.Client, old Doc, spec *Spec, o SwapOpti
 		return cause
 	}
 
+	// Each undo is registered before its step and copes with the step not
+	// having happened: a cancelled call may still have been carried out.
 	if running {
+		undo = append(undo, func(ctx context.Context) error { return c.StartContainer(ctx, oldID) })
 		log("stopping %s", spec.Name)
 		if err := c.StopContainer(ctx, oldID, -1); err != nil {
-			return "", fmt.Errorf("stopping the container: %w", err)
+			return "", rollback(fmt.Errorf("stopping the container: %w", err))
 		}
-		undo = append(undo, func(ctx context.Context) error { return c.StartContainer(ctx, oldID) })
 	}
+	undo = append(undo, func(ctx context.Context) error {
+		d, err := c.InspectContainer(ctx, oldID)
+		if err != nil || str(d["Name"]) == "/"+spec.Name {
+			return err
+		}
+		return c.RenameContainer(ctx, oldID, spec.Name)
+	})
 	if err := c.RenameContainer(ctx, oldID, backup); err != nil {
 		return "", rollback(fmt.Errorf("renaming the container: %w", err))
 	}
-	undo = append(undo, func(ctx context.Context) error { return c.RenameContainer(ctx, oldID, spec.Name) })
 
+	undo = append(undo, func(ctx context.Context) error {
+		id := newID
+		if id == "" {
+			// The create call failed, but may have made the container.
+			d, err := c.InspectContainer(ctx, spec.Name)
+			if engine.IsNotFound(err) {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			if id = str(d["Id"]); id == oldID {
+				return nil
+			}
+		}
+		return c.RemoveContainer(ctx, id, true)
+	})
 	log("creating the new %s", spec.Name)
 	newID, err = c.CreateContainer(ctx, spec.Name, spec.Body(api))
 	if err != nil {
+		newID = ""
 		return "", rollback(fmt.Errorf("creating the new container: %w", err))
 	}
-	undo = append(undo, func(ctx context.Context) error { return c.RemoveContainer(ctx, newID, true) })
 	for _, ep := range spec.Later(api) {
 		if err := c.ConnectNetwork(ctx, ep.Network, newID, ep.Config); err != nil {
 			return "", rollback(fmt.Errorf("connecting the new container to %s: %w", ep.Network, err))
