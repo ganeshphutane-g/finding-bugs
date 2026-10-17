@@ -2,6 +2,46 @@
 
 Newest first.
 
+## 2026-10-18 (IST) — run 7
+
+- Dropped two ideas:
+  - Grafana alerting as code: Grafana is building it (#126737, #128579, #130494,
+    #133295).
+  - oncall-exit: no user demand.
+- Research round 8 (stricter bar) chose **docker-edit**: moby#21282, 50 👍;
+  moby#8838, 104 👍.
+- Project #7 docker-edit, from spec to v1.0.0 in one run.
+  - **Recreation:** exact, from the container's own `docker inspect`. Image
+    defaults are not frozen in; anonymous volumes are reattached; every network
+    keeps its aliases and fixed IPs.
+  - **Swap:** with rollback on a failed start, an unhealthy container or Ctrl-C.
+  - **Edits:** every planned edit, with the plan shown first.
+  - **Refusals:** files that would be lost, `--rm`, Compose, and shared networks
+    or links.
+  - **Bugs found on the way:**
+    - a moved tag on the containerd image store;
+    - a set MAC address lost;
+    - a guessable fingerprint for hidden secrets;
+    - legacy links breaking.
+- Two full reviews found 20 problems; all are fixed, with tests. The worst:
+  - an anonymous `--mount` volume that came back empty;
+  - containers sharing another's network could never be edited;
+  - Ctrl-C during the stop left the service down while saying it was back;
+  - secrets in labels and URLs were printed;
+  - `--context default` reached the wrong daemon;
+  - a kept backup could restart by itself.
+- Tests pass on both image stores locally and in CI (cdc7019). CI was red for
+  four pushes on the classic store's output, then fixed. README with a real demo;
+  CHANGELOG.
+- Research round 9 chose a remote probe agent for Uptime Kuma and Gatus:
+  uptime-kuma#84, 411 👍; gatus#64, 88 👍; the existing tools have 20★ at most.
+- Next: verify the Kuma push and Gatus external-endpoint APIs, then write the spec
+  (STATE.md).
+- Owner:
+  - the finding-bugs repo is still public (your decision);
+  - v1.0.0 tags have to be made in the web UI (docker-edit: cdc7019);
+  - optionally, give projects their own repos.
+
 ## 2026-10-17 (IST) — run 6
 
 - Project #6 kumafile, from spec to v1.0.0 in one run.
