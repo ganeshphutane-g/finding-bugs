@@ -1,55 +1,20 @@
 # State
 
-Current project: #8 pushprobe (a remote probe agent: runs checks inside other
-networks and pushes results to Uptime Kuma push monitors and Gatus external
-endpoints). Phase: build. Spec: projects/pushprobe/SPEC.md. Research round 9 is
-in IDEAS.md.
+Current project: none in build. #8 pushprobe is done (see Finished projects);
+research round 10 for project #9 is next.
 
 ## Next step
 
-Milestones 1 and 2 are done (run 8), with tests:
-- config, the http/tcp/dns/tls/disk/memory checks, `check` and `validate`;
-- delivery (internal/deliver): Kuma and Gatus senders, a Route per check and
-  target that keeps only the newest undelivered result, drops results older
-  than the interval, backs off on transient errors, stops on permanent ones
-  (wrong token, deleted monitor), and never puts a token in an error or log;
-- `pushprobe run`: scheduler with a random start delay, SIGHUP reload (a bad
-  file keeps the old configuration), `listen:` for /healthz and /metrics, one
-  log line per change of state;
-- a real-server test (TestRealServers): up and down in both Kuma and Gatus, and
-  Kuma marking a silent push monitor down ("No heartbeat in the time window").
-- kumafile's sio, kuma and testkit packages are copied in (internal/), with
-  PUSHPROBE_* variable names; testkit also starts Gatus.
+Research round 10 with round 8's bar:
+- a request with 50+ 👍 on a project with 2k+★, open over a year or declined;
+- two more independent sources;
+- upstream not building it;
+- no good existing tool;
+- testable locally.
 
-Milestone 3 is done (run 8):
-- `pushprobe sync` (internal/kumasync). It creates the group and the missing
-  push monitors, adopts a monitor by name in the group (taking its token for a
-  ${VAR} without a value), and keeps the heartbeat interval at check interval +
-  worst-case run + 10s. It never deletes or pauses, and keeps fields it does not
-  manage. Tokens go to pushprobe.env (0600). Every command reads pushprobe.env
-  next to the file (or --env-file); the environment wins, and an unreadable
-  default env file is skipped (systemd passes it in). Tested against a real Kuma.
-- the ping check (unprivileged ping sockets, else raw); it works as non-root in
-  Docker;
-- the exec check (needs allow_exec: true; no shell; only PATH, HOME, LANG and TZ
-  are passed on);
-- the Dockerfile (distroless, non-root, 17 MB; CI builds it, since `go mod
-  download` cannot get through this sandbox's proxy, so it was tested here
-  vendored);
-- contrib/pushprobe.service (DynamicUser, CAP_NET_RAW only, hardening;
-  `systemd-analyze verify` is clean).
-- go.mod stays at go 1.24: x/net v0.50.0 and x/sys v0.41.0 are the newest that
-  allow it. Use GOTOOLCHAIN=local when adding dependencies, because `go get`
-  silently raised go.mod to 1.26 once.
-
-Milestone 4 (release):
-- README with a real demo (`check` output, a Kuma screenshot is not possible, so
-  show the sync plan and the run log);
-- CHANGELOG;
-- two full reviews (correctness and delivery; security and usability), with
-  findings fixed;
-- CI green;
-- mark it done in STATE and record it under Finished projects.
+Round 9's runners-up are in IDEAS.md (docker cpx 21, stackmove 19, Swarm
+companion 18) and need re-checking. Find at least 5 new candidates, record the
+round in IDEAS.md, then write the spec for the pick.
 
 Tags: every Makefile now takes its version from `<project>/vX.Y.Z` tags only, so
 the owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).
@@ -198,6 +163,32 @@ Actions as codeberg.org/forgejo/forgejo:16.
      every edit; green on both image stores locally and in CI.
    - **Owner checks before going public:** read the README; try `--dry-run` and
      then an edit on a throwaway container on your own machine.
+
+8. **pushprobe** (projects/pushprobe, v1.0.0 at commit 0e881d2). Runs checks
+   where Uptime Kuma or Gatus can't reach (a LAN, another site, behind NAT) and
+   pushes the results to Kuma push monitors and Gatus external endpoints
+   (uptime-kuma#84, 411 👍; gatus#64, 88 👍).
+   - **Checks:** http, tcp, ping, dns, tls, disk, memory, and opt-in exec.
+   - **Commands:** `check` (dry run), `validate`, `run` (reload on SIGHUP,
+     /healthz, /metrics), and `sync`, which creates the Kuma push monitors and
+     saves their tokens.
+   - **Packaging:** a Docker image and a systemd unit.
+   - **Reviews:** two full reviews (correctness and delivery; security and
+     usability) found 19 distinct problems; they overlapped on two. All are
+     addressed: the promised TCP ping fallback was dropped from the spec, and
+     the rest are fixed.
+     - 14 fixes have regression tests.
+     - These have none, since this Linux root sandbox can't reproduce them: a
+       token that can't be saved, the note for an unreadable env file,
+       refusing disk and memory checks on other systems, the Windows ping
+       message, and the timeout for a hung network mount.
+   - **Tests:** against real Uptime Kuma 2.5.6 and Gatus, locally and in CI.
+     CI also builds and runs the Docker image.
+   - **Owner checks before going public:**
+     - read the README;
+     - run `check`, then `sync --dry-run`, then `sync` against your own Kuma
+       with a test group;
+     - leave `run` going for a day.
 
 ## Blockers for the owner
 

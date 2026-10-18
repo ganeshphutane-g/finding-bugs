@@ -2,6 +2,41 @@
 
 Newest first.
 
+## 2026-10-19 (IST) — run 8
+
+- Project #8 **pushprobe**, from spec to v1.0.0 in one run.
+  - **What:** a probe agent that runs checks where Uptime Kuma or Gatus can't
+    reach, and pushes the results to Kuma push monitors and Gatus external
+    endpoints. Demand: uptime-kuma#84, 411 👍; gatus#64, 88 👍.
+  - **Milestones:**
+    - config, plus `check` and `validate`;
+    - delivery and `run` (reload, /metrics);
+    - `sync`, which sets up the Kuma monitors and saves tokens;
+    - ping and exec checks;
+    - a Docker image and a systemd unit.
+  - **Verified with real Kuma 2.5.6 and Gatus:** up and down in both; Kuma
+    marks a silent push monitor down by itself ("No heartbeat in the time
+    window"); sync, then run with the saved tokens.
+- Two full reviews found 19 distinct problems, all addressed. The worst:
+  - two sites sharing a Kuma monitor through sync (sync now needs a group per
+    site);
+  - a DNS check answering from /etc/hosts instead of the named server;
+  - a reload not re-reading saved tokens;
+  - sync reporting a token saved when the write failed;
+  - http headers sent on to another host after a redirect.
+- Fixed in every project: Makefiles stamped all binaries with docker-mop's tag.
+  They now use `<project>/vX.Y.Z` tags only.
+- Kept pushprobe on Go 1.24: `go get` had silently raised go.mod to 1.26.
+- CI is green on every pushprobe push, including building and running the
+  Docker image.
+- Next: research round 10 (STATE.md).
+- Owner:
+  - the finding-bugs repo is still public (your decision);
+  - create the v1.0.0 tags in the web UI, named `<project>/v1.0.0` (for
+    example `pushprobe/v1.0.0` at 0e881d2 and `docker-edit/v1.0.0` at
+    cdc7019);
+  - optionally, give projects their own repos.
+
 ## 2026-10-18 (IST) — run 7
 
 - Dropped two ideas:
