@@ -1,20 +1,29 @@
 # State
 
-Current project: none in build. #8 pushprobe is done (see Finished projects);
-research round 10 for project #9 is next.
+Current project: #9 alertlines (log lines in Loki alerts: a proxy between the
+Loki ruler and Alertmanager). Phase: spec. Research round 10 is in IDEAS.md.
 
 ## Next step
 
-Research round 10 with round 8's bar:
-- a request with 50+ 👍 on a project with 2k+★, open over a year or declined;
-- two more independent sources;
-- upstream not building it;
-- no good existing tool;
-- testable locally.
+Write projects/alertlines/SPEC.md. First verify, with real grafana/loki and
+prom/alertmanager containers:
+- what the ruler sends to Alertmanager: POST /api/v2/alerts, the labels,
+  annotations, startsAt and generatorURL;
+- whether the ruler's rules API (/loki/api/v1/rules or /prometheus/api/v1/rules)
+  lets an alert be matched to its rule and LogQL;
+- how query_range for the log part of a metric query returns lines (turning
+  `count_over_time({app="x"} |= "error" [5m])` into `{app="x"} |= "error"`);
+- check the current Grafana and Loki docs for any new way to put log lines in
+  alerts (the search found nothing dated 2026).
 
-Round 9's runners-up are in IDEAS.md (docker cpx 21, stackmove 19, Swarm
-companion 18) and need re-checking. Find at least 5 new candidates, record the
-round in IDEAS.md, then write the spec for the pick.
+Then scope v1:
+- the proxy (Alertmanager v2 API in, out);
+- finding the query (annotation `logql`, else the ruler's API);
+- limits (lines, bytes, time) and redaction patterns;
+- the annotation format for templates;
+- a pass-through when Loki is slow or down, so alerts are never delayed beyond
+  a few seconds or lost;
+- tests against real containers.
 
 Tags: every Makefile now takes its version from `<project>/vX.Y.Z` tags only, so
 the owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).

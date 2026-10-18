@@ -29,7 +29,11 @@ Newest first.
 - Kept pushprobe on Go 1.24: `go get` had silently raised go.mod to 1.26.
 - CI is green on every pushprobe push, including building and running the
   Docker image.
-- Next: research round 10 (STATE.md).
+- Research round 10 chose **alertlines**, log lines in Loki alerts:
+  loki#5844, 107 👍, open since 2022; only 0–1★ attempts exist. Runner-up:
+  grafana.com dashboards ready for provisioning (grafana#10786, 213 👍).
+- Next: verify Loki's ruler and Alertmanager behaviour, then the alertlines
+  spec (STATE.md).
 - Owner:
   - the finding-bugs repo is still public (your decision);
   - create the v1.0.0 tags in the web UI, named `<project>/v1.0.0` (for

@@ -3,6 +3,76 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 10 — 2026-10-19 IST
+
+Round 8's bar, looking past Docker and Kuma this time. "checked" means seen in a
+GitHub search result on 2026-10-18 or 19; the rest is from search summaries. The
+pick's numbers were checked twice.
+
+### Chosen: alertlines, log lines in Loki alerts (project #9)
+
+A proxy between the Loki ruler and Alertmanager that speaks Alertmanager's v2
+alerts API. For each alert it finds the rule's LogQL (from an annotation first,
+the ruler's rules API second), fetches the matching log lines for the alert's
+window, adds them as an annotation, and passes the alert on. Every Alertmanager
+receiver and template keeps working.
+
+**Demand:**
+- loki#5844 "Add log message in alert": 107 👍, open since 2022-04, updated
+  2026-04-22, on a 29k★ project (checked);
+- duplicates #3507, #7823, #10645 (checked);
+- at least 5 Grafana community threads (46053, 87113, 49785, 118871, 127073)
+  asking for it (search summary).
+
+**Upstream:** no matching PR in grafana/loki (checked). The ruler evaluates metric
+queries only.
+
+**Gap:**
+- The documented workaround puts part of the line into a label with the pattern
+  parser (a Grafana tutorial does this). It gives one field rather than the
+  lines, and makes a series per message.
+- Tools found: only 0–1★ projects, mostly LLM root-cause bots (checked). A
+  repository search for Loki alert enrichment found nothing.
+
+**Scores:** 4/4/4/4/4 = **20** (gap lowered from the researcher's 5 because of
+the label workaround).
+
+**Risks:**
+- The alert does not carry its query, so it has to be found.
+- Log lines can hold secrets or be long: they need a limit and redaction rules.
+- Grafana-managed alerts take another path (out of scope for v1).
+
+### Runners-up
+
+- **grafana.com dashboards ready for provisioning** (fill `__inputs`, map data
+  sources), 20:
+  - grafana#10786, 213 👍, open since 2018 (checked);
+  - no tool found.
+  - Smaller in scope, and upstream PRs #129182/#129213 (2026-07) touched
+    constant inputs.
+- **mdnsgate** (mDNS across VPN sites), 19: tailscale#1013 295 👍 (checked);
+  mdns-repeater 225★ only bridges interfaces that carry multicast. Device quirks
+  and upstream risk.
+- **Alertmanager silence companion** (resolved after silence, silence
+  notifications), 19: alertmanager#226 112 👍, #730 42 👍 (checked); maintainers
+  active on it.
+- **kopia hub** (one UI for several repositories), 16: kopia#2976 79 👍;
+  kopia-alternate-ui 49★ already does it.
+- Re-checked, unchanged: docker cpx (moby#7710, 165), stackmove (docker/cli#1436,
+  59). Swarm companion is weaker: docker/cli PR #4863 is still open, and PR
+  #7300 is new.
+
+### Rejected in round 10
+
+- **Covered already:** ICS to CalDAV (keeper.sh, vdirsyncer); Grafana export all
+  (grafana-backup-tool); Jellyfin/AdGuard exporters (crowded); AdGuard
+  redundancy (adguardhome-sync); helm OCI versions (crane, oras).
+- **Upstream building it:** Grafana shared variables and playlist variables.
+- **Below the bar:** Nextcloud major-version stepping (18), mongo#329 (small).
+- **No 50+ 👍 requests found:** borg, k3s, Longhorn, mailcow,
+  docker-mailserver, Synapse, wg-easy, Authentik, litestream, Pi-hole,
+  Vaultwarden, Home Assistant.
+
 ## Research round 9 — 2026-10-18 IST
 
 Round 8's bar. One research pass (GitHub search plus web search); "checked" means
