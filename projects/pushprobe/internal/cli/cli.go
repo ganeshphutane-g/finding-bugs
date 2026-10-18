@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -26,11 +28,24 @@ type Env struct {
 	Stdout, Stderr io.Writer
 	LookupEnv      func(string) (string, bool)
 	ReadFile       func(string) ([]byte, error)
+	// Reload asks a running agent to read its file again (SIGHUP).
+	Reload <-chan struct{}
 }
 
 // DefaultEnv uses the process's own.
 func DefaultEnv() Env {
-	return Env{Stdout: os.Stdout, Stderr: os.Stderr, LookupEnv: os.LookupEnv, ReadFile: os.ReadFile}
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	reload := make(chan struct{}, 1)
+	go func() {
+		for range hup {
+			select {
+			case reload <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	return Env{Stdout: os.Stdout, Stderr: os.Stderr, LookupEnv: os.LookupEnv, ReadFile: os.ReadFile, Reload: reload}
 }
 
 const usage = `Usage: pushprobe COMMAND [OPTIONS]
@@ -40,6 +55,8 @@ NAT) and pushes the results to Uptime Kuma push monitors and Gatus external
 endpoints.
 
 Commands:
+  run               Run the checks on their intervals and send the results
+                    (SIGHUP reads the file again)
   check [NAME...]   Run the checks once and print the results; nothing is sent
   validate          Check the file, including where results go
   version           Print the version
@@ -93,7 +110,7 @@ func run(ctx context.Context, env Env, args []string) error {
 	case "version", "--version":
 		fmt.Fprintf(env.Stdout, "pushprobe %s\n", Version)
 		return nil
-	case "check", "validate":
+	case "check", "validate", "run":
 	default:
 		return usagef("unknown command %q", cmd)
 	}
@@ -121,6 +138,15 @@ func run(ctx context.Context, env Env, args []string) error {
 	}
 	if file == "" {
 		file = "pushprobe.yaml"
+	}
+	if cmd == "run" {
+		if len(names) > 0 {
+			return usagef("run takes no names")
+		}
+		if _, err := env.ReadFile(file); errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("there is no %s here: name the file with -c FILE or PUSHPROBE_CONFIG", file)
+		}
+		return runAgent(ctx, env, file)
 	}
 	data, err := env.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {

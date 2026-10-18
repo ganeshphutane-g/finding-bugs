@@ -7,18 +7,28 @@ in IDEAS.md.
 
 ## Next step
 
-Milestone 1 is done (run 8): config (strict keys with line numbers, `${VAR}`
-limited to PUSHPROBE_/KUMA_/GATUS_, ForCheck mode that ignores where results
-go), the http, tcp, dns, tls, disk and memory checks, runner.Once (timeout and
-retries), and `pushprobe check` and `validate`, all with tests. CI workflow
-.github/workflows/pushprobe.yml.
+Milestones 1 and 2 are done (run 8), with tests:
+- config, the http/tcp/dns/tls/disk/memory checks, `check` and `validate`;
+- delivery (internal/deliver): Kuma and Gatus senders, a Route per check and
+  target that keeps only the newest undelivered result, drops results older
+  than the interval, backs off on transient errors, stops on permanent ones
+  (wrong token, deleted monitor), and never puts a token in an error or log;
+- `pushprobe run`: scheduler with a random start delay, SIGHUP reload (a bad
+  file keeps the old configuration), `listen:` for /healthz and /metrics, one
+  log line per change of state;
+- a real-server test (TestRealServers): up and down in both Kuma and Gatus, and
+  Kuma marking a silent push monitor down ("No heartbeat in the time window").
+- kumafile's sio, kuma and testkit packages are copied in (internal/), with
+  PUSHPROBE_* variable names; testkit also starts Gatus.
 
-Milestone 2: the Kuma and Gatus senders (retry with backoff, a bounded buffer
-while the server cannot be reached, tokens never logged), `pushprobe run` (a
-scheduler with jitter, SIGHUP reload, /healthz, optional /metrics, one log line
-per state change), and integration tests against real louislam/uptime-kuma:2 and
-twinproduction/gatus servers, including a missed push turning a Kuma push monitor
-down. Copy kumafile's internal/testkit approach for the Kuma server.
+Milestone 3:
+- `pushprobe sync`: create or update the Kuma push monitors for the checks
+  through internal/kuma, writing tokens to an env file; credentials from
+  PUSHPROBE_KUMA_USERNAME/PASSWORD/TOKEN/TOTP/TOTP_SECRET.
+- the ping check;
+- the opt-in `exec` check;
+- the Docker image (distroless, non-root, a NET_RAW note);
+- the systemd unit.
 
 Tags: every Makefile now takes its version from `<project>/vX.Y.Z` tags only, so
 the owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).

@@ -19,6 +19,8 @@ import (
 
 // Config is a whole file.
 type Config struct {
+	// Listen, if set, serves /healthz and /metrics (host:port).
+	Listen   string   `yaml:"listen"`
 	Defaults Defaults `yaml:"defaults"`
 	Targets  Targets  `yaml:"targets"`
 	Checks   []Check  `yaml:"checks"`
@@ -284,6 +286,12 @@ func (c *Config) validate(mode Mode) []string {
 	}
 	if c.Defaults.Interval != 0 && time.Duration(c.Defaults.Interval) < MinInterval {
 		problems = append(problems, fmt.Sprintf("defaults: interval must be at least %s", MinInterval))
+	}
+	if c.Listen != "" {
+		// (An empty host listens everywhere.)
+		if _, port, err := net.SplitHostPort(c.Listen); err != nil || port == "" {
+			problems = append(problems, fmt.Sprintf("listen: %q: expected host:port, such as 127.0.0.1:9469", c.Listen))
+		}
 	}
 	if c.Defaults.Retries != nil && *c.Defaults.Retries < 0 {
 		problems = append(problems, "defaults: retries must not be negative")
