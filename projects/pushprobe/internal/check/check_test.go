@@ -259,3 +259,39 @@ func TestShort(t *testing.T) {
 		t.Errorf("%d", len([]rune(got)))
 	}
 }
+
+func TestPing(t *testing.T) {
+	r := run(t, config.Check{Ping: &config.Ping{Host: "127.0.0.1", Count: 2}})
+	if strings.Contains(r.Message, "not allowed to send pings") {
+		t.Skip("pings are not allowed here:", r.Message)
+	}
+	expect(t, r, true, "127.0.0.1: 2/2 replies")
+	if r.Duration <= 0 || r.Duration > time.Second {
+		t.Errorf("round trip %s", r.Duration)
+	}
+	expect(t, run(t, config.Check{Ping: &config.Ping{Host: "no-such-host.invalid", Count: 1}}), false, "cannot look up")
+	// TEST-NET-3 never answers (this sandbox answers 192.0.2.1 itself).
+	ch, _ := New(config.Check{Ping: &config.Ping{Host: "203.0.113.77", Count: 1}})
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	if r := ch.Run(ctx); r.OK {
+		t.Errorf("203.0.113.77 answered: %s", r.Message)
+	} else if !strings.Contains(r.Message, "no reply") {
+		t.Errorf("%s", r.Message)
+	}
+}
+
+func TestExec(t *testing.T) {
+	t.Setenv("PUSHPROBE_KUMA_PASSWORD", "secret")
+	expect(t, run(t, config.Check{Exec: &config.Exec{Command: []string{"sh", "-c", "echo backup is 2 hours old; echo more"}}}), true, "backup is 2 hours old")
+	expect(t, run(t, config.Check{Exec: &config.Exec{Command: []string{"sh", "-c", "echo stale >&2; exit 2"}}}), false, "exit code 2: stale")
+	expect(t, run(t, config.Check{Exec: &config.Exec{Command: []string{"sh", "-c", "echo ${PUSHPROBE_KUMA_PASSWORD:-none}"}}}), true, "none")
+	expect(t, run(t, config.Check{Exec: &config.Exec{Command: []string{"/no/such/program"}}}), false, "no such file")
+	ch, _ := New(config.Check{Exec: &config.Exec{Command: []string{"sleep", "10"}}})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if r := ch.Run(ctx); r.OK || r.Message != "timed out" || time.Since(start) > 3*time.Second {
+		t.Errorf("%+v after %s", r, time.Since(start))
+	}
+}

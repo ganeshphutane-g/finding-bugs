@@ -161,3 +161,16 @@ func TestEnvFile(t *testing.T) {
 		t.Fatalf("mode %v", st.Mode())
 	}
 }
+
+func TestExecNeedsAllowing(t *testing.T) {
+	file := "checks:\n  - {name: backup, exec: {command: [/usr/local/bin/check-backup]}}\n"
+	if _, err := Load([]byte(file), env(nil), ForCheck); err == nil || !strings.Contains(err.Error(), "allow_exec: true") {
+		t.Fatalf("%v", err)
+	}
+	if _, err := Load([]byte("allow_exec: true\n"+file), env(nil), ForCheck); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load([]byte("allow_exec: true\nchecks:\n  - {name: b, exec: {command: []}}\n"), env(nil), ForCheck); err == nil || !strings.Contains(err.Error(), "program to run is missing") {
+		t.Fatalf("%v", err)
+	}
+}

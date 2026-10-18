@@ -32,6 +32,8 @@ func New(c config.Check) (Checker, error) {
 		return newHTTP(*c.HTTP), nil
 	case c.TCP != nil:
 		return tcpCheck{c.TCP.Address}, nil
+	case c.Ping != nil:
+		return pingCheck{*c.Ping}, nil
 	case c.DNS != nil:
 		return dnsCheck{*c.DNS}, nil
 	case c.TLS != nil:
@@ -40,6 +42,8 @@ func New(c config.Check) (Checker, error) {
 		return diskCheck{*c.Disk}, nil
 	case c.Memory != nil:
 		return memoryCheck{*c.Memory}, nil
+	case c.Exec != nil:
+		return execCheck{*c.Exec}, nil
 	}
 	return nil, fmt.Errorf("check %q has nothing to check", c.Name)
 }

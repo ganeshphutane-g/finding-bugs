@@ -20,10 +20,13 @@ import (
 // Config is a whole file.
 type Config struct {
 	// Listen, if set, serves /healthz and /metrics (host:port).
-	Listen   string   `yaml:"listen"`
-	Defaults Defaults `yaml:"defaults"`
-	Targets  Targets  `yaml:"targets"`
-	Checks   []Check  `yaml:"checks"`
+	Listen string `yaml:"listen"`
+	// AllowExec must be set for exec checks: a file that can run commands
+	// is worth a second look.
+	AllowExec bool     `yaml:"allow_exec"`
+	Defaults  Defaults `yaml:"defaults"`
+	Targets   Targets  `yaml:"targets"`
+	Checks    []Check  `yaml:"checks"`
 }
 
 // Defaults apply to every check that does not set its own.
@@ -63,10 +66,12 @@ type Check struct {
 
 	HTTP   *HTTP   `yaml:"http"`
 	TCP    *TCP    `yaml:"tcp"`
+	Ping   *Ping   `yaml:"ping"`
 	DNS    *DNS    `yaml:"dns"`
 	TLS    *TLS    `yaml:"tls"`
 	Disk   *Disk   `yaml:"disk"`
 	Memory *Memory `yaml:"memory"`
+	Exec   *Exec   `yaml:"exec"`
 
 	Kuma  *KumaRoute  `yaml:"kuma"`
 	Gatus *GatusRoute `yaml:"gatus"`
@@ -89,6 +94,13 @@ type HTTP struct {
 // TCP connects to an address.
 type TCP struct {
 	Address string `yaml:"address"`
+}
+
+// Ping sends ICMP echo requests.
+type Ping struct {
+	Host string `yaml:"host"`
+	// Count is how many requests are sent; one reply is enough to pass.
+	Count int `yaml:"count"`
 }
 
 // DNS asks a server for a record.
@@ -116,6 +128,12 @@ type Disk struct {
 // Memory checks how much memory is in use.
 type Memory struct {
 	MaxUsedPercent float64 `yaml:"max_used_percent"`
+}
+
+// Exec runs a command; exit code 0 passes.
+type Exec struct {
+	// Command is the program and its arguments (no shell).
+	Command []string `yaml:"command"`
 }
 
 // KumaRoute sends the result to a Kuma push monitor.
@@ -159,6 +177,8 @@ func (c *Check) Kind() string {
 		return "http"
 	case c.TCP != nil:
 		return "tcp"
+	case c.Ping != nil:
+		return "ping"
 	case c.DNS != nil:
 		return "dns"
 	case c.TLS != nil:
@@ -167,6 +187,8 @@ func (c *Check) Kind() string {
 		return "disk"
 	case c.Memory != nil:
 		return "memory"
+	case c.Exec != nil:
+		return "exec"
 	}
 	return ""
 }
@@ -283,6 +305,9 @@ func (c *Config) applyDefaults() {
 		if ch.HTTP != nil && ch.HTTP.Method == "" {
 			ch.HTTP.Method = "GET"
 		}
+		if ch.Ping != nil && ch.Ping.Count == 0 {
+			ch.Ping.Count = 3
+		}
 		if ch.DNS != nil && ch.DNS.Type == "" {
 			ch.DNS.Type = "A"
 		}
@@ -345,16 +370,19 @@ func (c *Config) validate(mode Mode) []string {
 			seen[ch.Name] = ch.Line
 		}
 		kinds := 0
-		for _, set := range []bool{ch.HTTP != nil, ch.TCP != nil, ch.DNS != nil, ch.TLS != nil, ch.Disk != nil, ch.Memory != nil} {
+		for _, set := range []bool{ch.HTTP != nil, ch.TCP != nil, ch.Ping != nil, ch.DNS != nil, ch.TLS != nil, ch.Disk != nil, ch.Memory != nil, ch.Exec != nil} {
 			if set {
 				kinds++
 			}
 		}
 		switch {
 		case kinds == 0:
-			add(ch, "say what to check: http, tcp, dns, tls, disk or memory")
+			add(ch, "say what to check: http, tcp, ping, dns, tls, disk, memory or exec")
 		case kinds > 1:
-			add(ch, "has more than one of http, tcp, dns, tls, disk and memory; use one check for each")
+			add(ch, "has more than one of http, tcp, ping, dns, tls, disk, memory and exec; use one check for each")
+		}
+		if ch.Exec != nil && !c.AllowExec {
+			add(ch, "exec checks run commands, so they are off unless the file says allow_exec: true")
 		}
 		interval, timeout := time.Duration(ch.Interval), time.Duration(ch.Timeout)
 		if interval == 0 {
@@ -430,6 +458,13 @@ func (ch *Check) checkProblems() []string {
 		if err := checkAddress(ch.TCP.Address); err != nil {
 			out = append(out, "tcp.address: "+err.Error())
 		}
+	case ch.Ping != nil:
+		if strings.TrimSpace(ch.Ping.Host) == "" || strings.ContainsAny(ch.Ping.Host, " /:") && net.ParseIP(ch.Ping.Host) == nil {
+			out = append(out, "ping.host: a host name or IP address is needed")
+		}
+		if ch.Ping.Count < 0 || ch.Ping.Count > 20 {
+			out = append(out, "ping.count must be between 1 and 20")
+		}
 	case ch.DNS != nil:
 		d := ch.DNS
 		if d.Query == "" {
@@ -466,6 +501,10 @@ func (ch *Check) checkProblems() []string {
 	case ch.Memory != nil:
 		if p := ch.Memory.MaxUsedPercent; p <= 0 || p > 100 {
 			out = append(out, "memory.max_used_percent must be between 0 and 100")
+		}
+	case ch.Exec != nil:
+		if len(ch.Exec.Command) == 0 || ch.Exec.Command[0] == "" {
+			out = append(out, "exec.command: the program to run is missing (a list: [program, arguments...])")
 		}
 	}
 	return out

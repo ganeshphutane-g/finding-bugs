@@ -21,19 +21,35 @@ Milestones 1 and 2 are done (run 8), with tests:
 - kumafile's sio, kuma and testkit packages are copied in (internal/), with
   PUSHPROBE_* variable names; testkit also starts Gatus.
 
-Milestone 3, in progress:
-- done: `pushprobe sync` (internal/kumasync). It creates the group and the
-  missing push monitors, adopts a monitor by name in the group (taking its
-  token for a ${VAR} without a value), and keeps the heartbeat interval at
-  check interval + worst-case run + 10s. It never deletes or pauses, keeps
-  fields it does not manage (tested with a notification), and saves tokens to
-  pushprobe.env (0600) as each is made. Every command reads pushprobe.env next
-  to the file (or --env-file), with the environment winning. Tested against a
-  real Kuma, including run using the saved tokens.
-- next: the ping check;
-- the opt-in `exec` check;
-- the Docker image (distroless, non-root, a NET_RAW note);
-- the systemd unit.
+Milestone 3 is done (run 8):
+- `pushprobe sync` (internal/kumasync). It creates the group and the missing
+  push monitors, adopts a monitor by name in the group (taking its token for a
+  ${VAR} without a value), and keeps the heartbeat interval at check interval +
+  worst-case run + 10s. It never deletes or pauses, and keeps fields it does not
+  manage. Tokens go to pushprobe.env (0600). Every command reads pushprobe.env
+  next to the file (or --env-file); the environment wins, and an unreadable
+  default env file is skipped (systemd passes it in). Tested against a real Kuma.
+- the ping check (unprivileged ping sockets, else raw); it works as non-root in
+  Docker;
+- the exec check (needs allow_exec: true; no shell; only PATH, HOME, LANG and TZ
+  are passed on);
+- the Dockerfile (distroless, non-root, 17 MB; CI builds it, since `go mod
+  download` cannot get through this sandbox's proxy, so it was tested here
+  vendored);
+- contrib/pushprobe.service (DynamicUser, CAP_NET_RAW only, hardening;
+  `systemd-analyze verify` is clean).
+- go.mod stays at go 1.24: x/net v0.50.0 and x/sys v0.41.0 are the newest that
+  allow it. Use GOTOOLCHAIN=local when adding dependencies, because `go get`
+  silently raised go.mod to 1.26 once.
+
+Milestone 4 (release):
+- README with a real demo (`check` output, a Kuma screenshot is not possible, so
+  show the sync plan and the run log);
+- CHANGELOG;
+- two full reviews (correctness and delivery; security and usability), with
+  findings fixed;
+- CI green;
+- mark it done in STATE and record it under Finished projects.
 
 Tags: every Makefile now takes its version from `<project>/vX.Y.Z` tags only, so
 the owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).

@@ -28,3 +28,7 @@ jobs:
           done
       - name: tests, also against real Uptime Kuma and Gatus servers
         run: PUSHPROBE_INTEGRATION=1 go test -race -count=1 -timeout 20m ./...
+      - name: the Docker image builds and runs
+        run: |
+          docker build -t pushprobe:ci --build-arg VERSION=ci .
+          docker run --rm pushprobe:ci version

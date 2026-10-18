@@ -291,17 +291,21 @@ func checkOnce(ctx context.Context, env Env, c *config.Config, names []string) e
 }
 
 func round(d time.Duration) time.Duration {
-	if d > time.Second {
+	switch {
+	case d > time.Second:
 		return d.Round(10 * time.Millisecond)
+	case d < time.Millisecond:
+		return d.Round(time.Microsecond)
 	}
 	return d.Round(time.Millisecond)
 }
 
 // withEnvFile adds an env file's variables under the process's own. A
-// missing file is fine unless it was named.
+// missing file is fine unless it was named, and so is one this user cannot
+// read (as under systemd, which reads it as root and passes it on).
 func withEnvFile(env Env, path string, named bool) (func(string) (string, bool), error) {
 	data, err := env.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) && !named {
+	if !named && (errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission)) {
 		return env.LookupEnv, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("the env file: %w", err)

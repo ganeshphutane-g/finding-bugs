@@ -1,0 +1,39 @@
+# Install: copy pushprobe to /usr/local/bin, this file to
+# /etc/systemd/system/, the file and pushprobe.env to /etc/pushprobe/, then
+#   systemctl daemon-reload && systemctl enable --now pushprobe
+# Reload after editing the file: systemctl reload pushprobe
+
+[Unit]
+Description=pushprobe: checks pushed to Uptime Kuma and Gatus
+Documentation=https://github.com/ganeshphutane-g/pushprobe
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/pushprobe run -c /etc/pushprobe/pushprobe.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+# Tokens: systemd reads this file as root, so it can stay 0600 root-owned.
+EnvironmentFile=-/etc/pushprobe/pushprobe.env
+Restart=on-failure
+RestartSec=5s
+
+# An unprivileged user made for the service, with the one capability ping
+# needs, and as little else as possible.
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
