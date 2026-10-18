@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -59,13 +60,19 @@ Commands:
                     (SIGHUP reads the file again)
   check [NAME...]   Run the checks once and print the results; nothing is sent
   validate          Check the file, including where results go
+  sync [--dry-run]  Create or update the Uptime Kuma push monitors for the
+                    checks, and save new tokens in the env file
   version           Print the version
 
 Options:
-  -c, --config FILE   The file (default $PUSHPROBE_CONFIG, else pushprobe.yaml)
+  -c, --config FILE     The file (default $PUSHPROBE_CONFIG, else pushprobe.yaml)
+      --env-file FILE   Variables for the file (default pushprobe.env next to
+                        it, if there); the environment wins over it
 
-The file may use ${NAME} for environment variables whose names start with
-PUSHPROBE_, KUMA_ or GATUS_; no other variable can be read.
+The file may use ${NAME} for variables whose names start with PUSHPROBE_, KUMA_
+or GATUS_; no other variable can be read. sync logs in with
+PUSHPROBE_KUMA_USERNAME and PUSHPROBE_KUMA_PASSWORD (and PUSHPROBE_KUMA_TOTP or
+PUSHPROBE_KUMA_TOTP_SECRET for two-factor login), or PUSHPROBE_KUMA_TOKEN.
 
 Exit codes: 0 fine, 1 error, 2 bad usage, 3 a check failed, 130 interrupted.
 `
@@ -110,15 +117,20 @@ func run(ctx context.Context, env Env, args []string) error {
 	case "version", "--version":
 		fmt.Fprintf(env.Stdout, "pushprobe %s\n", Version)
 		return nil
-	case "check", "validate", "run":
+	case "check", "validate", "run", "sync":
 	default:
 		return usagef("unknown command %q", cmd)
 	}
 	fs := flag.NewFlagSet("pushprobe "+cmd, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	file := ""
+	file, envFile := "", ""
+	dryRun := false
 	fs.StringVar(&file, "c", "", "")
 	fs.StringVar(&file, "config", "", "")
+	fs.StringVar(&envFile, "env-file", "", "")
+	if cmd == "sync" {
+		fs.BoolVar(&dryRun, "dry-run", false, "")
+	}
 	var names []string
 	for {
 		if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
@@ -138,6 +150,21 @@ func run(ctx context.Context, env Env, args []string) error {
 	}
 	if file == "" {
 		file = "pushprobe.yaml"
+	}
+	explicitEnv := envFile != ""
+	if !explicitEnv {
+		envFile = filepath.Join(filepath.Dir(file), "pushprobe.env")
+	}
+	lookup, err := withEnvFile(env, envFile, explicitEnv)
+	if err != nil {
+		return err
+	}
+	env.LookupEnv = lookup
+	if cmd == "sync" {
+		if len(names) > 0 {
+			return usagef("sync takes no names")
+		}
+		return syncKuma(ctx, env, file, envFile, dryRun)
 	}
 	if cmd == "run" {
 		if len(names) > 0 {
@@ -268,4 +295,27 @@ func round(d time.Duration) time.Duration {
 		return d.Round(10 * time.Millisecond)
 	}
 	return d.Round(time.Millisecond)
+}
+
+// withEnvFile adds an env file's variables under the process's own. A
+// missing file is fine unless it was named.
+func withEnvFile(env Env, path string, named bool) (func(string) (string, bool), error) {
+	data, err := env.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) && !named {
+		return env.LookupEnv, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("the env file: %w", err)
+	}
+	vars, err := config.ParseEnv(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	base := env.LookupEnv
+	return func(k string) (string, bool) {
+		if v, ok := base(k); ok {
+			return v, ok
+		}
+		v, ok := vars[k]
+		return v, ok
+	}, nil
 }

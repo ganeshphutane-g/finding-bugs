@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -101,5 +102,62 @@ func TestDollarEscape(t *testing.T) {
 	c, err := Load([]byte("checks:\n  - {name: a, http: {url: 'http://x/', contains: 'cost $${PRICE}'}}\n"), env(nil), ForCheck)
 	if err != nil || c.Checks[0].HTTP.Contains != "cost ${PRICE}" {
 		t.Fatalf("%v %v", err, c)
+	}
+}
+
+func TestLoadForSync(t *testing.T) {
+	file := `
+targets:
+  kuma: {url: "https://kuma.example.com", group: Office}
+  gatus: {url: "https://g", token: "${GATUS_TOKEN}"}
+checks:
+  - {name: a, tcp: {address: "x:1"}, kuma: {push_token: "${KUMA_A}"}}
+  - {name: b, tcp: {address: "x:2"}, kuma: {push_token: "${KUMA_B}"}}
+  - {name: c, tcp: {address: "x:3"}, kuma: {push_token: literal123}}
+  - {name: d, tcp: {address: "x:4"}, gatus: {endpoint: office_d}}
+`
+	c, err := Load([]byte(file), env(map[string]string{"KUMA_B": "known"}), ForSync)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b, lit := c.Checks[0].Kuma, c.Checks[1].Kuma, c.Checks[2].Kuma
+	if a.PushToken != "" || a.TokenVar() != "KUMA_A" || b.PushToken != "known" || b.TokenVar() != "KUMA_B" || lit.PushToken != "literal123" || lit.TokenVar() != "" {
+		t.Fatalf("%+v %+v %+v", a, b, lit)
+	}
+	if c.Targets.Kuma.Group != "Office" {
+		t.Fatalf("group %q", c.Targets.Kuma.Group)
+	}
+	// Only a whole ${NAME} may be left for sync; other variables are needed.
+	_, err = Load([]byte("targets: {kuma: {url: 'https://k'}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: 'pre-${KUMA_A}'}}\n"), env(nil), ForSync)
+	if err == nil || !strings.Contains(err.Error(), "no value for KUMA_A") {
+		t.Fatalf("%v", err)
+	}
+	if _, err = Load([]byte("targets: {kuma: {url: 'https://k'}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: '${HOME}'}}\n"), env(nil), ForSync); err == nil || !strings.Contains(err.Error(), "HOME (only") {
+		t.Fatalf("%v", err)
+	}
+	if _, err = Load([]byte("checks:\n  - {name: a, tcp: {address: 'x:1'}}\n"), env(nil), ForSync); err == nil || !strings.Contains(err.Error(), "nothing to set up") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestEnvFile(t *testing.T) {
+	vars, err := ParseEnv([]byte("# tokens\nKUMA_A=abc\nexport KUMA_B=\"x y\"\n\nGATUS_T='q'\n"))
+	if err != nil || vars["KUMA_A"] != "abc" || vars["KUMA_B"] != "x y" || vars["GATUS_T"] != "q" {
+		t.Fatalf("%v %v", vars, err)
+	}
+	if _, err := ParseEnv([]byte("KUMA_A=1\nnonsense\n")); err == nil || !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("%v", err)
+	}
+	f := t.TempDir() + "/pushprobe.env"
+	os.WriteFile(f, []byte("# mine\nKUMA_A=old\nOTHER=1\n"), 0o644)
+	if err := UpdateEnv(f, map[string]string{"KUMA_A": "new", "KUMA_C": "c"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(f)
+	if string(data) != "# mine\nKUMA_A=new\nOTHER=1\nKUMA_C=c\n" {
+		t.Fatalf("%q", data)
+	}
+	if st, _ := os.Stat(f); st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", st.Mode())
 	}
 }

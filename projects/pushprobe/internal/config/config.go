@@ -43,6 +43,8 @@ type Targets struct {
 type Kuma struct {
 	URL      string `yaml:"url"`
 	Insecure bool   `yaml:"insecure"`
+	// Group is the Kuma group sync puts the push monitors in.
+	Group string `yaml:"group"`
 }
 
 // Gatus is a Gatus server.
@@ -119,7 +121,19 @@ type Memory struct {
 // KumaRoute sends the result to a Kuma push monitor.
 type KumaRoute struct {
 	PushToken string `yaml:"push_token"`
+	// Ref is push_token as written, before ${VAR} was filled.
+	Ref string `yaml:"-"`
 }
+
+// TokenVar is the variable push_token is, when it is exactly one ${NAME}.
+func (k *KumaRoute) TokenVar() string {
+	if m := wholeRef.FindStringSubmatch(k.Ref); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+var wholeRef = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
 
 // GatusRoute sends the result to a Gatus external endpoint.
 type GatusRoute struct {
@@ -166,7 +180,14 @@ const (
 	// ForCheck runs the checks only: targets, routes and their variables
 	// may be missing.
 	ForCheck
+	// ForSync sets up Kuma's push monitors: a push_token that is exactly
+	// one unset ${NAME} is allowed (sync makes the token), and Gatus is not
+	// looked at.
+	ForSync
 )
+
+// DefaultGroup is the Kuma group sync uses when none is set.
+const DefaultGroup = "pushprobe"
 
 // Lookup returns an environment variable.
 type Lookup func(string) (string, bool)
@@ -296,12 +317,17 @@ func (c *Config) validate(mode Mode) []string {
 	if c.Defaults.Retries != nil && *c.Defaults.Retries < 0 {
 		problems = append(problems, "defaults: retries must not be negative")
 	}
-	if mode == ForRun {
+	if mode == ForSync && c.Targets.Kuma == nil {
+		problems = append(problems, "targets has no kuma, so there is nothing to set up")
+	}
+	if mode != ForCheck {
 		if t := c.Targets.Kuma; t != nil {
 			if err := checkURL(t.URL); err != nil {
 				problems = append(problems, "targets.kuma.url: "+err.Error())
 			}
 		}
+	}
+	if mode == ForRun {
 		if t := c.Targets.Gatus; t != nil {
 			if err := checkURL(t.URL); err != nil {
 				problems = append(problems, "targets.gatus.url: "+err.Error())
@@ -349,18 +375,19 @@ func (c *Config) validate(mode Mode) []string {
 		for _, p := range ch.checkProblems() {
 			add(ch, "%s", p)
 		}
+		if mode == ForRun && ch.Kuma == nil && ch.Gatus == nil {
+			add(ch, "the result goes nowhere: add kuma: {push_token: ...} or gatus: {endpoint: ...}")
+		}
+		if mode != ForCheck && ch.Kuma != nil {
+			if c.Targets.Kuma == nil {
+				add(ch, "reports to Kuma, but targets has no kuma")
+			}
+			made := mode == ForSync && ch.Kuma.PushToken == "" && ch.Kuma.TokenVar() != ""
+			if !made && !pushToken.MatchString(ch.Kuma.PushToken) {
+				add(ch, "kuma.push_token must be the push monitor's token (letters and digits, from its push URL), or ${KUMA_SOMETHING} for sync to make one")
+			}
+		}
 		if mode == ForRun {
-			if ch.Kuma == nil && ch.Gatus == nil {
-				add(ch, "the result goes nowhere: add kuma: {push_token: ...} or gatus: {endpoint: ...}")
-			}
-			if ch.Kuma != nil {
-				if c.Targets.Kuma == nil {
-					add(ch, "reports to Kuma, but targets has no kuma")
-				}
-				if !pushToken.MatchString(ch.Kuma.PushToken) {
-					add(ch, "kuma.push_token must be the push monitor's token (letters and digits, from its push URL)")
-				}
-			}
 			if ch.Gatus != nil {
 				if c.Targets.Gatus == nil {
 					add(ch, "reports to Gatus, but targets has no gatus")

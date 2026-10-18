@@ -63,6 +63,11 @@ func redact(base string) string {
 // server sends, in order, on the reading goroutine: it must not block on
 // the connection.
 func Dial(ctx context.Context, base string, header http.Header, onEvent func(string, []json.RawMessage)) (*Conn, error) {
+	return DialWith(ctx, base, header, nil, onEvent)
+}
+
+// DialWith is Dial with an HTTP client of one's own (nil: the default).
+func DialWith(ctx context.Context, base string, header http.Header, client *http.Client, onEvent func(string, []json.RawMessage)) (*Conn, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, HandshakeTimeout)
@@ -83,7 +88,7 @@ func Dial(ctx context.Context, base string, header http.Header, onEvent func(str
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/") + "/socket.io/"
 	u.RawQuery = "EIO=4&transport=websocket"
-	ws, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPHeader: header})
+	ws, _, err := websocket.Dial(ctx, u.String(), &websocket.DialOptions{HTTPHeader: header, HTTPClient: client})
 	if err != nil {
 		return nil, fmt.Errorf("connecting to %s: %w", shown, err)
 	}

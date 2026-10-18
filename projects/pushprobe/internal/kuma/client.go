@@ -63,10 +63,22 @@ var listEvents = map[string]bool{
 
 // Connect opens a connection. Log in with Login next.
 func Connect(ctx context.Context, baseURL string) (*Client, error) {
+	return ConnectWith(ctx, baseURL, nil)
+}
+
+// ConnectWith is Connect with an HTTP client of one's own (for TLS settings;
+// without a Timeout).
+func ConnectWith(ctx context.Context, baseURL string, client *http.Client) (*Client, error) {
 	baseURL = strings.TrimSuffix(baseURL, "/")
-	c := &Client{BaseURL: baseURL, http: &http.Client{Timeout: time.Minute},
+	// (The websocket library wants a client without a timeout; plain
+	// requests get one.)
+	plain := &http.Client{Timeout: time.Minute}
+	if client != nil {
+		plain = &http.Client{Transport: client.Transport, Timeout: time.Minute}
+	}
+	c := &Client{BaseURL: baseURL, http: plain,
 		lists: map[string]json.RawMessage{}, authReady: make(chan struct{})}
-	conn, err := sio.Dial(ctx, baseURL, nil, c.onEvent)
+	conn, err := sio.DialWith(ctx, baseURL, nil, client, c.onEvent)
 	if err != nil {
 		return nil, err
 	}

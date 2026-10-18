@@ -21,11 +21,16 @@ Milestones 1 and 2 are done (run 8), with tests:
 - kumafile's sio, kuma and testkit packages are copied in (internal/), with
   PUSHPROBE_* variable names; testkit also starts Gatus.
 
-Milestone 3:
-- `pushprobe sync`: create or update the Kuma push monitors for the checks
-  through internal/kuma, writing tokens to an env file; credentials from
-  PUSHPROBE_KUMA_USERNAME/PASSWORD/TOKEN/TOTP/TOTP_SECRET.
-- the ping check;
+Milestone 3, in progress:
+- done: `pushprobe sync` (internal/kumasync). It creates the group and the
+  missing push monitors, adopts a monitor by name in the group (taking its
+  token for a ${VAR} without a value), and keeps the heartbeat interval at
+  check interval + worst-case run + 10s. It never deletes or pauses, keeps
+  fields it does not manage (tested with a notification), and saves tokens to
+  pushprobe.env (0600) as each is made. Every command reads pushprobe.env next
+  to the file (or --env-file), with the environment winning. Tested against a
+  real Kuma, including run using the saved tokens.
+- next: the ping check;
 - the opt-in `exec` check;
 - the Docker image (distroless, non-root, a NET_RAW note);
 - the systemd unit.

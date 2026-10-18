@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -136,3 +137,7 @@ checks:
 		return !last.Success && len(last.Errors) == 1 && last.Errors[0] == "connection refused"
 	})
 }
+
+func kumaID(id int64) string { return strconv.FormatInt(id, 10) }
+
+func jsonOf(v any) string { b, _ := json.Marshal(v); return string(b) }

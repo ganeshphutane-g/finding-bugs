@@ -9,6 +9,9 @@ import (
 // ref is a ${NAME} reference; $${ stands for a literal ${.
 var ref = regexp.MustCompile(`\$\$\{|\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
+// envName is a variable's name.
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // Allowed reports the variables a file may read. A file cannot read any
 // other variable, so a change to it cannot send, say, your cloud credentials
 // to a server it names.
@@ -41,19 +44,34 @@ func expandAll(c *Config, lookup Lookup, mode Mode, missing map[string]bool) {
 			return v
 		})
 	}
-	if mode == ForRun {
+	switch mode {
+	case ForRun:
 		walk(reflect.ValueOf(&c.Targets).Elem(), fill)
+	case ForSync:
+		if c.Targets.Kuma != nil {
+			walk(reflect.ValueOf(c.Targets.Kuma).Elem(), fill)
+		}
 	}
 	for i := range c.Checks {
 		ch := &c.Checks[i]
+		if ch.Kuma != nil {
+			ch.Kuma.Ref = ch.Kuma.PushToken
+		}
 		kuma, gatus := ch.Kuma, ch.Gatus
-		if mode != ForRun {
+		switch mode {
+		case ForCheck:
 			ch.Kuma, ch.Gatus = nil, nil
+		case ForSync:
+			ch.Gatus = nil
+			// An unset ${NAME} as the whole push_token is for sync to make.
+			if v := kuma.tokenVarIfAny(); v != "" && Allowed(v) {
+				if _, set := lookup(v); !set {
+					kuma.PushToken = ""
+				}
+			}
 		}
 		walk(reflect.ValueOf(ch).Elem(), fill)
-		if mode != ForRun {
-			ch.Kuma, ch.Gatus = kuma, gatus
-		}
+		ch.Kuma, ch.Gatus = kuma, gatus
 	}
 }
 
@@ -67,7 +85,8 @@ func walk(v reflect.Value, fill func(string) string) {
 		}
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
-			if v.Type().Field(i).IsExported() {
+			// (Fields not read from the file, such as Ref, are left alone.)
+			if f := v.Type().Field(i); f.IsExported() && f.Tag.Get("yaml") != "-" {
 				walk(v.Field(i), fill)
 			}
 		}
@@ -86,4 +105,12 @@ func walk(v reflect.Value, fill func(string) string) {
 			v.SetString(fill(v.String()))
 		}
 	}
+}
+
+// tokenVarIfAny is TokenVar for a route that may be nil.
+func (k *KumaRoute) tokenVarIfAny() string {
+	if k == nil {
+		return ""
+	}
+	return k.TokenVar()
 }
