@@ -7,10 +7,21 @@ in IDEAS.md.
 
 ## Next step
 
-Milestone 1 (SPEC.md): go.mod `github.com/ganeshphutane-g/pushprobe`, LICENSE,
-Makefile, CI workflow (.github/workflows/pushprobe.yml); config with validation
-and `${VAR}` limited to PUSHPROBE_/KUMA_/GATUS_; the check runner; the http, tcp,
-dns, tls, disk and memory checks; `pushprobe check`.
+Milestone 1 is done (run 8): config (strict keys with line numbers, `${VAR}`
+limited to PUSHPROBE_/KUMA_/GATUS_, ForCheck mode that ignores where results
+go), the http, tcp, dns, tls, disk and memory checks, runner.Once (timeout and
+retries), and `pushprobe check` and `validate`, all with tests. CI workflow
+.github/workflows/pushprobe.yml.
+
+Milestone 2: the Kuma and Gatus senders (retry with backoff, a bounded buffer
+while the server cannot be reached, tokens never logged), `pushprobe run` (a
+scheduler with jitter, SIGHUP reload, /healthz, optional /metrics, one log line
+per state change), and integration tests against real louislam/uptime-kuma:2 and
+twinproduction/gatus servers, including a missed push turning a Kuma push monitor
+down. Copy kumafile's internal/testkit approach for the Kuma server.
+
+Tags: every Makefile now takes its version from `<project>/vX.Y.Z` tags only, so
+the owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).
 
 Verified on 2026-10-18 (details in SPEC.md): the Kuma 2.5.6 push API (GET/POST,
 404 for unknown tokens, any status accepted) and the Gatus external-endpoint API

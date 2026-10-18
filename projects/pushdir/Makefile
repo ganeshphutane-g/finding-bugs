@@ -1,4 +1,5 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# The version is this project's latest tag (pushdir/vX.Y.Z), else the commit.
+VERSION ?= $(or $(shell git describe --tags --match 'pushdir/v*' --always --dirty 2>/dev/null | sed 's|^pushdir/||'),dev)
 LDFLAGS := -s -w -X github.com/ganeshphutane-g/pushdir/internal/cli.Version=$(VERSION)
 PLATFORMS := linux/amd64 linux/arm64 linux/arm
 

@@ -1,4 +1,5 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# The version is this project's latest tag (issuemove/vX.Y.Z), else the commit.
+VERSION ?= $(or $(shell git describe --tags --match 'issuemove/v*' --always --dirty 2>/dev/null | sed 's|^issuemove/||'),dev)
 LDFLAGS := -s -w -X github.com/ganeshphutane-g/issuemove/internal/cli.Version=$(VERSION)
 
 .PHONY: build test test-server

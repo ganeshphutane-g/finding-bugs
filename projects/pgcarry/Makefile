@@ -1,4 +1,5 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# The version is this project's latest tag (pgcarry/vX.Y.Z), else the commit.
+VERSION ?= $(or $(shell git describe --tags --match 'pgcarry/v*' --always --dirty 2>/dev/null | sed 's|^pgcarry/||'),dev)
 LDFLAGS := -s -w -X github.com/ganeshphutane-g/pgcarry/internal/cli.Version=$(VERSION)
 
 .PHONY: build test test-docker

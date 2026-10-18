@@ -1,4 +1,5 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# The version is this project's latest tag (docker-mop/vX.Y.Z), else the commit.
+VERSION ?= $(or $(shell git describe --tags --match 'docker-mop/v*' --always --dirty 2>/dev/null | sed 's|^docker-mop/||'),dev)
 LDFLAGS := -s -w -X github.com/ganeshphutane-g/docker-mop/internal/cli.Version=$(VERSION)
 PLUGIN_DIR ?= $(HOME)/.docker/cli-plugins
 

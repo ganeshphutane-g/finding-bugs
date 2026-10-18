@@ -1,4 +1,5 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# The version is this project's latest tag (kumafile/vX.Y.Z), else the commit.
+VERSION ?= $(or $(shell git describe --tags --match 'kumafile/v*' --always --dirty 2>/dev/null | sed 's|^kumafile/||'),dev)
 LDFLAGS := -s -w -X github.com/ganeshphutane-g/kumafile/internal/cli.Version=$(VERSION)
 
 .PHONY: build test test-server

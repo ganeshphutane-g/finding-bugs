@@ -1,4 +1,5 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# The version is this project's latest tag (bucketmove/vX.Y.Z), else the commit.
+VERSION ?= $(or $(shell git describe --tags --match 'bucketmove/v*' --always --dirty 2>/dev/null | sed 's|^bucketmove/||'),dev)
 LDFLAGS := -s -w -X github.com/ganeshphutane-g/bucketmove/internal/cli.Version=$(VERSION)
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 
