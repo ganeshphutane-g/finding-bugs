@@ -196,16 +196,17 @@ func needsGroup(p *Plan) bool {
 	return false
 }
 
-// Describe is a plan's lines for people. Tokens are never shown.
-func Describe(p *Plan, envFile string) []string {
+// Describe is a plan's lines for people. saves says whether an action's
+// token is saved this time. Tokens are never shown.
+func Describe(p *Plan, saves func(Action) bool) []string {
 	var out []string
 	if p.GroupID == 0 && needsGroup(p) {
 		out = append(out, fmt.Sprintf("+ group %q", p.Group))
 	}
 	for _, a := range p.Actions {
 		where := ""
-		if a.Var != "" && (a.NewToken || a.Op != "create") {
-			where = fmt.Sprintf(", token saved as %s in %s", a.Var, envFile)
+		if saves(a) {
+			where = ", token saved as " + a.Var
 		}
 		switch a.Op {
 		case "create":

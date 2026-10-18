@@ -71,13 +71,17 @@ func TestMakePlan(t *testing.T) {
 	if web.Op != "update" || web.ID != 3 || web.Name != "Web (site A)" || strings.Join(web.Changes, ";") != "heartbeat interval 60s -> 92s" {
 		t.Errorf("web %+v", web)
 	}
-	lines := strings.Join(Describe(p, "pushprobe.env"), "\n")
-	for _, want := range []string{`+ push monitor "nas" (heartbeat every 92s, a new token, token saved as KUMA_NAS in pushprobe.env)`,
-		`= push monitor "printer", token saved as KUMA_PRINTER in pushprobe.env`, `+ push monitor "router" (heartbeat every 92s, the file's token)`,
-		`~ push monitor "Web (site A)": heartbeat interval 60s -> 92s, token saved as KUMA_WEB`} {
+	saves := func(a Action) bool { return a.Var == "KUMA_NAS" || a.Var == "KUMA_PRINTER" }
+	lines := strings.Join(Describe(p, saves), "\n")
+	for _, want := range []string{`+ push monitor "nas" (heartbeat every 92s, a new token, token saved as KUMA_NAS)`,
+		`= push monitor "printer", token saved as KUMA_PRINTER`, `+ push monitor "router" (heartbeat every 92s, the file's token)`,
+		`~ push monitor "Web (site A)": heartbeat interval 60s -> 92s`} {
 		if !strings.Contains(lines, want) {
 			t.Errorf("plan lacks %q:\n%s", want, lines)
 		}
+	}
+	if strings.Contains(lines, "KUMA_WEB") {
+		t.Errorf("a token not saved this time is said to be:\n%s", lines)
 	}
 	if strings.Contains(lines, "new1") || strings.Contains(lines, "printertoken") {
 		t.Errorf("a token is shown:\n%s", lines)
@@ -87,7 +91,7 @@ func TestMakePlan(t *testing.T) {
 func TestMakePlanNewGroupAndClashes(t *testing.T) {
 	c := load(t, file, nil)
 	p, err := MakePlan(c, nil, 2*time.Second, NewToken)
-	if err != nil || p.GroupID != 0 || !strings.HasPrefix(Describe(p, "x")[0], `+ group "Office"`) {
+	if err != nil || p.GroupID != 0 || !strings.HasPrefix(Describe(p, func(Action) bool { return false })[0], `+ group "Office"`) {
 		t.Fatalf("%v %+v", err, p)
 	}
 	// A monitor in the group with the name but another token gets the file's.

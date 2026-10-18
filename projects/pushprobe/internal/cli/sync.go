@@ -43,10 +43,6 @@ func syncKuma(ctx context.Context, env Env, file, envFile string, dryRun bool) e
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(env.Stdout, "%s (Uptime Kuma %s), group %q:\n", c.Targets.Kuma.URL, st.Info.Version, plan.Group)
-	for _, l := range kumasync.Describe(plan, envFile) {
-		fmt.Fprintf(env.Stdout, "  %s\n", l)
-	}
 	changes := 0
 	for _, a := range plan.Actions {
 		if a.Op != "ok" {
@@ -61,8 +57,16 @@ func syncKuma(ctx context.Context, env Env, file, envFile string, dryRun bool) e
 			save[a.Var] = a.Token
 		}
 	}
+	fmt.Fprintf(env.Stdout, "%s (Uptime Kuma %s), group %q:\n", c.Targets.Kuma.URL, st.Info.Version, plan.Group)
+	for _, l := range kumasync.Describe(plan, func(a kumasync.Action) bool { _, ok := save[a.Var]; return ok }) {
+		fmt.Fprintf(env.Stdout, "  %s\n", l)
+	}
 	if dryRun {
-		fmt.Fprintf(env.Stdout, "%s to change. Nothing was changed (--dry-run).\n", plural(changes, "monitor"))
+		fmt.Fprintf(env.Stdout, "%s to change", plural(changes, "monitor"))
+		if len(save) > 0 {
+			fmt.Fprintf(env.Stdout, " and %s to save in %s", plural(len(save), "token"), envFile)
+		}
+		fmt.Fprintln(env.Stdout, ". Nothing was changed (--dry-run).")
 		return nil
 	}
 	// Tokens taken from monitors that are already there can be saved now.
