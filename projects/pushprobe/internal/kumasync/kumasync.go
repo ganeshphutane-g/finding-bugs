@@ -55,9 +55,6 @@ func HeartbeatInterval(c config.Check, retryPause time.Duration) int {
 // MakePlan works out what to do, from the monitors the server has.
 func MakePlan(c *config.Config, monitors []kuma.Object, retryPause time.Duration, newToken func() string) (*Plan, error) {
 	group := c.Targets.Kuma.Group
-	if group == "" {
-		group = config.DefaultGroup
-	}
 	p := &Plan{Group: group, monitorsRaw: map[int64]kuma.Object{}}
 	byToken := map[string]kuma.Object{}
 	byName := map[string]kuma.Object{} // push monitors in the group
@@ -78,10 +75,16 @@ func MakePlan(c *config.Config, monitors []kuma.Object, retryPause time.Duration
 			byName[m.Str("name")] = m
 		}
 	}
-	used := map[string]string{}
+	used, vars := map[string]string{}, map[string]string{}
 	for _, ch := range c.Checks {
 		if ch.Kuma == nil {
 			continue
+		}
+		if v := ch.Kuma.TokenVar(); v != "" {
+			if other, dup := vars[v]; dup {
+				return nil, fmt.Errorf("checks %q and %q both use ${%s}; each needs its own monitor and variable", other, ch.Name, v)
+			}
+			vars[v] = ch.Name
 		}
 		a := Action{Check: ch.Name, Name: ch.Name, Token: ch.Kuma.PushToken, Var: ch.Kuma.TokenVar(),
 			Interval: HeartbeatInterval(ch, retryPause)}

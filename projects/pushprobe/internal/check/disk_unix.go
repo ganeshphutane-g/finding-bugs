@@ -14,9 +14,27 @@ type diskCheck struct{ c config.Disk }
 
 func (d diskCheck) Run(ctx context.Context) Result {
 	start := time.Now()
+	// Statfs cannot be cancelled, and a hung network mount never answers:
+	// wait for it only as long as the check may take.
+	type answer struct {
+		st  syscall.Statfs_t
+		err error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		var a answer
+		a.err = syscall.Statfs(d.c.Path, &a.st)
+		done <- a
+	}()
 	var st syscall.Statfs_t
-	if err := syscall.Statfs(d.c.Path, &st); err != nil {
-		return fail(start, "%s: %v", d.c.Path, err)
+	select {
+	case <-ctx.Done():
+		return fail(start, "%s: no answer from the file system (timed out)", d.c.Path)
+	case a := <-done:
+		if a.err != nil {
+			return fail(start, "%s: %v", d.c.Path, a.err)
+		}
+		st = a.st
 	}
 	size := uint64(st.Blocks) * uint64(st.Bsize)
 	free := uint64(st.Bavail) * uint64(st.Bsize)

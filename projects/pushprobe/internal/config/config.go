@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -208,9 +209,6 @@ const (
 	ForSync
 )
 
-// DefaultGroup is the Kuma group sync uses when none is set.
-const DefaultGroup = "pushprobe"
-
 // Lookup returns an environment variable.
 type Lookup func(string) (string, bool)
 
@@ -224,7 +222,11 @@ func Load(data []byte, lookup Lookup, mode Mode) (*Config, error) {
 		if errors.Is(err, io.EOF) {
 			return nil, errors.New("the file is empty")
 		}
-		return nil, fmt.Errorf("the file cannot be read: %s", tidyYAMLError(err))
+		msg := tidyYAMLError(err)
+		if strings.Contains(msg, "did not find expected") && strings.Contains(string(data), "${") {
+			msg += " (inside {…}, put values with ${…} in quotes: token: \"${GATUS_TOKEN}\")"
+		}
+		return nil, fmt.Errorf("the file cannot be read: %s", msg)
 	}
 	var root yaml.Node
 	_ = yaml.Unmarshal(data, &root)
@@ -253,10 +255,70 @@ func Load(data []byte, lookup Lookup, mode Mode) (*Config, error) {
 	return &c, nil
 }
 
-var yamlLine = regexp.MustCompile(`yaml: (unmarshal errors:\n\s*)?`)
+var (
+	yamlLine   = regexp.MustCompile(`yaml: (unmarshal errors:\n\s*)?`)
+	unknownKey = regexp.MustCompile(`field (\S+) not found in type config\.(\w+)`)
+)
 
 func tidyYAMLError(err error) string {
-	return strings.TrimSpace(yamlLine.ReplaceAllString(err.Error(), ""))
+	msg := strings.TrimSpace(yamlLine.ReplaceAllString(err.Error(), ""))
+	// "field intervall not found in type config.Check" ->
+	// unknown key "intervall" (did you mean interval?)
+	return unknownKey.ReplaceAllStringFunc(msg, func(m string) string {
+		parts := unknownKey.FindStringSubmatch(m)
+		out := fmt.Sprintf("unknown key %q", parts[1])
+		if best := closest(parts[1], keysOf[parts[2]]); best != "" {
+			out += fmt.Sprintf(" (did you mean %s?)", best)
+		}
+		return out
+	})
+}
+
+// keysOf lists each part of the file's keys, for suggestions.
+var keysOf = func() map[string][]string {
+	out := map[string][]string{}
+	for _, v := range []any{Config{}, Defaults{}, Targets{}, Kuma{}, Gatus{}, Check{}, HTTP{}, TCP{}, Ping{}, DNS{}, TLS{},
+		Disk{}, Memory{}, Exec{}, KumaRoute{}, GatusRoute{}} {
+		t := reflect.TypeOf(v)
+		for i := 0; i < t.NumField(); i++ {
+			if k, _, _ := strings.Cut(t.Field(i).Tag.Get("yaml"), ","); k != "" && k != "-" {
+				out[t.Name()] = append(out[t.Name()], k)
+			}
+		}
+	}
+	return out
+}()
+
+// closest is the key nearest to s (at most two letters off), or "".
+func closest(s string, keys []string) string {
+	best, bestD := "", 3
+	for _, k := range keys {
+		if d := distance(strings.ToLower(s), k); d < bestD {
+			best, bestD = k, d
+		}
+	}
+	return best
+}
+
+// distance is the Levenshtein distance.
+func distance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
 }
 
 // checkLines finds the line of each item under checks:.
@@ -345,6 +407,11 @@ func (c *Config) validate(mode Mode) []string {
 	if mode == ForSync && c.Targets.Kuma == nil {
 		problems = append(problems, "targets has no kuma, so there is nothing to set up")
 	}
+	// Monitors are found by name within the group, so each site (each
+	// pushprobe) needs its own, or two sites' "disk" would share a monitor.
+	if mode == ForSync && c.Targets.Kuma != nil && strings.TrimSpace(c.Targets.Kuma.Group) == "" {
+		problems = append(problems, `targets.kuma.group: name the Kuma group for this site's monitors, such as group: "Site A" (each pushprobe needs its own group)`)
+	}
 	if mode != ForCheck {
 		if t := c.Targets.Kuma; t != nil {
 			if err := checkURL(t.URL); err != nil {
@@ -388,6 +455,9 @@ func (c *Config) validate(mode Mode) []string {
 		if interval == 0 {
 			interval = time.Duration(c.Defaults.Interval)
 		}
+		if interval == 0 {
+			interval = DefaultInterval
+		}
 		if timeout == 0 {
 			timeout = time.Duration(c.Defaults.Timeout)
 		}
@@ -410,8 +480,9 @@ func (c *Config) validate(mode Mode) []string {
 			if c.Targets.Kuma == nil {
 				add(ch, "reports to Kuma, but targets has no kuma")
 			}
-			made := mode == ForSync && ch.Kuma.PushToken == "" && ch.Kuma.TokenVar() != ""
-			if !made && !pushToken.MatchString(ch.Kuma.PushToken) {
+			// (A ${VAR} with no value is reported as missing already.)
+			unfilled := ch.Kuma.PushToken == "" && ch.Kuma.TokenVar() != ""
+			if !unfilled && !pushToken.MatchString(ch.Kuma.PushToken) {
 				add(ch, "kuma.push_token must be the push monitor's token (letters and digits, from its push URL), or ${KUMA_SOMETHING} for sync to make one")
 			}
 		}
@@ -478,10 +549,10 @@ func (ch *Check) checkProblems() []string {
 		if d.Server != "" {
 			server := d.Server
 			if _, _, err := net.SplitHostPort(server); err != nil {
-				server = net.JoinHostPort(server, "53")
+				server = net.JoinHostPort(strings.Trim(server, "[]"), "53")
 			}
 			if err := checkAddress(server); err != nil {
-				out = append(out, "dns.server: "+err.Error())
+				out = append(out, fmt.Sprintf("dns.server %q: expected an address, such as 192.168.1.1, [fd00::1] or 192.168.1.1:5353", d.Server))
 			}
 		}
 	case ch.TLS != nil:
@@ -492,13 +563,21 @@ func (ch *Check) checkProblems() []string {
 			out = append(out, "tls.min_days_left must not be negative")
 		}
 	case ch.Disk != nil:
-		if !strings.HasPrefix(ch.Disk.Path, "/") && !(runtime.GOOS == "windows" && len(ch.Disk.Path) >= 2 && ch.Disk.Path[1] == ':') {
+		switch runtime.GOOS {
+		case "linux", "darwin", "freebsd":
+		default:
+			out = append(out, "disk checks work on Linux, macOS and FreeBSD only, not on "+runtime.GOOS+" yet")
+		}
+		if !strings.HasPrefix(ch.Disk.Path, "/") {
 			out = append(out, "disk.path must be an absolute path")
 		}
 		if p := ch.Disk.MaxUsedPercent; p <= 0 || p > 100 {
 			out = append(out, "disk.max_used_percent must be between 0 and 100")
 		}
 	case ch.Memory != nil:
+		if runtime.GOOS != "linux" {
+			out = append(out, "memory checks work on Linux only, not on "+runtime.GOOS+" yet")
+		}
 		if p := ch.Memory.MaxUsedPercent; p <= 0 || p > 100 {
 			out = append(out, "memory.max_used_percent must be between 0 and 100")
 		}
@@ -516,9 +595,20 @@ func checkURL(s string) error {
 	}
 	u, err := url.Parse(s)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("%q is not an http:// or https:// address", s)
+		return fmt.Errorf("%q is not an http:// or https:// address", Redact(s))
 	}
 	return nil
+}
+
+// Redact hides a password in a URL (scheme://user:password@host).
+func Redact(s string) string {
+	if u, err := url.Parse(s); err == nil && u.User != nil {
+		return u.Redacted()
+	}
+	if i := strings.Index(s, "@"); i >= 0 && strings.Contains(s[:i], "://") {
+		return s[:strings.Index(s, "://")+3] + "xxxxx" + s[i:]
+	}
+	return s
 }
 
 func checkAddress(s string) error {

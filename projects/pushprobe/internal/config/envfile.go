@@ -39,6 +39,10 @@ func ParseEnv(data []byte) (map[string]string, error) {
 // UpdateEnv sets variables in an env file, keeping its other lines, and
 // writes it with mode 0600 in one step (a new file renamed over the old).
 func UpdateEnv(path string, set map[string]string) error {
+	// A link is written through, so its target is what changes.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	old, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -82,5 +86,6 @@ func UpdateEnv(path string, set map[string]string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	keepOwner(path, tmp.Name())
 	return os.Rename(tmp.Name(), path)
 }

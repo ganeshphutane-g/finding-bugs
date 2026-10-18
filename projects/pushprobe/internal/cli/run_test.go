@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -117,6 +118,12 @@ checks:
 	if p := got("tok2")[0]; !strings.HasPrefix(p, "down ") || !strings.Contains(p, "connection refused") {
 		t.Errorf("push %q", p)
 	}
+	// sync saved a token for a new check: a reload reads the env file again.
+	now, _ := os.ReadFile(file)
+	os.WriteFile(filepath.Join(filepath.Dir(file), "pushprobe.env"), []byte("KUMA_LATE=tok3\n"), 0o600)
+	os.WriteFile(file, append(now, []byte(`  - {name: late, tcp: {address: "`+target.Addr().String()+`"}, kuma: {push_token: "${KUMA_LATE}"}}`+"\n")...), 0o600)
+	reload <- struct{}{}
+	eventually(t, "the check with the new token", 5*time.Second, func() bool { return len(got("tok3")) == 1 })
 	cancel()
 	if code := <-done; code != 0 {
 		t.Errorf("exit %d", code)

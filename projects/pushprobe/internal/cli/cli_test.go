@@ -107,7 +107,7 @@ func TestUsage(t *testing.T) {
 
 func TestBadFile(t *testing.T) {
 	f := write(t, "checks:\n  - name: a\n    tcp: {adress: 'x:1'}\n")
-	if code, out := pp(t, nil, "check", "-c", f); code != 1 || !strings.Contains(out, "line 3: field adress not found") {
+	if code, out := pp(t, nil, "check", "-c", f); code != 1 || !strings.Contains(out, `line 3: unknown key "adress" (did you mean address?)`) {
 		t.Fatalf("exit %d %s", code, out)
 	}
 }

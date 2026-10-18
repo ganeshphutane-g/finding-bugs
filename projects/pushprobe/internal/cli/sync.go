@@ -53,11 +53,11 @@ func syncKuma(ctx context.Context, env Env, file, envFile string, dryRun bool) e
 	// that has no value yet.
 	save := map[string]string{}
 	for _, a := range plan.Actions {
-		if _, set := env.LookupEnv(a.Var); a.Var != "" && !set && (a.NewToken || a.Op != "create") {
+		if v, _ := env.LookupEnv(a.Var); a.Var != "" && v == "" && (a.NewToken || a.Op != "create") {
 			save[a.Var] = a.Token
 		}
 	}
-	fmt.Fprintf(env.Stdout, "%s (Uptime Kuma %s), group %q:\n", c.Targets.Kuma.URL, st.Info.Version, plan.Group)
+	fmt.Fprintf(env.Stdout, "%s (Uptime Kuma %s), group %q:\n", config.Redact(c.Targets.Kuma.URL), st.Info.Version, plan.Group)
 	for _, l := range kumasync.Describe(plan, func(a kumasync.Action) bool { _, ok := save[a.Var]; return ok }) {
 		fmt.Fprintf(env.Stdout, "  %s\n", l)
 	}
@@ -82,15 +82,22 @@ func syncKuma(ctx context.Context, env Env, file, envFile string, dryRun bool) e
 		}
 	}
 	saved := map[string]string{}
+	var saveErr error
 	err = kumasync.Apply(cctx, client, plan, func(a kumasync.Action) {
 		if v, ok := save[a.Var]; ok && a.NewToken {
-			saved[a.Var] = v
 			// Saved at once, so a later failure does not lose it.
 			if uerr := config.UpdateEnv(envFile, map[string]string{a.Var: v}); uerr != nil {
-				fmt.Fprintf(env.Stderr, "pushprobe: saving %s in %s: %v\n", a.Var, envFile, uerr)
+				if saveErr == nil {
+					saveErr = fmt.Errorf("the push monitor %q was made, but its token could not be saved as %s in %s: %v. Run sync again where that file can be written: it finds the monitor by name and saves its token", a.Name, a.Var, envFile, uerr)
+				}
+				return
 			}
+			saved[a.Var] = v
 		}
 	})
+	if err == nil {
+		err = saveErr
+	}
 	if err != nil {
 		return err
 	}

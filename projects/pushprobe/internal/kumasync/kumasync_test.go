@@ -101,8 +101,13 @@ func TestMakePlanNewGroupAndClashes(t *testing.T) {
 	if a := p.Actions[0]; a.Op != "update" || a.Token != "mine" || !strings.Contains(a.Changes[0], "push token") {
 		t.Errorf("%+v", a)
 	}
+	// Two checks with one variable.
+	c = load(t, "targets: {kuma: {url: 'https://k', group: G}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: '${KUMA_W}'}}\n  - {name: b, tcp: {address: 'x:2'}, kuma: {push_token: '${KUMA_W}'}}\n", nil)
+	if _, err := MakePlan(c, nil, 2*time.Second, NewToken); err == nil || !strings.Contains(err.Error(), "both use ${KUMA_W}") {
+		t.Errorf("%v", err)
+	}
 	// Two checks with one token.
-	c = load(t, "targets: {kuma: {url: 'https://k'}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: same1}}\n  - {name: b, tcp: {address: 'x:2'}, kuma: {push_token: same1}}\n", nil)
+	c = load(t, "targets: {kuma: {url: 'https://k', group: G}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: same1}}\n  - {name: b, tcp: {address: 'x:2'}, kuma: {push_token: same1}}\n", nil)
 	if _, err := MakePlan(c, nil, 2*time.Second, NewToken); err == nil || !strings.Contains(err.Error(), "same push token") {
 		t.Errorf("%v", err)
 	}

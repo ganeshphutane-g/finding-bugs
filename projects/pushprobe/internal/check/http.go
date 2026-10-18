@@ -30,6 +30,22 @@ func newHTTP(c config.HTTP) httpCheck {
 	client := &http.Client{Transport: t}
 	if c.FollowRedirects != nil && !*c.FollowRedirects {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	} else {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("more than 10 redirects")
+			}
+			// The file's headers (often credentials) go only to the address
+			// it names: not to another host, and not over plain http.
+			first := via[0].URL
+			if req.URL.Host != first.Host || (first.Scheme == "https" && req.URL.Scheme != "https") {
+				for k := range c.Headers {
+					req.Header.Del(k)
+				}
+				req.Header.Del("Authorization")
+			}
+			return nil
+		}
 	}
 	return httpCheck{c: c, client: client}
 }

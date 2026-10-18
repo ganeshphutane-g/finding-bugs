@@ -155,16 +155,28 @@ func run(ctx context.Context, env Env, args []string) error {
 	if !explicitEnv {
 		envFile = filepath.Join(filepath.Dir(file), "pushprobe.env")
 	}
-	lookup, err := withEnvFile(env, envFile, explicitEnv)
+	base := env.LookupEnv
+	// vars reads the env file (again: run calls it on every reload). note
+	// says why a file that is there could not be used.
+	vars := func() (func(string) (string, bool), string, error) {
+		return withEnvFile(env.ReadFile, base, envFile, explicitEnv)
+	}
+	lookup, note, err := vars()
 	if err != nil {
 		return err
 	}
 	env.LookupEnv = lookup
+	explain := func(err error) error {
+		if note != "" && strings.Contains(err.Error(), "no value for") {
+			return fmt.Errorf("%w\n  (%s)", err, note)
+		}
+		return err
+	}
 	if cmd == "sync" {
 		if len(names) > 0 {
 			return usagef("sync takes no names")
 		}
-		return syncKuma(ctx, env, file, envFile, dryRun)
+		return explain(syncKuma(ctx, env, file, envFile, dryRun))
 	}
 	if cmd == "run" {
 		if len(names) > 0 {
@@ -173,7 +185,7 @@ func run(ctx context.Context, env Env, args []string) error {
 		if _, err := env.ReadFile(file); errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("there is no %s here: name the file with -c FILE or PUSHPROBE_CONFIG", file)
 		}
-		return runAgent(ctx, env, file)
+		return runAgent(ctx, env, file, vars)
 	}
 	data, err := env.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
@@ -188,14 +200,14 @@ func run(ctx context.Context, env Env, args []string) error {
 		}
 		c, err := config.Load(data, env.LookupEnv, config.ForRun)
 		if err != nil {
-			return fmt.Errorf("%s: %w", file, err)
+			return explain(fmt.Errorf("%s: %w", file, err))
 		}
 		fmt.Fprintf(env.Stdout, "%s is fine: %s.\n", file, describe(c))
 		return nil
 	}
 	c, err := config.Load(data, env.LookupEnv, config.ForCheck)
 	if err != nil {
-		return fmt.Errorf("%s: %w", file, err)
+		return explain(fmt.Errorf("%s: %w", file, err))
 	}
 	return checkOnce(ctx, env, c, names)
 }
@@ -301,25 +313,28 @@ func round(d time.Duration) time.Duration {
 }
 
 // withEnvFile adds an env file's variables under the process's own. A
-// missing file is fine unless it was named, and so is one this user cannot
-// read (as under systemd, which reads it as root and passes it on).
-func withEnvFile(env Env, path string, named bool) (func(string) (string, bool), error) {
-	data, err := env.ReadFile(path)
-	if !named && (errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission)) {
-		return env.LookupEnv, nil
-	} else if err != nil {
-		return nil, fmt.Errorf("the env file: %w", err)
+// missing file is fine unless it was named. So is one this user cannot read
+// (as under systemd, which reads it as root and passes it on), but note says
+// so, for when a variable then has no value.
+func withEnvFile(read func(string) ([]byte, error), base func(string) (string, bool), path string, named bool) (func(string) (string, bool), string, error) {
+	data, err := read(path)
+	switch {
+	case !named && errors.Is(err, os.ErrNotExist):
+		return base, "", nil
+	case !named && errors.Is(err, os.ErrPermission):
+		return base, fmt.Sprintf("%s is there, but this user (uid %d) cannot read it, so only the environment was used", path, os.Getuid()), nil
+	case err != nil:
+		return nil, "", fmt.Errorf("the env file: %w", err)
 	}
 	vars, err := config.ParseEnv(data)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, "", fmt.Errorf("%s: %w", path, err)
 	}
-	base := env.LookupEnv
 	return func(k string) (string, bool) {
 		if v, ok := base(k); ok {
 			return v, ok
 		}
 		v, ok := vars[k]
 		return v, ok
-	}, nil
+	}, "", nil
 }

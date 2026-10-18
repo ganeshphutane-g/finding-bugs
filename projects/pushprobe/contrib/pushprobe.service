@@ -1,7 +1,8 @@
 # Install: copy pushprobe to /usr/local/bin, this file to
 # /etc/systemd/system/, the file and pushprobe.env to /etc/pushprobe/, then
 #   systemctl daemon-reload && systemctl enable --now pushprobe
-# Reload after editing the file: systemctl reload pushprobe
+# After editing the file: systemctl reload pushprobe. After sync saved new
+# tokens: systemctl restart pushprobe (systemd reads EnvironmentFile at start).
 
 [Unit]
 Description=pushprobe: checks pushed to Uptime Kuma and Gatus

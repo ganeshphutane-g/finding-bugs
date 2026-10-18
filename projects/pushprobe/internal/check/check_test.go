@@ -1,6 +1,7 @@
 package check
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -107,14 +109,85 @@ func TestTCP(t *testing.T) {
 	expect(t, run(t, config.Check{TCP: &config.TCP{Address: addr}}), false, "connection refused")
 }
 
-// dnsServer answers A, AAAA and TXT questions from a table, over UDP.
-func dnsServer(t *testing.T, records map[string][]string) string {
+// dnsAnswer answers a question from a table (A, AAAA, TXT and CNAME).
+func dnsAnswer(q []byte, records map[string][]string, truncate bool) []byte {
+	// Header (12 bytes), then the question: labels, type, class.
+	i, name := 12, ""
+	for i < len(q) && q[i] != 0 {
+		l := int(q[i])
+		name += string(q[i+1:i+1+l]) + "."
+		i += 1 + l
+	}
+	qtype := binary.BigEndian.Uint16(q[i+1:])
+	question := q[12 : i+5]
+	key := fmt.Sprintf("%s %d", strings.ToLower(name), qtype)
+	answers := records[key]
+	resp := append([]byte{}, q[0:2]...) // ID
+	flags := uint16(0x8180)             // response, recursion available
+	if _, known := records[key]; !known {
+		if _, any := records[strings.ToLower(name)]; !any {
+			flags |= 3 // NXDOMAIN
+		}
+	}
+	if truncate {
+		flags |= 0x0200
+		answers = nil
+	}
+	resp = binary.BigEndian.AppendUint16(resp, flags)
+	resp = binary.BigEndian.AppendUint16(resp, 1)
+	resp = binary.BigEndian.AppendUint16(resp, uint16(len(answers)))
+	resp = append(resp, 0, 0, 0, 0)
+	resp = append(resp, question...)
+	for _, a := range answers {
+		resp = append(resp, 0xc0, 12) // the name, by pointer
+		resp = binary.BigEndian.AppendUint16(resp, qtype)
+		resp = append(resp, 0, 1, 0, 0, 0, 60)
+		var data []byte
+		switch qtype {
+		case 1, 28:
+			ip := net.ParseIP(a)
+			if qtype == 1 {
+				data = ip.To4()
+			} else {
+				data = ip.To16()
+			}
+		case 16:
+			data = append([]byte{byte(len(a))}, a...)
+		case 5:
+			for _, label := range strings.Split(strings.TrimSuffix(a, "."), ".") {
+				data = append(data, byte(len(label)))
+				data = append(data, label...)
+			}
+			data = append(data, 0)
+		}
+		resp = binary.BigEndian.AppendUint16(resp, uint16(len(data)))
+		resp = append(resp, data...)
+	}
+	return resp
+}
+
+// dnsServer answers from a table over UDP and TCP on one port. Names in
+// bigNames get a truncated UDP answer, so the client must ask over TCP.
+func dnsServer(t *testing.T, records map[string][]string, bigNames ...string) string {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { pc.Close() })
+	tl, err := net.Listen("tcp", pc.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tl.Close() })
+	big := func(q []byte) bool {
+		for _, n := range bigNames {
+			if bytes.Contains(q, []byte(strings.Split(n, ".")[0])) {
+				return true
+			}
+		}
+		return false
+	}
 	go func() {
 		buf := make([]byte, 512)
 		for {
@@ -122,48 +195,28 @@ func dnsServer(t *testing.T, records map[string][]string) string {
 			if err != nil {
 				return
 			}
-			q := buf[:n]
-			// Header (12 bytes), then the question: labels, type, class.
-			i, name := 12, ""
-			for i < len(q) && q[i] != 0 {
-				l := int(q[i])
-				name += string(q[i+1:i+1+l]) + "."
-				i += 1 + l
+			pc.WriteTo(dnsAnswer(buf[:n], records, big(buf[:n])), from)
+		}
+	}()
+	go func() {
+		for {
+			c, err := tl.Accept()
+			if err != nil {
+				return
 			}
-			qtype := binary.BigEndian.Uint16(q[i+1:])
-			question := q[12 : i+5]
-			key := fmt.Sprintf("%s %d", strings.ToLower(name), qtype)
-			answers := records[key]
-			resp := append([]byte{}, q[0:2]...) // ID
-			flags := uint16(0x8180)             // response, recursion available
-			if _, known := records[key]; !known {
-				flags |= 3 // NXDOMAIN
-			}
-			resp = binary.BigEndian.AppendUint16(resp, flags)
-			resp = binary.BigEndian.AppendUint16(resp, 1)
-			resp = binary.BigEndian.AppendUint16(resp, uint16(len(answers)))
-			resp = append(resp, 0, 0, 0, 0)
-			resp = append(resp, question...)
-			for _, a := range answers {
-				resp = append(resp, 0xc0, 12) // the name, by pointer
-				resp = binary.BigEndian.AppendUint16(resp, qtype)
-				resp = append(resp, 0, 1, 0, 0, 0, 60)
-				var data []byte
-				switch qtype {
-				case 1, 28:
-					ip := net.ParseIP(a)
-					if qtype == 1 {
-						data = ip.To4()
-					} else {
-						data = ip.To16()
-					}
-				case 16:
-					data = append([]byte{byte(len(a))}, a...)
+			go func() {
+				defer c.Close()
+				var size [2]byte
+				if _, err := io.ReadFull(c, size[:]); err != nil {
+					return
 				}
-				resp = binary.BigEndian.AppendUint16(resp, uint16(len(data)))
-				resp = append(resp, data...)
-			}
-			pc.WriteTo(resp, from)
+				q := make([]byte, binary.BigEndian.Uint16(size[:]))
+				if _, err := io.ReadFull(c, q); err != nil {
+					return
+				}
+				resp := dnsAnswer(q, records, false)
+				c.Write(append(binary.BigEndian.AppendUint16(nil, uint16(len(resp))), resp...))
+			}()
 		}
 	}()
 	return pc.LocalAddr().String()
@@ -171,12 +224,15 @@ func dnsServer(t *testing.T, records map[string][]string) string {
 
 func TestDNS(t *testing.T) {
 	server := dnsServer(t, map[string][]string{
+		"www.lan. 5":    {"web.lan."},
+		"plain.lan.":    {},
+		"big.lan. 1":    {"10.1.1.1"},
 		"nas.lan. 1":    {"192.168.1.10"},
 		"multi.lan. 1":  {"10.0.0.2", "10.0.0.1"},
 		"nas.lan. 28":   {"fd00::10"},
 		"site.lan. 16":  {"v=spf1 -all"},
 		"empty.lan. 28": {},
-	})
+	}, "big.lan")
 	for _, c := range []struct {
 		d   config.DNS
 		ok  bool
@@ -190,9 +246,29 @@ func TestDNS(t *testing.T) {
 		{config.DNS{Query: "nas.lan", Type: "AAAA"}, true, "fd00::10"},
 		{config.DNS{Query: "site.lan", Type: "TXT"}, true, "v=spf1 -all"},
 		{config.DNS{Query: "gone.lan", Type: "A"}, false, "no such name"},
+		{config.DNS{Query: "www.lan", Type: "CNAME", Expect: []string{"web.lan"}}, true, "www.lan is web.lan"},
+		{config.DNS{Query: "plain.lan", Type: "CNAME"}, false, "no CNAME record"},
+		{config.DNS{Query: "big.lan", Type: "A"}, true, "big.lan is 10.1.1.1"},
 	} {
 		c.d.Server = server
 		expect(t, run(t, config.Check{DNS: &c.d}), c.ok, c.msg)
+	}
+	// A server that does not answer fails, even for a name the hosts file
+	// knows.
+	l, _ := net.ListenPacket("udp", "127.0.0.1:0")
+	dead := l.LocalAddr().String()
+	l.Close()
+	ch, _ := New(config.Check{DNS: &config.DNS{Server: dead, Query: "localhost", Type: "A"}})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if r := ch.Run(ctx); r.OK {
+		t.Errorf("a dead server passed: %s", r.Message)
+	}
+	if got := ServerAddress("[::1]"); got != "[::1]:53" {
+		t.Errorf("%s", got)
+	}
+	if got := ServerAddress("fd00::1"); got != "[fd00::1]:53" {
+		t.Errorf("%s", got)
 	}
 }
 
@@ -293,5 +369,32 @@ func TestExec(t *testing.T) {
 	start := time.Now()
 	if r := ch.Run(ctx); r.OK || r.Message != "timed out" || time.Since(start) > 3*time.Second {
 		t.Errorf("%+v after %s", r, time.Since(start))
+	}
+}
+
+func TestHTTPRedirectsKeepHeadersHome(t *testing.T) {
+	var got []string
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("X-Api-Key")+"|"+r.Header.Get("Authorization"))
+	}))
+	defer other.Close()
+	home := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/here" {
+			got = append(got, "home "+r.Header.Get("X-Api-Key"))
+			return
+		}
+		if r.URL.Path == "/stay" {
+			http.Redirect(w, r, "/here", http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, other.URL+"/sso", http.StatusFound)
+	}))
+	defer home.Close()
+	h := config.HTTP{URL: home.URL + "/stay", Method: "GET", Headers: map[string]string{"X-Api-Key": "k", "Authorization": "Bearer t"}}
+	expect(t, run(t, config.Check{HTTP: &h}), true, "status 200")
+	h.URL = home.URL + "/away"
+	expect(t, run(t, config.Check{HTTP: &h}), true, "status 200")
+	if strings.Join(got, ",") != "home k,|" {
+		t.Errorf("headers seen: %q", got)
 	}
 }

@@ -48,11 +48,11 @@ One static binary, `pushprobe`, configured by one YAML file:
 defaults: {interval: 60s, timeout: 10s, retries: 1}
 targets:
   kuma: {url: https://kuma.example.com}        # push tokens per check
-  gatus: {url: https://status.example.com, token: ${GATUS_TOKEN}}
+  gatus: {url: https://status.example.com, token: "${GATUS_TOKEN}"}
 checks:
   - name: nas web
     http: {url: http://192.168.1.10:5000, expect_status: [200, 301], contains: "Synology"}
-    kuma: {push_token: ${KUMA_NAS_TOKEN}}
+    kuma: {push_token: "${KUMA_NAS_TOKEN}"}
   - name: printer
     tcp: {address: 192.168.1.20:9100}
     gatus: {endpoint: office_printer}
@@ -64,8 +64,9 @@ checks:
     disk: {path: /, max_used_percent: 90}
 ```
 
-**Checks:** http(s), tcp, ping (ICMP, falling back to unprivileged UDP ping or
-TCP), dns, tls certificate expiry, disk and memory use, and `exec` (a command's
+**Checks:** http(s), tcp, ping (ICMP: unprivileged ping sockets where allowed,
+else a raw socket), dns (straight to the named server, or the system's
+resolver), tls certificate expiry, disk and memory use, and `exec` (a command's
 exit code, off unless enabled).
 
 **Reporting:** each result goes to a Kuma push monitor (status, a short message,

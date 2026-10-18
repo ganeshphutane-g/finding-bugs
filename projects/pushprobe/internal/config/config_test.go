@@ -70,7 +70,7 @@ func TestLoadForCheckIgnoresWhereResultsGo(t *testing.T) {
 
 func TestProblems(t *testing.T) {
 	for name, c := range map[string]struct{ file, want string }{
-		"unknown key":      {"checks:\n  - name: a\n    tcp: {adress: x:1}\n", "line 3: field adress not found"},
+		"unknown key":      {"checks:\n  - name: a\n    tcp: {adress: x:1}\n", `line 3: unknown key "adress" (did you mean address?)`},
 		"bad duration":     {"checks:\n  - name: a\n    interval: soon\n    tcp: {address: x:1}\n", `line 3: "soon" is not a duration`},
 		"no kind":          {"checks:\n  - name: a\n    kuma: {push_token: x}\n", `line 2: check "a": say what to check`},
 		"two kinds":        {"checks:\n  - name: a\n    tcp: {address: x:1}\n    disk: {path: /, max_used_percent: 90}\n", "more than one"},
@@ -128,15 +128,18 @@ checks:
 		t.Fatalf("group %q", c.Targets.Kuma.Group)
 	}
 	// Only a whole ${NAME} may be left for sync; other variables are needed.
-	_, err = Load([]byte("targets: {kuma: {url: 'https://k'}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: 'pre-${KUMA_A}'}}\n"), env(nil), ForSync)
+	_, err = Load([]byte("targets: {kuma: {url: 'https://k', group: G}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: 'pre-${KUMA_A}'}}\n"), env(nil), ForSync)
 	if err == nil || !strings.Contains(err.Error(), "no value for KUMA_A") {
 		t.Fatalf("%v", err)
 	}
-	if _, err = Load([]byte("targets: {kuma: {url: 'https://k'}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: '${HOME}'}}\n"), env(nil), ForSync); err == nil || !strings.Contains(err.Error(), "HOME (only") {
+	if _, err = Load([]byte("targets: {kuma: {url: 'https://k', group: G}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: '${HOME}'}}\n"), env(nil), ForSync); err == nil || !strings.Contains(err.Error(), "HOME (only") {
 		t.Fatalf("%v", err)
 	}
 	if _, err = Load([]byte("checks:\n  - {name: a, tcp: {address: 'x:1'}}\n"), env(nil), ForSync); err == nil || !strings.Contains(err.Error(), "nothing to set up") {
 		t.Fatalf("%v", err)
+	}
+	if _, err = Load([]byte("targets: {kuma: {url: 'https://k'}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: '${KUMA_A}'}}\n"), env(nil), ForSync); err == nil || !strings.Contains(err.Error(), "each pushprobe needs its own group") {
+		t.Fatalf("no group: %v", err)
 	}
 }
 
@@ -172,5 +175,53 @@ func TestExecNeedsAllowing(t *testing.T) {
 	}
 	if _, err := Load([]byte("allow_exec: true\nchecks:\n  - {name: b, exec: {command: []}}\n"), env(nil), ForCheck); err == nil || !strings.Contains(err.Error(), "program to run is missing") {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestReviewFixes(t *testing.T) {
+	// listen takes variables too.
+	c, err := Load([]byte("listen: '${PUSHPROBE_LISTEN}'\nchecks:\n  - {name: a, tcp: {address: 'x:1'}}\n"), env(map[string]string{"PUSHPROBE_LISTEN": "127.0.0.1:9469"}), ForCheck)
+	if err != nil || c.Listen != "127.0.0.1:9469" {
+		t.Fatalf("listen: %v %v", err, c)
+	}
+	// A timeout longer than the default interval.
+	if _, err := Load([]byte("checks:\n  - {name: slow, timeout: 90s, tcp: {address: 'x:1'}}\n"), env(nil), ForCheck); err == nil || !strings.Contains(err.Error(), "shorter than the interval (1m0s)") {
+		t.Fatalf("timeout: %v", err)
+	}
+	// Unquoted ${...} inside {...}.
+	_, err = Load([]byte("targets:\n  gatus: {url: 'https://g', token: ${GATUS_T}}\nchecks: []\n"), env(nil), ForRun)
+	if err == nil || !strings.Contains(err.Error(), "put values with ${…} in quotes") {
+		t.Fatalf("quotes: %v", err)
+	}
+	// Typos get a suggestion, unknown words do not.
+	_, err = Load([]byte("checks:\n  - name: a\n    intervall: 30s\n    colour: red\n    tcp: {address: 'x:1'}\n"), env(nil), ForCheck)
+	if err == nil || !strings.Contains(err.Error(), `unknown key "intervall" (did you mean interval?)`) || !strings.Contains(err.Error(), `unknown key "colour"`) ||
+		strings.Contains(err.Error(), "config.Check") {
+		t.Fatalf("typos: %v", err)
+	}
+	// Passwords in URLs are not repeated in errors.
+	_, err = Load([]byte("targets: {kuma: {url: 'ftp://u:s3cret@k'}}\nchecks:\n  - {name: a, tcp: {address: 'x:1'}, kuma: {push_token: abc}}\n"), env(nil), ForRun)
+	if err == nil || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("redact: %v", err)
+	}
+	if got := Redact("https://probe:pw@kuma.example.com/x"); got != "https://probe:xxxxx@kuma.example.com/x" {
+		t.Fatalf("%s", got)
+	}
+}
+
+func TestUpdateEnvThroughALink(t *testing.T) {
+	dir := t.TempDir()
+	target := dir + "/secrets.env"
+	os.WriteFile(target, []byte("KUMA_A=old\n"), 0o600)
+	link := dir + "/pushprobe.env"
+	os.Symlink(target, link)
+	if err := UpdateEnv(link, map[string]string{"KUMA_A": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Lstat(link); fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("the link was replaced by a file")
+	}
+	if data, _ := os.ReadFile(target); string(data) != "KUMA_A=new\n" {
+		t.Errorf("target %q", data)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"os"
+	"runtime"
 	"time"
 
 	"golang.org/x/net/icmp"
@@ -30,6 +31,9 @@ func listen(v6 bool) (*icmp.PacketConn, bool, error) {
 	}
 	c, err := icmp.ListenPacket(raw, addr)
 	if err != nil {
+		if runtime.GOOS == "windows" {
+			return nil, false, fmt.Errorf("pings on Windows need pushprobe to run as Administrator (%v)", err)
+		}
 		if errors.Is(err, os.ErrPermission) {
 			return nil, false, errors.New("not allowed to send pings: run as root, give pushprobe CAP_NET_RAW, or allow ping sockets (sysctl net.ipv4.ping_group_range)")
 		}

@@ -79,15 +79,20 @@ docker run -d --name pushprobe --restart unless-stopped \
   -v /srv/pushprobe:/etc/pushprobe:ro pushprobe
 ```
 
-The container runs as a non-root user and needs no extra capabilities: ping uses
-the unprivileged ping sockets Docker allows. Give it `--network host` if the
-checks must see the host's own networks exactly as the host does.
+The container runs as a non-root user (uid 65532) and needs no extra
+capabilities: ping uses the unprivileged ping sockets Docker allows. Give it
+`--network host` if the checks must see the host's own networks exactly as the
+host does. The mounted `pushprobe.env` must be readable by uid 65532
+(`chown 65532 /srv/pushprobe/pushprobe.env`), or pass the variables with
+`--env-file`. Run `sync` on the host, or mount the folder writable for it.
 
 systemd: copy the binary to `/usr/local/bin/`, `contrib/pushprobe.service` to
 `/etc/systemd/system/`, and your file to `/etc/pushprobe/pushprobe.yaml`, then
 `systemctl enable --now pushprobe`. The unit runs as a throwaway user with only
 `CAP_NET_RAW` (for ping), and reads `/etc/pushprobe/pushprobe.env` as root, so
-that file can stay `0600`.
+that file can stay `0600`. systemd reads that file only at start: after `sync`
+saved new tokens, `systemctl restart pushprobe` (a reload is enough for other
+changes).
 
 ## Quick start
 
@@ -113,22 +118,35 @@ that file can stay `0600`.
 
 3. Create the push monitors in Kuma. sync logs in with your Kuma account, makes
    a token for each `${KUMA_…}` that has no value yet, and saves the tokens in
-   `pushprobe.env` next to the file (mode 0600):
+   `pushprobe.env` next to the file (mode 0600). The monitors go in the group the
+   file names. Give each site (each pushprobe) its own group: sync finds
+   monitors by name within it, so two sites sharing a group would share a
+   "disk" monitor.
 
-   ```sh
-   export PUSHPROBE_KUMA_USERNAME=admin PUSHPROBE_KUMA_PASSWORD=…
-   pushprobe sync --dry-run
-   pushprobe sync
+   ```console
+   $ export PUSHPROBE_KUMA_USERNAME=admin PUSHPROBE_KUMA_PASSWORD=…
+   $ pushprobe sync
+   https://kuma.example.com (Uptime Kuma 2.5.6), group "Site A":
+     + group "Site A"
+     + push monitor "nas web" (heartbeat every 92s, a new token, token saved as KUMA_NAS)
+     + push monitor "printer" (heartbeat every 92s, a new token, token saved as KUMA_PRINTER)
+   Done: 2 monitors changed; 2 tokens saved in pushprobe.env (mode 0600).
    ```
+
+   `--dry-run` shows the same plan and changes nothing. Running sync again
+   changes nothing unless the file did.
 
    Prefer to click? Create a push monitor in Kuma yourself, copy the token from
    its push URL (`…/api/push/<token>`), and put it in `pushprobe.env` as
    `KUMA_NAS=<token>`.
 
-4. Run it:
+4. Run it. It logs once at start and then only when a check changes state:
 
-   ```sh
-   pushprobe run
+   ```console
+   $ pushprobe run
+   2026-10-18T19:52:52Z pushprobe v1.0.0 started: 2 checks, 2 reporting to Uptime Kuma, 0 to Gatus
+   2026-10-18T19:52:53Z nas web: up (status 200)
+   2026-10-18T19:52:55Z printer: DOWN (connection refused) after 2 attempts
    ```
 
 ## Examples
@@ -214,8 +232,17 @@ pushprobe version
 - `${NAME}` works in any text in the file. Only variables whose names start with
   `PUSHPROBE_`, `KUMA_` or `GATUS_` can be read, so a file can't send your other
   secrets anywhere.
-- They come from the environment or from the env file; the environment wins.
+- They come from the environment or from the env file; the environment wins. An
+  empty value counts as none.
+- `run` reads the env file again on SIGHUP.
+- Inside `{…}`, quote values that use them: `token: "${GATUS_TOKEN}"`.
 - `$${` stands for a literal `${`.
+
+**Secrets.**
+- Tokens never appear in logs, in `/metrics` or in sync's output.
+- A password in a URL is shown as `xxxxx`.
+- An http check's headers go only to the address it names. When a redirect
+  leads to another host, or from https to http, they are dropped.
 
 **Timing.**
 - Intervals are at least 5s, and each check's timeout must be shorter than its
@@ -228,8 +255,8 @@ pushprobe version
   longest possible run plus 10 seconds, so a slow run never shows as a missed
   heartbeat.
 
-**Exit codes:** 0 fine, 1 error, 2 bad usage, 3 a check failed (`check`), 130
-interrupted.
+**Exit codes:** 0 fine (and `run` when it is stopped), 1 error, 2 bad usage, 3 a
+check failed (`check`), 130 interrupted.
 
 ## Limits
 
@@ -239,9 +266,13 @@ interrupted.
   isn't documented as stable; it's tested against Uptime Kuma 2.x.
 - Gatus external endpoints can only be declared in Gatus's own file, so `sync`
   doesn't create them.
-- Disk checks need Linux, macOS or FreeBSD. Memory checks need Linux.
+- Disk checks need Linux, macOS or FreeBSD, and memory checks need Linux;
+  `validate` says so elsewhere.
 - Ping needs ping sockets (allowed in Docker, and on hosts where
-  `net.ipv4.ping_group_range` includes the user), root, or `CAP_NET_RAW`.
+  `net.ipv4.ping_group_range` includes the user), root, or `CAP_NET_RAW`. On
+  Windows it needs Administrator.
+- A dns check with a `server` asks that server directly. Without one, it asks
+  the system's resolver, which also reads the hosts file.
 
 ## Roadmap
 

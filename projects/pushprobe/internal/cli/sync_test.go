@@ -44,13 +44,15 @@ checks:
 		code := Run(context.Background(), env, append([]string{"sync", "-c", file}, args...))
 		return code, out.String()
 	}
+	// An empty placeholder in the env file counts as no value.
+	os.WriteFile(filepath.Join(dir, "pushprobe.env"), []byte("# tokens\nKUMA_NAS=\n"), 0o600)
 	code, out := sync("--dry-run")
 	if code != 0 || !strings.Contains(out, `+ push monitor "nas" (heartbeat every 45s, a new token`) || !strings.Contains(out, `~ push monitor "printer": heartbeat interval 60s -> 45s`) ||
 		!strings.Contains(out, "Nothing was changed") {
 		t.Fatalf("dry run: exit %d\n%s", code, out)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "pushprobe.env")); err == nil {
-		t.Fatal("the dry run wrote the env file")
+	if data, _ := os.ReadFile(filepath.Join(dir, "pushprobe.env")); string(data) != "# tokens\nKUMA_NAS=\n" {
+		t.Fatalf("the dry run wrote the env file: %q", data)
 	}
 	code, out = sync()
 	if code != 0 || !strings.Contains(out, "Done: 2 monitors changed; 2 tokens saved in") {

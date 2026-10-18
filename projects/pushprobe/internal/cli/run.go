@@ -83,17 +83,26 @@ func (a *agent) close() {
 }
 
 // runAgent is `pushprobe run`.
-func runAgent(ctx context.Context, env Env, file string) error {
+func runAgent(ctx context.Context, env Env, file string, vars func() (func(string) (string, bool), string, error)) error {
 	logf := func(f string, a ...any) {
 		fmt.Fprintf(env.Stderr, "%s %s\n", time.Now().UTC().Format(time.RFC3339), fmt.Sprintf(f, a...))
 	}
+	// Each load reads the env file again, so a token sync just saved is
+	// picked up by a reload.
 	load := func() (*config.Config, error) {
 		data, err := env.ReadFile(file)
 		if err != nil {
 			return nil, err
 		}
-		c, err := config.Load(data, env.LookupEnv, config.ForRun)
+		lookup, note, err := vars()
 		if err != nil {
+			return nil, err
+		}
+		c, err := config.Load(data, lookup, config.ForRun)
+		if err != nil {
+			if note != "" {
+				return nil, fmt.Errorf("%s: %w\n  (%s)", file, err, note)
+			}
 			return nil, fmt.Errorf("%s: %w", file, err)
 		}
 		return c, nil

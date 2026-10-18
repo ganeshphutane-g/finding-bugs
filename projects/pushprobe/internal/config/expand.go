@@ -44,6 +44,7 @@ func expandAll(c *Config, lookup Lookup, mode Mode, missing map[string]bool) {
 			return v
 		})
 	}
+	c.Listen = fill(c.Listen)
 	switch mode {
 	case ForRun:
 		walk(reflect.ValueOf(&c.Targets).Elem(), fill)
@@ -64,8 +65,9 @@ func expandAll(c *Config, lookup Lookup, mode Mode, missing map[string]bool) {
 		case ForSync:
 			ch.Gatus = nil
 			// An unset ${NAME} as the whole push_token is for sync to make.
+			// (Set but empty counts as unset, as in KUMA_NAS= in an env file.)
 			if v := kuma.tokenVarIfAny(); v != "" && Allowed(v) {
-				if _, set := lookup(v); !set {
+				if val, _ := lookup(v); val == "" {
 					kuma.PushToken = ""
 				}
 			}
