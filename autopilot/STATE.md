@@ -6,17 +6,29 @@ Research round 10 is in IDEAS.md.
 
 ## Next step
 
-Milestone 1 (SPEC.md):
-- set up the module (`github.com/ganeshphutane-g/alertlines`, Go 1.24, use
-  GOTOOLCHAIN=local), LICENSE, Makefile (version from `alertlines/v*` tags) and
-  CI;
-- the LogQL scanner: the range-vector argument and range from a metric
-  expression;
-- generatorURL decoding;
-- grouping-label filters;
-- the Loki query_range client (with the tenant header);
-- limits and redaction;
-- `alertlines check`.
+Milestone 1 is done (run 9):
+- internal/logql: a quote-aware scanner that cuts the log query, its range and
+  the `by` labels out of a metric expression, and drops unwrap. Every cut query
+  was checked against a real Loki.
+- internal/enrich: the query comes from the `alertlines_query` annotation or the
+  generatorURL (Explore `left`/`panes`, or Prometheus-style `g0.expr`). Grouped
+  labels become label filters; for ungrouped expressions it retries without
+  them. It also applies limits, redaction and a cache.
+- internal/loki: the client (query_range backward, tenant, basic or bearer
+  auth).
+- internal/redact: built-in patterns plus your own.
+- internal/config, and `alertlines check --expr/--alert`.
+- internal/testkit: StartLoki (host network, random ports, ruler every 2s) and
+  Push. CI runs against Loki 3.5.0 and latest.
+
+Milestone 2:
+- the proxy `alertlines run`: POST /api/v2/alerts in, enriched and sent on to
+  every Alertmanager; firing alerts only; one timeout per batch, after which
+  they go on as they are; other paths go to the first Alertmanager;
+- /healthz and /metrics;
+- integration tests: a real Loki ruler, alertlines and a real Alertmanager.
+  Read the alert back from Alertmanager's API and from a webhook receiver.
+  Add a StartAlertmanager to testkit (prom/alertmanager:latest).
 
 Verified on 2026-10-19 with Loki 3.7.8 (details in SPEC.md):
 - the ruler posts /api/v2/alerts with the expression in generatorURL's Explore

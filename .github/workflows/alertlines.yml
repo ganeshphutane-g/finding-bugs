@@ -1,0 +1,33 @@
+name: alertlines
+
+on:
+  push:
+    paths: ["projects/alertlines/**", ".github/workflows/alertlines.yml"]
+  pull_request:
+    paths: ["projects/alertlines/**", ".github/workflows/alertlines.yml"]
+
+defaults:
+  run:
+    working-directory: projects/alertlines
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        loki: ["grafana/loki:3.5.0", "grafana/loki:latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/alertlines/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: cross-builds
+        run: |
+          for target in linux/amd64 linux/arm64 darwin/arm64 windows/amd64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null . || exit 1
+          done
+      - name: tests, also against real Loki and Alertmanager servers
+        run: ALERTLINES_INTEGRATION=1 ALERTLINES_LOKI_IMAGE=${{ matrix.loki }} go test -race -count=1 -timeout 20m ./...
