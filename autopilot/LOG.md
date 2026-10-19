@@ -30,7 +30,11 @@ Newest first.
   - redaction missed private keys, headers, cookies and escaped JSON, and
     over-redacted words like tokens_used.
 - CI green on every alertlines push so far, including the Docker image build.
-- Next: research round 11 (STATE.md).
+- Research round 11 chose the AdGuard Home real-client-IP bridge.
+  - Demand: AdGuardHome#2798, 96 👍, open since 2021; no tool exists.
+  - Tested on a real AdGuard Home v0.107.79: DoH with X-Forwarded-For from a
+    trusted proxy is logged as the real client. So the design works.
+- Next: the spec for it (STATE.md).
 - Owner:
   - the finding-bugs repo is still public (your decision);
   - create the v1.0.0 tags in the web UI:

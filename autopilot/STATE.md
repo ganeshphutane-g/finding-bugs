@@ -1,24 +1,37 @@
 # State
 
-Current project: none in build. #9 alertlines is done (see Finished projects);
-research round 11 for project #10 is next.
+Current project: #10, the AdGuard Home real-client-IP bridge (working name
+xffdns; check the name is free). Phase: spec. Research round 11 is in IDEAS.md.
 
 ## Next step
 
-Research round 11 with round 8's bar:
-- a request with 50+ 👍 on a project with 2k+★, open over a year or declined;
-- two more independent sources;
-- upstream not building it;
-- no good existing tool;
-- testable locally.
+Write projects/<name>/SPEC.md. First verify, with adguard/adguardhome:latest
+(v0.107.79 now):
+- per-client settings and blocked services by the X-Forwarded-For IP;
+- `http.doh.insecure_enabled: true` (the setting's name in this version) and
+  the default `trusted_proxies` 127.0.0.0/8, ::1;
+- the client ID path `/dns-query/{ClientID}`: a DoT SNI client ID could map to
+  it;
+- what HAProxy (haproxy:lts) and Traefik send with PROXY protocol v1/v2 for DoT
+  TCP passthrough.
 
-Round 10's runners-up are in IDEAS.md and need re-checking:
-- grafana.com dashboards ready for provisioning (20);
-- mdnsgate (19);
-- Alertmanager silence companion (19).
+Setup that works:
+- `docker run --network host adguard/adguardhome`;
+- POST /control/install/configure with
+  {"web":{"ip":"127.0.0.1","port":3080},"dns":{"ip":"127.0.0.1","port":5354},"username":"admin","password":"..."};
+- then edit /opt/adguardhome/conf/AdGuardHome.yaml and restart.
 
-Find at least 5 new candidates, record the round in IDEAS.md, then write the
-spec for the pick.
+Upstreams cannot be reached from here, so add a local rule (POST
+/control/filtering/set_rules) to get logged answers.
+
+Then scope v1:
+- listeners: DNS over UDP and TCP, and DoT (own certificate, or passthrough
+  with PROXY protocol), each optionally behind PROXY v1/v2;
+- forwarding to AdGuard's DoH with XFF, keeping the client ID;
+- trusted sources for PROXY headers;
+- timeouts, limits and metrics;
+- a Docker image and a systemd unit;
+- tests against real AdGuard Home and HAProxy containers.
 
 Tags: every Makefile takes its version from `<project>/vX.Y.Z` tags only, so the
 owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).

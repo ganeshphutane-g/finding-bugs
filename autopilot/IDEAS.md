@@ -3,6 +3,78 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 11 — 2026-10-20 IST
+
+Round 8's bar, across about 40 more repos (backups, proxies, identity, media,
+DNS, mail, k8s, databases, observability, CI, secrets, networking). "checked"
+means seen in a GitHub search result on 2026-10-19 or 20; the rest is from search
+summaries. The pick's numbers and its key technical claim were checked again.
+
+### Chosen: AdGuard Home real-client-IP bridge (project #10, working name xffdns)
+
+A small relay in front of AdGuard Home. It takes plain DNS and DoT, with or
+without the PROXY protocol header that HAProxy, Traefik or nginx stream send.
+Each query goes on to AdGuard's DoH endpoint with `X-Forwarded-For` set to the
+real client. AdGuard's query log, statistics and per-client rules then show the
+real device instead of the proxy. This covers Android "Private DNS" (DoT)
+behind a reverse proxy.
+
+**Demand:**
+- AdGuardHome#2798 "Support PROXY Protocol": 96 👍, open since 2021-03,
+  updated 2026-09-17, on a 37.5k★ project (checked);
+- #1806 (the same request, 17 👍, open) and #5694 (closed not_planned)
+  (checked);
+- #1727 "Use EDNS as client IP": 54 👍 (checked);
+- a dnsdist mailing-list thread (2025-11) and a Caddy community thread on the
+  same problem; an unofficial AdGuard fork adds PROXY v2 (search summary).
+
+**Upstream:** no PROXY-protocol PR in AdGuardHome (checked).
+
+**Gap:** 0xERR0R/dns-proxy (17★) relays DoT to DoH without the client IP; no
+other tool found (checked).
+
+**Verified 2026-10-20 with AdGuard Home v0.107.79:**
+- with `http.doh.insecure_enabled: true` (not `allow_unencrypted_doh`, which
+  this version drops), a DoH query over plain HTTP with `X-Forwarded-For:
+  192.168.5.77` from 127.0.0.1 (in the default `trusted_proxies`) is logged as
+  client 192.168.5.77, protocol doh; without the header it is logged as
+  127.0.0.1;
+- queries that fail upstream are not logged, so test with a local rule.
+
+**Scores:** 4/5/5/4/4 = **22**.
+
+**Risks:**
+- Per-client rules and blocked services by XFF IP are not yet checked.
+- AdGuard could add PROXY protocol itself.
+- The audience is the part of AdGuard's users who run it behind a proxy.
+
+### Runners-up
+
+- **Audiobookshelf ↔ Kobo sync**, 18: audiobookshelf#3504 259 👍 (checked).
+  The protocol is reverse-engineered, and there is no device to test with.
+- **Frigate recordings archiver**, 18: frigate#3673 54 👍 (checked). Overlaps
+  pushdir.
+- **Prometheus query-limit proxy for Grafana**, 17: grafana#4288 200 👍 (checked);
+  other sources are thin and the homelab fit is weak.
+- **Grafana orgs/teams as code**, 15: grafana#12119 73 👍; Terraform and Ansible
+  cover it.
+- Re-checked:
+  - grafana#10786 and tailscale#1013 are unchanged.
+  - The Alertmanager silence companion is weaker: upstream PRs on muted alerts
+    in 2025–2026.
+
+### Rejected in round 11
+
+- **Upstream building it:** Keycloak SCIM, SOPS decrypt-many, editing alert
+  messages in place.
+- **Covered:** Traefik certificate cleanup, flux build helmrelease, Argo CD
+  offline rendering, ABS OPDS.
+- **Below 50 👍:** Jellyfin endpoints, size-based retention (VictoriaMetrics,
+  Loki), Headscale Funnel, an Authentik operator, Pushgateway TTL.
+- **Too large or server-side:** Stalwart webmail, Vault KV symlinks.
+- **No 50+ 👍 requests found:** Caddy, NetBird, Woodpecker, Mosquitto,
+  Zigbee2MQTT, CoreDNS, Pi-hole, Navidrome, k3s, nginx, MySQL images.
+
 ## Research round 10 — 2026-10-19 IST
 
 Round 8's bar, looking past Docker and Kuma this time. "checked" means seen in a
