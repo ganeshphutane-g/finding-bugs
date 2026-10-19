@@ -31,3 +31,7 @@ jobs:
           done
       - name: tests, also against real Loki and Alertmanager servers
         run: ALERTLINES_INTEGRATION=1 ALERTLINES_LOKI_IMAGE=${{ matrix.loki }} go test -race -count=1 -timeout 20m ./...
+      - name: the Docker image builds and runs
+        run: |
+          docker build -t alertlines:ci --build-arg VERSION=ci .
+          docker run --rm alertlines:ci version

@@ -1,0 +1,35 @@
+# Install: copy alertlines to /usr/local/bin, this file to
+# /etc/systemd/system/ and the file to /etc/alertlines/alertlines.yaml, then
+#   systemctl daemon-reload && systemctl enable --now alertlines
+# Point Loki's ruler at it: ruler: {alertmanager_url: http://<this host>:9097}
+
+[Unit]
+Description=alertlines: log lines in Loki's alerts
+Documentation=https://github.com/ganeshphutane-g/alertlines
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/alertlines run -c /etc/alertlines/alertlines.yaml
+# Secrets for ${ALERTLINES_...} in the file (read by systemd as root).
+EnvironmentFile=-/etc/alertlines/alertlines.env
+Restart=on-failure
+RestartSec=5s
+
+DynamicUser=yes
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
