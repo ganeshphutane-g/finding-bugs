@@ -225,6 +225,10 @@ func RedactURL(s string) string {
 	if u, err := url.Parse(s); err == nil && u.User != nil {
 		return u.Redacted()
 	}
+	// (A URL that does not parse may still hold one.)
+	if i, at := strings.Index(s, "://"), strings.LastIndex(s, "@"); i >= 0 && at > i {
+		return s[:i+3] + "xxxxx" + s[at:]
+	}
 	return s
 }
 

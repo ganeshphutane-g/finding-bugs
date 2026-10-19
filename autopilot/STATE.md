@@ -21,14 +21,27 @@ Milestone 1 is done (run 9):
 - internal/testkit: StartLoki (host network, random ports, ruler every 2s) and
   Push. CI runs against Loki 3.5.0 and latest.
 
-Milestone 2:
-- the proxy `alertlines run`: POST /api/v2/alerts in, enriched and sent on to
-  every Alertmanager; firing alerts only; one timeout per batch, after which
-  they go on as they are; other paths go to the first Alertmanager;
-- /healthz and /metrics;
-- integration tests: a real Loki ruler, alertlines and a real Alertmanager.
-  Read the alert back from Alertmanager's API and from a webhook receiver.
-  Add a StartAlertmanager to testkit (prom/alertmanager:latest).
+Milestone 2 is done (run 9):
+- `alertlines run` (internal/proxy). It takes POST /api/v2/alerts, adds lines
+  to firing alerts within one timeout per batch, keeps every other field, and
+  forwards to every Alertmanager, answering with the first success. Other paths
+  go to the first Alertmanager. It serves /healthz and /metrics, and logs a
+  repeated error at most once a minute.
+- Real-server tests (internal/cli/servers_test.go) pass against Loki 3.5.0 and
+  3.7.8:
+  - the Loki ruler, then alertlines, then Alertmanager, then a webhook, with
+    the right pod's lines, redacted;
+  - with Loki down, the alert still arrives, without lines.
+
+Milestone 3 (release):
+- a Dockerfile (distroless, non-root; CI builds it);
+- contrib/alertlines.service;
+- a README with real notification output, and Alertmanager template examples
+  (Slack, email, webhook);
+- CHANGELOG;
+- two full reviews with the findings fixed;
+- CI green;
+- record it under Finished projects.
 
 Verified on 2026-10-19 with Loki 3.7.8 (details in SPEC.md):
 - the ruler posts /api/v2/alerts with the expression in generatorURL's Explore

@@ -41,6 +41,8 @@ Adds the matching log lines to the alerts Loki's ruler sends to Alertmanager.
 Point the ruler's alertmanager_url at alertlines; it passes every alert on.
 
 Commands:
+  run       Take alerts from the ruler (POST /api/v2/alerts), add log lines
+            to the firing ones and pass them all on to Alertmanager
   check     Show the query and the lines alertlines would add to an alert:
               alertlines check --expr 'sum by (app) (count_over_time({app="shop"} |= "ERROR" [5m])) > 0' --label app=shop
               alertlines check --alert alert.json   (an alert as Alertmanager's API shows it)
@@ -97,7 +99,7 @@ func run(ctx context.Context, env Env, args []string) error {
 	case "version", "--version":
 		fmt.Fprintf(env.Stdout, "alertlines %s\n", Version)
 		return nil
-	case "check":
+	case "check", "run":
 	default:
 		return usagef("unknown command %q", cmd)
 	}
@@ -119,6 +121,16 @@ func run(ctx context.Context, env Env, args []string) error {
 	}
 	if fs.NArg() > 0 {
 		return usagef("unexpected %q", fs.Arg(0))
+	}
+	if cmd == "run" {
+		if expr != "" || alertFile != "" || len(labels) > 0 {
+			return usagef("--expr, --alert and --label are for check")
+		}
+		c, err := loadConfig(env, file, lokiURL, true)
+		if err != nil {
+			return err
+		}
+		return runProxy(ctx, env, c)
 	}
 	c, err := loadConfig(env, file, lokiURL, false)
 	if err != nil {

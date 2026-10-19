@@ -140,3 +140,54 @@ func (l *Loki) Push(t *testing.T, labels map[string]string, lines ...string) {
 		t.Fatalf("push: %s", resp.Status)
 	}
 }
+
+// Alertmanager is a running Alertmanager whose one receiver is a webhook.
+type Alertmanager struct {
+	URL  string
+	Name string
+}
+
+// StartAlertmanager runs prom/alertmanager (host network) that sends every
+// notification to webhookURL at once.
+func StartAlertmanager(t *testing.T, webhookURL string) *Alertmanager {
+	t.Helper()
+	Integration(t)
+	dir := t.TempDir()
+	cfg := fmt.Sprintf(`route:
+  receiver: hook
+  group_by: [alertname]
+  group_wait: 1s
+  group_interval: 1s
+  repeat_interval: 1h
+receivers:
+  - name: hook
+    webhook_configs:
+      - url: %s
+        send_resolved: true
+`, webhookURL)
+	os.WriteFile(filepath.Join(dir, "am.yaml"), []byte(cfg), 0o644)
+	os.Chmod(dir, 0o755)
+	port := FreePort(t)
+	a := &Alertmanager{URL: fmt.Sprintf("http://127.0.0.1:%d", port), Name: name("am")}
+	if out, err := docker("run", "-d", "--name", a.Name, "--network", "host", "-v", filepath.Join(dir, "am.yaml")+":/etc/am.yaml:ro",
+		"prom/alertmanager:latest", "--config.file=/etc/am.yaml", fmt.Sprintf("--web.listen-address=127.0.0.1:%d", port),
+		"--cluster.listen-address=", "--storage.path=/tmp/am"); err != nil {
+		t.Fatalf("starting Alertmanager: %v\n%s", err, out)
+	}
+	t.Cleanup(func() { docker("rm", "-f", a.Name) })
+	deadline := time.Now().Add(time.Minute)
+	for {
+		resp, err := http.Get(a.URL + "/-/ready")
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				return a
+			}
+		}
+		if time.Now().After(deadline) {
+			logs, _ := docker("logs", "--tail", "30", a.Name)
+			t.Fatalf("Alertmanager did not start: %v\n%s", err, logs)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
