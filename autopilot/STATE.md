@@ -1,59 +1,24 @@
 # State
 
-Current project: #9 alertlines (log lines in Loki alerts: a proxy between the
-Loki ruler and Alertmanager). Phase: build. Spec: projects/alertlines/SPEC.md.
-Research round 10 is in IDEAS.md.
+Current project: none in build. #9 alertlines is done (see Finished projects);
+research round 11 for project #10 is next.
 
 ## Next step
 
-Milestone 1 is done (run 9):
-- internal/logql: a quote-aware scanner that cuts the log query, its range and
-  the `by` labels out of a metric expression, and drops unwrap. Every cut query
-  was checked against a real Loki.
-- internal/enrich: the query comes from the `alertlines_query` annotation or the
-  generatorURL (Explore `left`/`panes`, or Prometheus-style `g0.expr`). Grouped
-  labels become label filters; for ungrouped expressions it retries without
-  them. It also applies limits, redaction and a cache.
-- internal/loki: the client (query_range backward, tenant, basic or bearer
-  auth).
-- internal/redact: built-in patterns plus your own.
-- internal/config, and `alertlines check --expr/--alert`.
-- internal/testkit: StartLoki (host network, random ports, ruler every 2s) and
-  Push. CI runs against Loki 3.5.0 and latest.
+Research round 11 with round 8's bar:
+- a request with 50+ 👍 on a project with 2k+★, open over a year or declined;
+- two more independent sources;
+- upstream not building it;
+- no good existing tool;
+- testable locally.
 
-Milestone 2 is done (run 9):
-- `alertlines run` (internal/proxy). It takes POST /api/v2/alerts, adds lines
-  to firing alerts within one timeout per batch, keeps every other field, and
-  forwards to every Alertmanager, answering with the first success. Other paths
-  go to the first Alertmanager. It serves /healthz and /metrics, and logs a
-  repeated error at most once a minute.
-- Real-server tests (internal/cli/servers_test.go) pass against Loki 3.5.0 and
-  3.7.8:
-  - the Loki ruler, then alertlines, then Alertmanager, then a webhook, with
-    the right pod's lines, redacted;
-  - with Loki down, the alert still arrives, without lines.
+Round 10's runners-up are in IDEAS.md and need re-checking:
+- grafana.com dashboards ready for provisioning (20);
+- mdnsgate (19);
+- Alertmanager silence companion (19).
 
-Milestone 3 (release):
-- a Dockerfile (distroless, non-root; CI builds it);
-- contrib/alertlines.service;
-- a README with real notification output, and Alertmanager template examples
-  (Slack, email, webhook);
-- CHANGELOG;
-- two full reviews with the findings fixed;
-- CI green;
-- record it under Finished projects.
-
-Verified on 2026-10-19 with Loki 3.7.8 (details in SPEC.md):
-- the ruler posts /api/v2/alerts with the expression in generatorURL's Explore
-  link, plus X-Scope-OrgID;
-- the log part returns the lines via query_range.
-
-A test setup that works (in /tmp/claude-0/al last run):
-- Loki's default config, plus a ruler (local rules storage
-  /etc/loki/rules/fake/, evaluation_interval 10s, enable_api, alertmanager_url
-  pointing at a port other than 9095, which is Loki's own gRPC port);
-- `docker run --network host grafana/loki:latest`;
-- logs pushed with POST /loki/api/v1/push.
+Find at least 5 new candidates, record the round in IDEAS.md, then write the
+spec for the pick.
 
 Tags: every Makefile takes its version from `<project>/vX.Y.Z` tags only, so the
 owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).
@@ -219,6 +184,28 @@ Actions as codeberg.org/forgejo/forgejo:16.
      - run `check`, then `sync --dry-run`, then `sync` against your own Kuma
        with a test group;
      - leave `run` going for a day.
+
+9. **alertlines** (projects/alertlines, v1.0.0 at commit 5e2f87c). Puts the log
+   lines that fired a Loki alert into the alert (loki#5844, 107 👍).
+   - **How:** a proxy between Loki's ruler and Alertmanager. It reads the
+     rule's expression from the alert's generatorURL, so rules need no
+     change. It fetches the alert's own series' lines as the alert's tenant,
+     redacts secrets, and adds `log_lines`/`log_lines_count` annotations. It
+     never delays an alert beyond the timeout or drops one.
+   - **Also:** `check` to try a rule; auth, a tenant allowlist and no
+     pass-through; /metrics; a Docker image and a hardened systemd unit.
+   - **Reviews:** two full reviews (correctness; security and usability) found
+     25 problems; the two reviews overlapped on the missing tenant header. All
+     are addressed. The worst was that anyone who could reach the port could
+     read any tenant's logs through it; that is now closed by
+     localhost-by-default, auth and no pass-through. Slack formatting of log
+     text is documented, not changed. Regression tests cover most fixes; the
+     permission-denied message and the `run --listen/--alertmanager` flags
+     have none.
+   - **Tests:** against real Loki 3.5.0 and 3.7.8 rulers and a real
+     Alertmanager, locally and in CI. CI also builds the Docker image.
+   - **Owner checks before going public:** read the README; run `alertlines
+     check` on a few of your own rules; then point a test ruler at it.
 
 ## Blockers for the owner
 

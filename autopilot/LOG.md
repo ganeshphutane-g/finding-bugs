@@ -2,6 +2,43 @@
 
 Newest first.
 
+## 2026-10-20 (IST) — run 9
+
+- Project #9 **alertlines**, from spec to v1.0.0 in one run.
+  - **What:** log lines in Loki alerts (loki#5844, 107 👍): a proxy between
+    Loki's ruler and Alertmanager.
+  - **Found by testing a real Loki 3.7.8:** the ruler puts the rule's whole
+    expression in each alert's generatorURL and sends X-Scope-OrgID. So
+    alertlines needs no rule changes.
+  - **Built:**
+    - a quote-aware scanner that cuts the log query out of a metric
+      expression (every cut query is checked against a real Loki);
+    - the Loki client, limits, redaction and the cache;
+    - `check`, and `run` (the proxy);
+    - a Docker image and a systemd unit;
+    - a README whose Slack message was rendered by Alertmanager's own amtool
+      from a real alert.
+  - **Tested end to end:** a real Loki ruler, then alertlines, then a real
+    Alertmanager, then a webhook, on Loki 3.5.0 and 3.7.8; with Loki down the
+    alert still arrives.
+- Two full reviews found 25 problems, all addressed. The worst:
+  - an open port let anyone read any tenant's logs (now: 127.0.0.1 by
+    default, optional auth, a tenant allowlist, no pass-through);
+  - un-grouped rules showed other streams' lines (now matched by stream
+    labels);
+  - offset and without were ignored;
+  - redaction missed private keys, headers, cookies and escaped JSON, and
+    over-redacted words like tokens_used.
+- CI green on every alertlines push so far, including the Docker image build.
+- Next: research round 11 (STATE.md).
+- Owner:
+  - the finding-bugs repo is still public (your decision);
+  - create the v1.0.0 tags in the web UI:
+    - `alertlines/v1.0.0` at 5e2f87c;
+    - `pushprobe/v1.0.0` at 0e881d2;
+    - `docker-edit/v1.0.0` at cdc7019;
+  - optionally, give projects their own repos.
+
 ## 2026-10-19 (IST) — run 8
 
 - Project #8 **pushprobe**, from spec to v1.0.0 in one run.
