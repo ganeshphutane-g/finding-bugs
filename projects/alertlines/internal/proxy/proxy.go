@@ -5,12 +5,12 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"sort"
 	"strings"
@@ -30,12 +30,14 @@ type Server struct {
 	Timeout time.Duration
 	// Tenant, if set, replaces the ruler's X-Scope-OrgID for Loki.
 	Tenant string
-	Log    func(format string, a ...any)
+	// Tenants, if set, are the only ones whose alerts get lines.
+	Tenants []string
+	// Username and Password, or BearerToken, are asked of every request.
+	Username, Password, BearerToken string
+	Log                             func(format string, a ...any)
 
-	stats       stats
-	logOnce     sync.Map // messages logged recently
-	reverseOnce sync.Once
-	reverse     *httputil.ReverseProxy
+	stats   stats
+	logOnce sync.Map // messages logged recently
 }
 
 type stats struct {
@@ -48,36 +50,46 @@ type stats struct {
 	lokiCalls int64
 }
 
-// maxBody is the largest batch read.
-const maxBody = 16 << 20
+// Limits: the largest batch read, and the most alerts given lines in one
+// (Loki's ruler sends at most 64).
+const (
+	maxBody   = 4 << 20
+	maxAlerts = 1000
+	workers   = 8
+)
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/healthz":
 		fmt.Fprintln(w, "ok")
+		return
+	case !s.authorized(r):
+		w.Header().Set("WWW-Authenticate", `Basic realm="alertlines"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
 	case r.URL.Path == "/metrics":
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		s.writeMetrics(w)
-	case r.URL.Path == "/api/v2/alerts" && r.Method == http.MethodPost:
+	// (A ruler may be set up with a path prefix, as for Mimir.)
+	case strings.HasSuffix(r.URL.Path, "/api/v2/alerts") && r.Method == http.MethodPost:
 		s.alerts(w, r)
 	default:
-		s.pass(w, r)
+		// Nothing else is passed on: alertlines is not a way into
+		// Alertmanager's API.
+		http.Error(w, "alertlines takes only POST /api/v2/alerts (from Loki's ruler)", http.StatusNotFound)
 	}
 }
 
-// pass sends anything else to the first Alertmanager, as it is.
-func (s *Server) pass(w http.ResponseWriter, r *http.Request) {
-	s.reverseOnce.Do(func() {
-		if u, err := url.Parse(s.Alertmanagers[0]); err == nil {
-			s.reverse = httputil.NewSingleHostReverseProxy(u)
-			s.reverse.Transport = s.Client.Transport
-		}
-	})
-	if s.reverse == nil {
-		http.Error(w, "bad alertmanager address", http.StatusBadGateway)
-		return
+func (s *Server) authorized(r *http.Request) bool {
+	eq := func(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
+	switch {
+	case s.BearerToken != "":
+		return eq(r.Header.Get("Authorization"), "Bearer "+s.BearerToken)
+	case s.Username != "":
+		u, p, ok := r.BasicAuth()
+		return ok && eq(u, s.Username) && eq(p, s.Password)
 	}
-	s.reverse.ServeHTTP(w, r)
+	return true
 }
 
 func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +106,13 @@ func (s *Server) alerts(w http.ResponseWriter, r *http.Request) {
 	if tenant == "" {
 		tenant = r.Header.Get("X-Scope-OrgID")
 	}
-	out := s.enrichBatch(r.Context(), body, tenant)
+	out := body
+	if s.allowed(tenant) {
+		out = s.enrichBatch(r.Context(), body, tenant)
+	} else {
+		s.skip("tenant", 1)
+		s.logLimited("alerts from tenant %q pass on without lines: it is not in tenants", tenant)
+	}
 	s.forward(w, r, out)
 }
 
@@ -111,54 +129,40 @@ func (s *Server) enrichBatch(ctx context.Context, body []byte, tenant string) []
 	s.stats.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
-	type result struct {
-		adds map[string]string
-		err  error
-	}
 	results := make([]result, len(raw))
-	sem := make(chan struct{}, 8)
+	n := len(raw)
+	if n > maxAlerts {
+		s.skip("batch_too_large", int64(n-maxAlerts))
+		for i := maxAlerts; i < n; i++ {
+			results[i].err = errTooMany
+		}
+		n = maxAlerts
+	}
+	jobs := make(chan int)
 	var wg sync.WaitGroup
-	for i, a := range raw {
-		var alert struct {
-			Labels       map[string]string `json:"labels"`
-			Annotations  map[string]string `json:"annotations"`
-			GeneratorURL string            `json:"generatorURL"`
-			EndsAt       time.Time         `json:"endsAt"`
-		}
-		b, _ := json.Marshal(a)
-		if err := json.Unmarshal(b, &alert); err != nil {
-			results[i].err = errors.New("unreadable")
-			continue
-		}
+	for range min(workers, n) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				results[i].err = ctx.Err()
-				return
+			for i := range jobs {
+				results[i] = s.enrichOne(ctx, raw[i], tenant)
 			}
-			defer func() { <-sem }()
-			start := time.Now()
-			adds, err := s.Enricher.Enrich(ctx, enrich.Alert{Labels: alert.Labels, Annotations: alert.Annotations,
-				GeneratorURL: alert.GeneratorURL, EndsAt: alert.EndsAt}, tenant)
-			if err == nil || !errors.Is(err, enrich.ErrResolved) && !errors.Is(err, enrich.ErrNoQuery) {
-				s.stats.mu.Lock()
-				s.stats.lokiTime += time.Since(start)
-				s.stats.lokiCalls++
-				s.stats.mu.Unlock()
-			}
-			results[i] = result{adds, err}
 		}()
 	}
+	for i := range n {
+		jobs <- i
+	}
+	close(jobs)
 	wg.Wait()
 	changed := false
 	for i, res := range results {
 		switch {
+		case errors.Is(res.err, errTooMany):
+			continue
 		case res.err != nil:
-			s.skip(reason(res.err), 1)
-			if r := reason(res.err); r == "loki_error" || r == "timeout" {
+			r := reason(res.err)
+			s.skip(r, 1)
+			if r != "resolved" {
 				s.logLimited("cannot add log lines to %s: %v", alertName(raw[i]), res.err)
 			}
 			continue
@@ -190,12 +194,59 @@ func (s *Server) enrichBatch(ctx context.Context, body []byte, tenant string) []
 	return out
 }
 
+var errTooMany = errors.New("too many alerts in one batch")
+
+type result struct {
+	adds map[string]string
+	err  error
+}
+
+func (s *Server) enrichOne(ctx context.Context, a map[string]json.RawMessage, tenant string) result {
+	if ctx.Err() != nil {
+		return result{err: ctx.Err()}
+	}
+	var alert struct {
+		Labels       map[string]string `json:"labels"`
+		Annotations  map[string]string `json:"annotations"`
+		GeneratorURL string            `json:"generatorURL"`
+		EndsAt       time.Time         `json:"endsAt"`
+	}
+	b, _ := json.Marshal(a)
+	if err := json.Unmarshal(b, &alert); err != nil {
+		return result{err: errors.New("unreadable")}
+	}
+	start := time.Now()
+	adds, err := s.Enricher.Enrich(ctx, enrich.Alert{Labels: alert.Labels, Annotations: alert.Annotations,
+		GeneratorURL: alert.GeneratorURL, EndsAt: alert.EndsAt}, tenant)
+	if err == nil || reason(err) == "loki_error" || reason(err) == "timeout" {
+		s.stats.mu.Lock()
+		s.stats.lokiTime += time.Since(start)
+		s.stats.lokiCalls++
+		s.stats.mu.Unlock()
+	}
+	return result{adds, err}
+}
+
+func (s *Server) allowed(tenant string) bool {
+	if len(s.Tenants) == 0 {
+		return true
+	}
+	for _, t := range s.Tenants {
+		if t == tenant {
+			return true
+		}
+	}
+	return false
+}
+
 func reason(err error) string {
 	switch {
 	case errors.Is(err, enrich.ErrResolved):
 		return "resolved"
 	case errors.Is(err, enrich.ErrNoQuery):
 		return "no_query"
+	case errors.Is(err, enrich.ErrGrafana):
+		return "grafana_managed"
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
 		return "timeout"
 	case err.Error() == "unreadable":
@@ -235,8 +286,11 @@ func (s *Server) forward(w http.ResponseWriter, r *http.Request, body []byte) {
 				return
 			}
 			req.Header.Set("Content-Type", "application/json")
-			if a := r.Header.Get("Authorization"); a != "" {
-				req.Header.Set("Authorization", a) // as the ruler would have sent it
+			// The tenant, for a multi-tenant Alertmanager (Mimir, Cortex). The
+			// ruler's Authorization is for alertlines; an Alertmanager's own
+			// credentials go in its URL.
+			if t := r.Header.Get("X-Scope-OrgID"); t != "" {
+				req.Header.Set("X-Scope-OrgID", t)
 			}
 			resp, err := s.Client.Do(req)
 			if err != nil {

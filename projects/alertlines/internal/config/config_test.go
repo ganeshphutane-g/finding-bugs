@@ -33,7 +33,7 @@ func TestProblems(t *testing.T) {
 		"alertmanagers: [http://a]\n":                                                      "loki.url: missing",
 		"alertmanagers: [http://a]\nloki: {url: http://l, usrname: x}\n":                   "field usrname not found",
 		"alertmanagers: [http://a]\nloki: {url: 'http://${HOME}'}\n":                       "only ALERTLINES_* variables",
-		"alertmanagers: [http://a]\nloki: {url: http://l}\ntimeout: 2m\n":                  "at most 30s",
+		"alertmanagers: [http://a]\nloki: {url: http://l}\ntimeout: 2m\n":                  "at most 8s",
 		"alertmanagers: [http://a]\nloki: {url: http://l}\ntimeout: soon\n":                `"soon" is not a duration`,
 		"alertmanagers: [http://a]\nloki: {url: http://l}\nannotation: 'log lines'\n":      "use a name such as log_lines",
 		"alertmanagers: [http://a]\nloki: {url: http://l, username: u, bearer_token: t}\n": "not both",

@@ -24,8 +24,15 @@ type Config struct {
 	Alertmanagers []string `yaml:"alertmanagers"`
 	Loki          Loki     `yaml:"loki"`
 	Lines         Lines    `yaml:"lines"`
-	// Range is how far back to look when the expression does not say.
-	Range Duration `yaml:"range"`
+	// Range is how far back to look when the expression does not say;
+	// MaxRange is the most it ever looks back.
+	Range    Duration `yaml:"range"`
+	MaxRange Duration `yaml:"max_range"`
+	// Auth, if set, is asked of the ruler (Loki's ruler can send basic auth
+	// or a bearer token to its Alertmanager).
+	Auth Auth `yaml:"auth"`
+	// Tenants, if set, are the only tenants whose alerts get lines.
+	Tenants []string `yaml:"tenants"`
 	// Timeout bounds the wait for Loki per batch of alerts.
 	Timeout Duration `yaml:"timeout"`
 	// Cache keeps the lines of a firing alert this long, as the ruler sends
@@ -46,6 +53,13 @@ type Loki struct {
 	Tenant string `yaml:"tenant"`
 }
 
+// Auth is what the ruler must send.
+type Auth struct {
+	Username    string `yaml:"username"`
+	Password    string `yaml:"password"`
+	BearerToken string `yaml:"bearer_token"`
+}
+
 // Lines are the limits.
 type Lines struct {
 	Max          int      `yaml:"max"`
@@ -62,10 +76,13 @@ type Redact struct {
 
 // Defaults.
 const (
-	DefaultListen  = ":9097"
+	DefaultListen  = "127.0.0.1:9097"
 	DefaultTimeout = 3 * time.Second
 	DefaultCache   = time.Minute
 	DefaultRange   = 5 * time.Minute
+	DefaultMax     = time.Hour
+	// MaxTimeout stays under Loki's ruler's 10s notification timeout.
+	MaxTimeout = 8 * time.Second
 )
 
 // Default is the configuration with nothing set.
@@ -87,6 +104,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Range == 0 {
 		c.Range = Duration(DefaultRange)
+	}
+	if c.MaxRange == 0 {
+		c.MaxRange = Duration(DefaultMax)
 	}
 	if c.Lines.Max == 0 {
 		c.Lines.Max = 10
@@ -147,7 +167,8 @@ func Parse(data []byte, lookup func(string) (string, bool)) (*Config, error) {
 			return v
 		})
 	}
-	for _, s := range []*string{&c.Listen, &c.Loki.URL, &c.Loki.Username, &c.Loki.Password, &c.Loki.BearerToken, &c.Loki.Tenant, &c.Annotation} {
+	for _, s := range []*string{&c.Listen, &c.Loki.URL, &c.Loki.Username, &c.Loki.Password, &c.Loki.BearerToken, &c.Loki.Tenant, &c.Annotation,
+		&c.Auth.Username, &c.Auth.Password, &c.Auth.BearerToken} {
 		fill(s)
 	}
 	for i := range c.Alertmanagers {
@@ -185,8 +206,14 @@ func (c *Config) Check(needAlertmanager bool) []string {
 	if c.Lines.MaxLineBytes < 20 || c.Lines.MaxBytes < 100 {
 		out = append(out, "lines.max_line_bytes must be at least 20 and lines.max_bytes at least 100")
 	}
-	if time.Duration(c.Timeout) > 30*time.Second {
-		out = append(out, "timeout: at most 30s (alerts wait that long)")
+	if time.Duration(c.Timeout) > MaxTimeout {
+		out = append(out, fmt.Sprintf("timeout: at most %s (Loki's ruler gives up on a notification after 10s)", MaxTimeout))
+	}
+	if c.Range > c.MaxRange {
+		out = append(out, "range must not be longer than max_range")
+	}
+	if c.Auth.Username != "" && c.Auth.BearerToken != "" || c.Auth.Username != "" && c.Auth.Password == "" {
+		out = append(out, "auth: use username and password, or bearer_token")
 	}
 	if !validName(c.Annotation) {
 		out = append(out, fmt.Sprintf("annotation %q: use a name such as log_lines", c.Annotation))
@@ -225,9 +252,15 @@ func RedactURL(s string) string {
 	if u, err := url.Parse(s); err == nil && u.User != nil {
 		return u.Redacted()
 	}
-	// (A URL that does not parse may still hold one.)
-	if i, at := strings.Index(s, "://"), strings.LastIndex(s, "@"); i >= 0 && at > i {
-		return s[:i+3] + "xxxxx" + s[at:]
+	// (A URL that does not parse, or has no scheme, may still hold one.)
+	if at := strings.LastIndex(s, "@"); at >= 0 {
+		start := strings.Index(s, "://") + 3
+		if start < 3 {
+			start = 0
+		}
+		if start <= at {
+			return s[:start] + "xxxxx" + s[at:]
+		}
 	}
 	return s
 }

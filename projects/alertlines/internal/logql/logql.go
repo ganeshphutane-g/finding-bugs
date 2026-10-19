@@ -25,8 +25,13 @@ type Query struct {
 	Log string
 	// Range is how far back the expression looks.
 	Range time.Duration
-	// By are the labels the expression groups by (from every "by (...)").
+	// Offset moves the range back in time (count_over_time(...[5m] offset 1h)).
+	Offset time.Duration
+	// By are the labels the expression groups by (from every "by (...)"),
+	// less those label_replace makes.
 	By []string
+	// Without are the labels "without (...)" drops.
+	Without []string
 	// Grouped is set when the expression aggregates at all (sum, count, ...),
 	// so the alert's labels other than By are not stream labels.
 	Grouped bool
@@ -108,7 +113,7 @@ func Extract(expr string) (*Query, error) {
 		return nil, err
 	}
 	q := &Query{}
-	by := map[string]bool{}
+	by, without, made := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for i, t := range toks {
 		if t.kind != "ident" {
 			continue
@@ -116,18 +121,48 @@ func Extract(expr string) (*Query, error) {
 		if aggregations[t.text] {
 			q.Grouped = true
 		}
-		if (t.text == "by") && i+1 < len(toks) && toks[i+1].kind == "(" {
+		if (t.text == "by" || t.text == "without") && i+1 < len(toks) && toks[i+1].kind == "(" {
+			set := by
+			if t.text == "without" {
+				set = without
+			}
 			for j := i + 2; j < len(toks) && toks[j].kind != ")"; j++ {
 				if toks[j].kind == "ident" {
-					by[toks[j].text] = true
+					set[toks[j].text] = true
+				}
+			}
+		}
+		// label_replace(v, "dst", ...) makes dst, which no log line has.
+		if t.text == "label_replace" && i+1 < len(toks) && toks[i+1].kind == "(" {
+			depth := 0
+			for j := i + 1; j < len(toks); j++ {
+				switch toks[j].kind {
+				case "(":
+					depth++
+				case ")":
+					depth--
+				case ",":
+					if depth == 1 && j+1 < len(toks) && toks[j+1].kind == "str" {
+						made[strings.Trim(toks[j+1].text, "\"`")] = true
+						j = len(toks)
+					}
+				}
+				if depth == 0 {
+					break
 				}
 			}
 		}
 	}
 	for k := range by {
-		q.By = append(q.By, k)
+		if !made[k] {
+			q.By = append(q.By, k)
+		}
+	}
+	for k := range without {
+		q.Without = append(q.Without, k)
 	}
 	sort.Strings(q.By)
+	sort.Strings(q.Without)
 
 	for i, t := range toks {
 		if t.kind != "ident" || !rangeFuncs[t.text] || i+1 >= len(toks) || toks[i+1].kind != "(" {
@@ -176,6 +211,17 @@ func Extract(expr string) (*Query, error) {
 					return nil, ErrNoLogQuery
 				}
 				q.Range = d
+				// [5m] offset 1h (Loki writes 1h0m0s).
+				if closeAt+1 < len(toks) && toks[closeAt+1].kind == "ident" && toks[closeAt+1].text == "offset" {
+					rest := strings.TrimSpace(expr[toks[closeAt+1].end:])
+					end := 0
+					for end < len(rest) && (rest[end] >= '0' && rest[end] <= '9' || rest[end] >= 'a' && rest[end] <= 'z') {
+						end++
+					}
+					if o, err := parseDuration(rest[:end]); err == nil {
+						q.Offset = o
+					}
+				}
 				return q, nil
 			}
 		}
@@ -283,8 +329,14 @@ func WithLabels(log string, labels map[string]string) string {
 	return b.String()
 }
 
+// keywords cannot be label names in a label filter (Loki rejects them).
+var keywords = map[string]bool{"on": true, "by": true, "or": true, "and": true, "unless": true, "bool": true, "offset": true,
+	"without": true, "ignoring": true, "group_left": true, "group_right": true, "unwrap": true, "json": true, "logfmt": true,
+	"pattern": true, "regexp": true, "unpack": true, "keep": true, "drop": true, "label_format": true, "line_format": true,
+	"decolorize": true}
+
 func validName(s string) bool {
-	if s == "" || strings.HasPrefix(s, "__") {
+	if s == "" || strings.HasPrefix(s, "__") || keywords[s] {
 		return false
 	}
 	for i, c := range s {

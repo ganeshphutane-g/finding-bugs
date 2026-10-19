@@ -71,6 +71,9 @@ const rules = `groups:
         expr: 'sum by (pod) (count_over_time({app="shop"} |= "ERROR" [1m])) > 0'
         labels: {severity: page}
         annotations: {summary: "Payment errors on {{ $labels.pod }}"}
+      - alert: StreamErrors
+        expr: 'count_over_time({app="shop"} |= "ERROR" [1m]) > 0'
+        labels: {severity: page}
 `
 
 // chain starts the real thing: webhook <- Alertmanager <- alertlines <- Loki's
@@ -126,6 +129,21 @@ func TestRulerToAlertmanager(t *testing.T) {
 		shop1["log_lines_count"] != "2 lines" || shop1["summary"] != "Payment errors on shop-1" {
 		t.Errorf("annotations %v", shop1)
 	}
+	// A rule without grouping: each stream's alert has its own lines only
+	// (severity, the rule's label, is no log label).
+	eventually(t, "the per-stream alert", 60*time.Second, func() bool {
+		for _, n := range got() {
+			for _, a := range n.Alerts {
+				if a.Labels["alertname"] == "StreamErrors" && a.Labels["pod"] == "shop-2" && a.Annotations["log_lines"] != "" {
+					if !strings.Contains(a.Annotations["log_lines"], "payment 20") || strings.Contains(a.Annotations["log_lines"], "payment 19") {
+						t.Errorf("shop-2's alert: %q", a.Annotations["log_lines"])
+					}
+					return true
+				}
+			}
+		}
+		return false
+	})
 	// Alertmanager keeps them too.
 	resp, err := http.Get(am.URL + "/api/v2/alerts")
 	if err != nil {

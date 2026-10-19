@@ -25,7 +25,9 @@ type Options struct {
 	ShowLabels   []string // stream labels to show with each line
 	Annotation   string   // the annotation's name; its count goes in <name>_count
 	DefaultRange time.Duration
-	CacheFor     time.Duration
+	// MaxRange bounds how far back lines are fetched.
+	MaxRange time.Duration
+	CacheFor time.Duration
 }
 
 // QueryAnnotation, on a rule, gives the log query to use.
@@ -64,15 +66,20 @@ type cached struct {
 type Plan struct {
 	Query      string
 	Start, End time.Time
-	// Loose is a query without the alert's label filters, tried when the
-	// filtered one finds nothing (the labels may not be log labels).
+	// Loose is the query without label filters, tried when Query finds
+	// nothing (a grouping label may not be a log label).
 	Loose string
+	// Match keeps only lines whose stream labels agree with these, where
+	// the stream has the label (the alert's labels mix log labels with the
+	// rule's own, such as severity, which no stream has).
+	Match map[string]string
 }
 
 // Skip reasons.
 var (
 	ErrResolved = errors.New("resolved")
 	ErrNoQuery  = errors.New("no log query found (no " + QueryAnnotation + " annotation, and generatorURL has no Loki expression)")
+	ErrGrafana  = errors.New("a Grafana-managed alert: its generatorURL points to the rule, not the query, so alertlines cannot add lines (set the " + QueryAnnotation + " annotation)")
 )
 
 // PlanFor works out the query for an alert.
@@ -86,46 +93,63 @@ func (e *Enricher) PlanFor(a Alert) (*Plan, error) {
 		rng = 5 * time.Minute
 	}
 	var parsed *logql.Query
+	var parseErr error
 	if expr := Expression(a.GeneratorURL); expr != "" {
-		if q, err := logql.Extract(expr); err == nil {
-			parsed = q
-		}
+		parsed, parseErr = logql.Extract(expr)
 	}
 	var log string
+	var offset time.Duration
 	if q := strings.TrimSpace(a.Annotations[QueryAnnotation]); q != "" {
 		log = q
 		if parsed != nil {
-			rng = parsed.Range
+			rng, offset = parsed.Range, parsed.Offset
 		}
 	} else if parsed != nil {
-		log, rng = parsed.Log, parsed.Range
+		log, rng, offset = parsed.Log, parsed.Range, parsed.Offset
 	} else {
+		switch {
+		case strings.Contains(a.GeneratorURL, "/alerting/grafana/"):
+			return nil, ErrGrafana
+		case parseErr != nil && !errors.Is(parseErr, logql.ErrNoLogQuery):
+			return nil, fmt.Errorf("%w: the expression could not be read: %v", ErrNoQuery, parseErr)
+		}
 		return nil, ErrNoQuery
 	}
-	p := &Plan{Query: log, Start: now.Add(-rng), End: now}
-	// The alert's own series: its labels, as filters.
-	filters := map[string]string{}
-	switch {
-	case parsed != nil && len(parsed.By) > 0:
+	// However far back the rule looks, the lines come from at most MaxRange.
+	if e.Opt.MaxRange > 0 && rng > e.Opt.MaxRange {
+		rng = e.Opt.MaxRange
+	}
+	end := now.Add(-offset)
+	p := &Plan{Query: log, Start: end.Add(-rng), End: end}
+	if parsed == nil {
+		return p, nil
+	}
+	if len(parsed.By) > 0 {
+		// Grouped by these: they name the alert's series.
+		filters := map[string]string{}
 		for _, k := range parsed.By {
 			if v, ok := a.Labels[k]; ok {
 				filters[k] = v
 			}
 		}
-	case parsed != nil && !parsed.Grouped:
-		// Every label of the series, but the rule's own labels are mixed
-		// in: try with them, then without.
+		if len(filters) > 0 {
+			p.Query, p.Loose, p.Match = logql.WithLabels(log, filters), log, filters
+		}
+		return p, nil
+	}
+	if !parsed.Grouped || len(parsed.Without) > 0 {
+		// The series' own labels, minus what "without" dropped, mixed with
+		// the rule's: keep the lines whose streams agree.
+		drop := map[string]bool{"alertname": true}
+		for _, k := range parsed.Without {
+			drop[k] = true
+		}
+		p.Match = map[string]string{}
 		for k, v := range a.Labels {
-			if k != "alertname" {
-				filters[k] = v
+			if !drop[k] {
+				p.Match[k] = v
 			}
 		}
-		p.Loose = log
-	}
-	if len(filters) > 0 {
-		p.Query = logql.WithLabels(log, filters)
-	} else {
-		p.Loose = ""
 	}
 	return p, nil
 }
@@ -173,14 +197,24 @@ func (e *Enricher) Enrich(ctx context.Context, a Alert, tenant string) (map[stri
 	if err != nil {
 		return nil, err
 	}
-	key := tenant + "\x00" + p.Query
+	key := strings.Join([]string{tenant, p.Query, p.End.Sub(p.Start).String(), e.now().Sub(p.End).Round(time.Second).String(), fmt.Sprint(p.Match)}, "\x00")
 	if adds, ok := e.fromCache(key); ok {
 		return adds, nil
 	}
 	max := max(e.Opt.MaxLines, 1)
-	lines, err := e.Loki.Lines(ctx, p.Query, p.Start, p.End, max+1, tenant)
+	// Lines are filtered after the query when Match is set, so ask for more.
+	limit := max + 1
+	if len(p.Match) > 0 {
+		limit = min(max*20, 1000)
+	}
+	lines, err := e.Loki.Lines(ctx, p.Query, p.Start, p.End, limit, tenant)
+	if err == nil {
+		lines = keep(lines, p.Match)
+	}
 	if err == nil && len(lines) == 0 && p.Loose != "" {
-		lines, err = e.Loki.Lines(ctx, p.Loose, p.Start, p.End, max+1, tenant)
+		if lines, err = e.Loki.Lines(ctx, p.Loose, p.Start, p.End, min(max*20, 1000), tenant); err == nil {
+			lines = keep(lines, p.Match)
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -188,6 +222,27 @@ func (e *Enricher) Enrich(ctx context.Context, a Alert, tenant string) (map[stri
 	adds := e.format(lines, max)
 	e.toCache(key, adds)
 	return adds, nil
+}
+
+// keep drops lines from streams whose labels disagree with match.
+func keep(lines []loki.Line, match map[string]string) []loki.Line {
+	if len(match) == 0 {
+		return lines
+	}
+	var out []loki.Line
+	for _, l := range lines {
+		ok := true
+		for k, v := range match {
+			if have, has := l.Labels[k]; has && have != v {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func (e *Enricher) format(lines []loki.Line, max int) map[string]string {

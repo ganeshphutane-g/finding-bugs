@@ -26,7 +26,13 @@ func runProxy(ctx context.Context, env Env, c *config.Config) error {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.TLSClientConfig = &tls.Config{}
 	s := &proxy.Server{Enricher: e, Alertmanagers: c.Alertmanagers, Client: &http.Client{Transport: t},
-		Timeout: time.Duration(c.Timeout), Tenant: c.Loki.Tenant, Log: logf}
+		Timeout: time.Duration(c.Timeout), Tenant: c.Loki.Tenant, Tenants: c.Tenants, Log: logf,
+		Username: c.Auth.Username, Password: c.Auth.Password, BearerToken: c.Auth.BearerToken}
+	if c.Auth.Username == "" && c.Auth.BearerToken == "" {
+		if host, _, _ := net.SplitHostPort(c.Listen); host == "" || host == "0.0.0.0" || host == "::" {
+			logf("note: anyone who can reach %s can send alerts through alertlines and have it read Loki; set auth (and send it from the ruler) or listen on a private address", c.Listen)
+		}
+	}
 	l, err := net.Listen("tcp", c.Listen)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", c.Listen, err)

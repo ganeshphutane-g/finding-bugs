@@ -49,3 +49,21 @@ func TestWithLabels(t *testing.T) {
 		t.Fatalf("%s", got)
 	}
 }
+
+func TestReviewCases(t *testing.T) {
+	q, err := Extract(`count_over_time({app="shop"} |= "ERROR"[5m] offset 1h0m0s) > 0`)
+	if err != nil || q.Offset != time.Hour || q.Range != 5*time.Minute {
+		t.Errorf("offset: %+v %v", q, err)
+	}
+	q, _ = Extract(`sum without (pod) (count_over_time({app="shop"}[5m])) > 0`)
+	if strings.Join(q.Without, ",") != "pod" || len(q.By) != 0 {
+		t.Errorf("without: %+v", q)
+	}
+	q, _ = Extract(`sum by (svc, app) (label_replace(count_over_time({app="shop"}[5m]),"svc","$1","pod","(.*)")) > 0`)
+	if strings.Join(q.By, ",") != "app" {
+		t.Errorf("label_replace: %+v", q)
+	}
+	if got := WithLabels(`{a="b"}`, map[string]string{"offset": "1", "on": "x", "ip": "10.0.0.1"}); got != `{a="b"} | ip="10.0.0.1"` {
+		t.Errorf("keywords: %s", got)
+	}
+}

@@ -2,6 +2,7 @@ package enrich
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -98,14 +99,14 @@ func TestEnrichChoices(t *testing.T) {
 	}}
 	e := &Enricher{Loki: f, Opt: Options{MaxLines: 3, DefaultRange: 15 * time.Minute}, Now: func() time.Time { return now }}
 
-	// No grouping: the series' labels mixed with the rule's (severity);
-	// the filtered query finds nothing, the loose one does.
+	// No grouping: the series' labels mixed with the rule's (severity),
+	// which no stream has; the lines are matched afterwards.
 	adds, err := e.Enrich(context.Background(), Alert{Labels: map[string]string{"alertname": "Cron", "job": "cron", "severity": "page"},
 		GeneratorURL: explore(`count_over_time({job="cron"} |= "failed"[1h]) > 0`)}, "")
 	if err != nil || adds["log_lines_count"] != "1 line" || !strings.HasSuffix(adds["log_lines"], " backup failed") {
 		t.Errorf("loose: %v %v (asked %v)", adds, err, f.asked)
 	}
-	if strings.Join(f.asked, ";") != `{job="cron"} |= "failed" | job="cron" | severity="page" @1h0m0s;{job="cron"} |= "failed" @1h0m0s` {
+	if strings.Join(f.asked, ";") != `{job="cron"} |= "failed" @1h0m0s` {
 		t.Errorf("asked %q", f.asked)
 	}
 	// Grouped without by: no filters. More lines than allowed.
@@ -123,8 +124,14 @@ func TestEnrichChoices(t *testing.T) {
 		t.Errorf("annotation: %v", f.asked)
 	}
 	// Nothing to go on.
-	if _, err := e.Enrich(context.Background(), Alert{Labels: map[string]string{"alertname": "X"}, GeneratorURL: "/alerting/grafana/x/view"}, ""); err != ErrNoQuery {
+	if _, err := e.Enrich(context.Background(), Alert{Labels: map[string]string{"alertname": "X"}, GeneratorURL: "/alerting/grafana/x/view"}, ""); err != ErrGrafana {
+		t.Errorf("grafana: %v", err)
+	}
+	if _, err := e.Enrich(context.Background(), Alert{Labels: map[string]string{"alertname": "X"}, GeneratorURL: explore(`up == 0`)}, ""); err != ErrNoQuery {
 		t.Errorf("no query: %v", err)
+	}
+	if _, err := e.Enrich(context.Background(), Alert{Labels: map[string]string{"alertname": "X"}, GeneratorURL: explore(`rate({a="b"}[5mins])`)}, ""); err == nil || !strings.Contains(err.Error(), "could not be read") {
+		t.Errorf("bad range: %v", err)
 	}
 }
 
@@ -154,5 +161,61 @@ func TestLimitsAndCache(t *testing.T) {
 	e.Enrich(context.Background(), a, "")
 	if len(f.asked) != 2 {
 		t.Errorf("the cache did not expire: %v", f.asked)
+	}
+}
+
+// streams answers with lines of two pods, a and b, for any query.
+type streams struct{ asked []string }
+
+func (s *streams) Lines(_ context.Context, q string, start, end time.Time, limit int, tenant string) ([]loki.Line, error) {
+	s.asked = append(s.asked, fmt.Sprintf("%s %s..%s", q, start.Format("15:04"), end.Format("15:04")))
+	return []loki.Line{
+		{Time: now, Labels: map[string]string{"app": "shop", "pod": "b", "env": "prod"}, Text: "from b"},
+		{Time: now.Add(-time.Second), Labels: map[string]string{"app": "shop", "pod": "a", "env": "dev"}, Text: "from a"},
+	}, nil
+}
+
+func TestReviewFixes(t *testing.T) {
+	s := &streams{}
+	e := &Enricher{Loki: s, Opt: Options{MaxLines: 5, MaxRange: time.Hour}, Now: func() time.Time { return now }}
+	run := func(labels map[string]string, expr string) string {
+		t.Helper()
+		adds, err := e.Enrich(context.Background(), Alert{Labels: labels, GeneratorURL: explore(expr)}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return adds["log_lines"]
+	}
+	// One pod's alert shows that pod's lines, though severity is no log label.
+	if got := run(map[string]string{"alertname": "E", "pod": "a", "severity": "page"}, `count_over_time({app="shop"} |= "ERROR"[5m]) > 0`); !strings.HasSuffix(got, "from a") || strings.Contains(got, "from b") {
+		t.Errorf("per stream: %q", got)
+	}
+	// without (pod): env still names the series.
+	if got := run(map[string]string{"alertname": "E", "env": "prod"}, `sum without (pod) (count_over_time({app="shop"}[5m])) > 0`); !strings.HasSuffix(got, "from b") || strings.Contains(got, "from a") {
+		t.Errorf("without: %q", got)
+	}
+	// offset moves the window; the range is capped.
+	s.asked = nil
+	run(map[string]string{"alertname": "O"}, `sum(count_over_time({app="shop"}[5m] offset 1h0m0s)) > 0`)
+	run(map[string]string{"alertname": "O"}, `sum(count_over_time({app="shop"}[30d])) > 0`)
+	if s.asked[0] != `{app="shop"} 17:55..18:00` || s.asked[1] != `{app="shop"} 18:00..19:00` {
+		t.Errorf("windows: %v", s.asked)
+	}
+	// label_replace's label is no log label: no filter, matched after.
+	s.asked = nil
+	got := run(map[string]string{"alertname": "R", "svc": "a"}, `sum by (svc) (label_replace(count_over_time({app="shop"}[5m]),"svc","$1","pod","(.*)")) > 0`)
+	if s.asked[0] != `{app="shop"} 18:55..19:00` || !strings.Contains(got, "from a") || !strings.Contains(got, "from b") {
+		t.Errorf("label_replace: %v %q", s.asked, got)
+	}
+}
+
+func TestCacheKnowsTheWindow(t *testing.T) {
+	f := &fakeLoki{answers: map[string][]loki.Line{`{a="b"}`: lines("x")}}
+	e := &Enricher{Loki: f, Opt: Options{MaxLines: 3, CacheFor: time.Minute}, Now: func() time.Time { return now }}
+	for _, expr := range []string{`sum(rate({a="b"}[1h])) > 0`, `sum(rate({a="b"}[5m])) > 0`, `sum(rate({a="b"}[5m])) > 0`} {
+		e.Enrich(context.Background(), Alert{Labels: map[string]string{"alertname": "A"}, GeneratorURL: explore(expr)}, "")
+	}
+	if len(f.asked) != 2 {
+		t.Errorf("asked %v", f.asked)
 	}
 }

@@ -49,17 +49,22 @@ Commands:
   version   Print the version
 
 Options:
-  -c, --config FILE   The file (default $ALERTLINES_CONFIG, else alertlines.yaml, if there)
-      --loki URL      Loki, if there is no file (check)
+  -c, --config FILE      The file (default $ALERTLINES_CONFIG, else alertlines.yaml, if there)
+      --loki URL         Loki (instead of loki.url)
+      --tenant NAME      The tenant to ask Loki as (check)
+      --listen ADDR      Where to take alerts (run; default 127.0.0.1:9097)
+      --alertmanager URL An Alertmanager to pass alerts on to (run; repeat for more)
 
 The file may use ${NAME} for variables whose names start with ALERTLINES_.
 
-Exit codes: 0 fine, 1 error, 2 bad usage, 3 no lines found (check).
+Exit codes: 0 fine, 1 error, 2 bad usage, 3 no lines found (check), 4 no log
+query for the alert (check).
 `
 
 var (
 	errUsage   = errors.New("usage")
 	errNoLines = errors.New("no lines")
+	errNoQuery = errors.New("no log query")
 )
 
 func usagef(f string, a ...any) error { return fmt.Errorf("%w: %s", errUsage, fmt.Sprintf(f, a...)) }
@@ -72,6 +77,8 @@ func Run(ctx context.Context, env Env, args []string) int {
 		return 0
 	case errors.Is(err, errNoLines):
 		return 3
+	case errors.Is(err, errNoQuery):
+		return 4
 	case errors.Is(err, errUsage):
 		fmt.Fprintf(env.Stderr, "alertlines: %s\nRun 'alertlines help' for usage.\n", strings.TrimPrefix(err.Error(), "usage: "))
 		return 2
@@ -105,14 +112,17 @@ func run(ctx context.Context, env Env, args []string) error {
 	}
 	fs := flag.NewFlagSet("alertlines "+cmd, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var file, lokiURL, expr, alertFile string
-	var labels multi
+	var file, lokiURL, expr, alertFile, tenant, listen string
+	var labels, alertmanagers multi
 	fs.StringVar(&file, "c", "", "")
 	fs.StringVar(&file, "config", "", "")
 	fs.StringVar(&lokiURL, "loki", "", "")
 	fs.StringVar(&expr, "expr", "", "")
 	fs.StringVar(&alertFile, "alert", "", "")
 	fs.Var(&labels, "label", "")
+	fs.StringVar(&tenant, "tenant", "", "")
+	fs.StringVar(&listen, "listen", "", "")
+	fs.Var(&alertmanagers, "alertmanager", "")
 	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
 		fmt.Fprint(env.Stdout, usage)
 		return nil
@@ -123,16 +133,19 @@ func run(ctx context.Context, env Env, args []string) error {
 		return usagef("unexpected %q", fs.Arg(0))
 	}
 	if cmd == "run" {
-		if expr != "" || alertFile != "" || len(labels) > 0 {
-			return usagef("--expr, --alert and --label are for check")
+		if expr != "" || alertFile != "" || len(labels) > 0 || tenant != "" {
+			return usagef("--expr, --alert, --label and --tenant are for check")
 		}
-		c, err := loadConfig(env, file, lokiURL, true)
+		c, err := loadConfig(env, file, overrides{loki: lokiURL, listen: listen, alertmanagers: alertmanagers}, true)
 		if err != nil {
 			return err
 		}
 		return runProxy(ctx, env, c)
 	}
-	c, err := loadConfig(env, file, lokiURL, false)
+	if listen != "" || len(alertmanagers) > 0 {
+		return usagef("--listen and --alertmanager are for run")
+	}
+	c, err := loadConfig(env, file, overrides{loki: lokiURL}, false)
 	if err != nil {
 		return err
 	}
@@ -165,7 +178,10 @@ func run(ctx context.Context, env Env, args []string) error {
 	if err != nil {
 		return err
 	}
-	found := false
+	if tenant == "" {
+		tenant = c.Loki.Tenant
+	}
+	found, planned := false, false
 	for _, a := range alerts {
 		fmt.Fprintf(env.Stdout, "alert %s\n", describeLabels(a.Labels))
 		a.EndsAt = time.Time{} // checked as firing
@@ -174,12 +190,16 @@ func run(ctx context.Context, env Env, args []string) error {
 			fmt.Fprintf(env.Stdout, "  skipped: %v\n", err)
 			continue
 		}
+		planned = true
 		fmt.Fprintf(env.Stdout, "  query: %s\n  from:  %s to %s\n", p.Query, p.Start.UTC().Format(time.RFC3339), p.End.UTC().Format(time.RFC3339))
 		if p.Loose != "" {
 			fmt.Fprintf(env.Stdout, "  (if that finds nothing: %s)\n", p.Loose)
 		}
+		if len(p.Match) > 0 {
+			fmt.Fprintf(env.Stdout, "  keeping lines whose streams agree with %s\n", describeLabels(p.Match))
+		}
 		qctx, cancel := context.WithTimeout(ctx, time.Duration(c.Timeout))
-		adds, err := e.Enrich(qctx, a, c.Loki.Tenant)
+		adds, err := e.Enrich(qctx, a, tenant)
 		cancel()
 		if err != nil {
 			return fmt.Errorf("asking Loki: %w", err)
@@ -194,7 +214,10 @@ func run(ctx context.Context, env Env, args []string) error {
 			}
 		}
 	}
-	if !found {
+	switch {
+	case !planned:
+		return errNoQuery
+	case !found:
 		return errNoLines
 	}
 	return nil
@@ -209,8 +232,14 @@ func describeLabels(l map[string]string) string {
 	return "{" + strings.Join(parts, ", ") + "}"
 }
 
-// loadConfig reads the file (if any); lokiURL overrides loki.url.
-func loadConfig(env Env, file, lokiURL string, forProxy bool) (*config.Config, error) {
+// overrides are flags that win over the file.
+type overrides struct {
+	loki, listen  string
+	alertmanagers []string
+}
+
+// loadConfig reads the file (if any) and applies the flags.
+func loadConfig(env Env, file string, o overrides, forProxy bool) (*config.Config, error) {
 	named := file != ""
 	if file == "" {
 		file, _ = env.LookupEnv("ALERTLINES_CONFIG")
@@ -220,11 +249,14 @@ func loadConfig(env Env, file, lokiURL string, forProxy bool) (*config.Config, e
 		file = "alertlines.yaml"
 	}
 	data, err := env.ReadFile(file)
+	flagsOnly := o.loki != "" && (!forProxy || len(o.alertmanagers) > 0)
 	switch {
-	case errors.Is(err, os.ErrNotExist) && !named && lokiURL != "":
-		data = nil // flags only
+	case errors.Is(err, os.ErrNotExist) && !named && flagsOnly:
+		data = nil
 	case errors.Is(err, os.ErrNotExist):
-		return nil, fmt.Errorf("there is no %s here: name the file with -c FILE or ALERTLINES_CONFIG", file)
+		return nil, fmt.Errorf("there is no %s here: name the file with -c FILE or ALERTLINES_CONFIG, or give --loki (and --alertmanager for run)", file)
+	case errors.Is(err, os.ErrPermission):
+		return nil, fmt.Errorf("%s: this user (uid %d) cannot read it. Make it readable to this user or its group (it may hold secrets, so not to everyone)", file, os.Getuid())
 	case err != nil:
 		return nil, err
 	}
@@ -232,8 +264,14 @@ func loadConfig(env Env, file, lokiURL string, forProxy bool) (*config.Config, e
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", file, err)
 	}
-	if lokiURL != "" {
-		c.Loki.URL = lokiURL
+	if o.loki != "" {
+		c.Loki.URL = o.loki
+	}
+	if o.listen != "" {
+		c.Listen = o.listen
+	}
+	if len(o.alertmanagers) > 0 {
+		c.Alertmanagers = o.alertmanagers
 	}
 	if problems := c.Check(forProxy); len(problems) > 0 {
 		return nil, fmt.Errorf("%s has problems:\n  - %s", file, strings.Join(problems, "\n  - "))
@@ -251,7 +289,7 @@ func NewEnricher(c *config.Config) (*enrich.Enricher, error) {
 	l.Username, l.Password, l.BearerToken = c.Loki.Username, c.Loki.Password, c.Loki.BearerToken
 	return &enrich.Enricher{Loki: l, Redact: r, Opt: enrich.Options{
 		MaxLines: c.Lines.Max, MaxLineBytes: c.Lines.MaxLineBytes, MaxBytes: c.Lines.MaxBytes, ShowLabels: c.Lines.Labels,
-		Annotation: c.Annotation, DefaultRange: time.Duration(c.Range), CacheFor: time.Duration(c.Cache)}}, nil
+		Annotation: c.Annotation, DefaultRange: time.Duration(c.Range), MaxRange: time.Duration(c.MaxRange), CacheFor: time.Duration(c.Cache)}}, nil
 }
 
 // ExploreURL makes a generatorURL like Loki's ruler does, for an expression.

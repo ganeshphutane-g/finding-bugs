@@ -50,10 +50,12 @@ For each firing alert in a batch from the ruler:
      (the ruler's `X-Scope-OrgID`).
    - At most 10 lines, each cut to 300 bytes, and 4 KB in all.
 3. **Secrets.**
-   - Values of keys that look secret (`password=`, `token=`, `api_key`,
-     `secret`, `session_id`, `auth`…) are hidden.
-   - So are bearer and basic credentials, passwords in URLs, and well-known
-     token formats (GitHub, Slack, Stripe, AWS, JWTs).
+   - Values of keys named like secrets are hidden: `password`, `token`,
+     `api_key`, `secret`, `session_id` and the like, in logfmt, JSON
+     (escaped too) and query strings.
+   - So are `Authorization` and `Cookie` values, private key blocks, passwords
+     in URLs and DSNs, and well-known token formats: GitHub, GitLab, Slack,
+     Stripe, AWS, Google, npm, OpenAI and JWTs.
    - You can add your own patterns.
 4. **Annotations.**
    - `log_lines` holds the lines, newest first, each with its time and any
@@ -87,6 +89,13 @@ docker run -d --name alertlines -p 9097:9097 \
   -v /srv/alertlines:/etc/alertlines:ro alertlines
 ```
 
+In the container, set `listen: ":9097"` (the default is `127.0.0.1:9097`), and
+make the file readable to uid 65532: `chgrp 65532 alertlines.yaml && chmod 640
+alertlines.yaml`.
+
+```
+```
+
 systemd: copy the binary to `/usr/local/bin/`, `contrib/alertlines.service` to
 `/etc/systemd/system/` and your file to `/etc/alertlines/alertlines.yaml`, then
 `systemctl enable --now alertlines`. It runs as a throwaway user with no
@@ -97,9 +106,11 @@ capabilities.
 1. `alertlines.yaml`:
 
    ```yaml
+   listen: ":9097"                       # the ruler is on another host
+   auth: {username: ruler, password: "${ALERTLINES_RULER_PASSWORD}"}
    alertmanagers: ["http://alertmanager:9093"]
    loki: {url: "http://loki:3100"}
-   lines: {labels: [pod]}      # show the pod with each line
+   lines: {labels: [pod]}                # show the pod with each line
    ```
 
 2. Try it on one of your rules:
@@ -108,11 +119,13 @@ capabilities.
    $ alertlines check --expr 'sum by (pod) (count_over_time({app="shop"} |= "ERROR" [5m])) > 0' --label pod=shop-7f9
    alert {alertname=check, pod=shop-7f9}
      query: {app="shop"} |= "ERROR" | pod="shop-7f9"
-     from:  2026-10-19T19:15:25Z to 2026-10-19T19:20:25Z
+     from:  2026-10-19T19:39:23Z to 2026-10-19T19:44:23Z
+     (if that finds nothing: {app="shop"} |= "ERROR")
+     keeping lines whose streams agree with {pod=shop-7f9}
      log_lines_count: 2 lines
      log_lines:
-       2026-10-19T19:20:25Z ERROR payment 19 failed: gateway timeout
-       2026-10-19T19:20:25Z ERROR payment 18 failed: card declined (token=[redacted])
+       2026-10-19T19:44:23Z ERROR payment 19 failed: gateway timeout
+       2026-10-19T19:44:23Z ERROR payment 18 failed: card declined (token=[redacted])
    ```
 
 3. Run it, and point Loki's ruler at it instead of Alertmanager:
@@ -121,6 +134,9 @@ capabilities.
    # Loki's config
    ruler:
      alertmanager_url: http://alertlines:9097
+     alertmanager_client:
+       basic_auth_username: ruler
+       basic_auth_password: ...           # the same as alertlines' auth
    ```
 
    ```sh
@@ -166,10 +182,14 @@ Webhooks get the annotations as they are, in each alert's `annotations`.
 ## Configuration
 
 ```yaml
-listen: ":9097"                    # where the ruler sends alerts
-alertmanagers:                     # every one gets every alert
-  - "http://alertmanager-1:9093"
-  - "http://alertmanager-2:9093"
+listen: "127.0.0.1:9097"           # where the ruler sends alerts (the default)
+auth:                              # what the ruler must send (or bearer_token)
+  username: ruler
+  password: "${ALERTLINES_RULER_PASSWORD}"
+tenants: [team-a, team-b]          # only these tenants' alerts get lines
+alertmanagers:                     # every one gets every alert; credentials
+  - "http://alertmanager-1:9093"   #   for one go in its URL
+  - "https://am:${ALERTLINES_AM_PASSWORD}@alertmanager-2:9093"
 loki:
   url: "http://loki:3100"
   username: alertlines             # or bearer_token
@@ -181,7 +201,8 @@ lines:
   max_bytes: 4000                  # for the whole annotation
   labels: [pod, namespace]         # stream labels shown with each line
 range: 5m                          # when the expression has none
-timeout: 3s                        # the most an alert waits for Loki
+max_range: 1h                      # the most it ever looks back
+timeout: 3s                        # the most an alert waits for Loki (at most 8s)
 cache: 1m
 redact:
   builtin: true
@@ -202,14 +223,21 @@ annotation: log_lines              # and log_lines_count
   ```
 
 **Endpoints.**
-- `POST /api/v2/alerts`: alerts from the ruler.
-- `/healthz` and `/metrics`, the latter covering:
+- `POST /api/v2/alerts` (also under a path prefix): alerts from the ruler.
+- `/healthz`.
+- `/metrics` (asks for `auth` too):
   - alerts received, enriched, and skipped by reason;
   - forwards by result;
   - time spent in Loki.
-- Any other path is passed to the first Alertmanager.
+- Nothing else. alertlines is not a way into Alertmanager's API.
 
-**Exit codes:** 0 fine, 1 error, 2 bad usage, 3 `check` found no lines.
+**Flags.**
+- `run`: `--listen` and `--alertmanager` (repeatable) instead of the file,
+  with `--loki`.
+- `check`: `--tenant` for a multi-tenant Loki.
+
+**Exit codes:** 0 fine, 1 error, 2 bad usage, 3 `check` found no lines, 4
+`check` found no log query for the alert.
 
 ## Limits
 
@@ -218,15 +246,25 @@ annotation: log_lines              # and log_lines_count
 - **Which query is used.** For an expression with several log queries (an error
   ratio, say), the first one is used: usually the numerator. Use
   `alertlines_query` to pick another.
-- **Labels the expression groups by** become filters. For an expression with no
-  aggregation, the alert's labels are tried as filters first. If that finds
-  nothing, the query runs without them, because some of those labels come from
-  the rule, not the logs.
+- **Which lines are shown.**
+  - Labels the expression groups by become filters.
+  - For an expression with no aggregation, or with `without (…)`, the query
+    runs unfiltered. Then only lines whose streams agree with the alert's
+    labels are kept. Labels such as `severity` come from the rule and no
+    stream has them, so they don't count.
+  - `offset` moves the window back, and no query looks back further than
+    `max_range`.
 - **Redaction is a safety net, not a guarantee.** It knows common shapes of
   secrets. Lines go to wherever your notifications go, so add patterns for your
   own formats, and keep secrets out of logs.
-- **Security of the listener.** The listener has no authentication, like
-  Alertmanager's own API. Keep it on the same network as the ruler.
+- **Who may send alerts.** Anyone who can reach alertlines can make it read
+  Loki, with its own credentials, for any tenant: whatever query they put in an
+  "alert". So it listens on 127.0.0.1 unless told otherwise, and when it
+  listens anywhere else it says so until you set `auth`. Use `tenants` on a
+  multi-tenant Loki.
+- **Chat formatting.** Log lines go into the annotation as they are. In a Slack
+  template, text such as `<!channel>` or `<https://x|y>` from a log line is
+  formatted by Slack; escape it there if your logs carry user input.
 
 ## Roadmap
 

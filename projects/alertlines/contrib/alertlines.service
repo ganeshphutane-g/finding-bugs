@@ -2,6 +2,7 @@
 # /etc/systemd/system/ and the file to /etc/alertlines/alertlines.yaml, then
 #   systemctl daemon-reload && systemctl enable --now alertlines
 # Point Loki's ruler at it: ruler: {alertmanager_url: http://<this host>:9097}
+# (set listen: ":9097" and auth in the file when the ruler is on another host).
 
 [Unit]
 Description=alertlines: log lines in Loki's alerts
@@ -30,6 +31,17 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

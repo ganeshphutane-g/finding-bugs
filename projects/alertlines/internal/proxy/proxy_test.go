@@ -38,6 +38,8 @@ func (f fakeLoki) Lines(ctx context.Context, q string, start, end time.Time, lim
 type fakeAM struct {
 	mu      sync.Mutex
 	batches [][]map[string]any
+	tenants []string
+	auth    []string
 	status  int
 	*httptest.Server
 }
@@ -49,6 +51,10 @@ func newAM(t *testing.T, status int) *fakeAM {
 			io.WriteString(w, "passed "+r.URL.Path)
 			return
 		}
+		am.mu.Lock()
+		am.tenants = append(am.tenants, r.Header.Get("X-Scope-OrgID"))
+		am.auth = append(am.auth, r.Header.Get("Authorization"))
+		am.mu.Unlock()
 		var b []map[string]any
 		json.NewDecoder(r.Body).Decode(&b)
 		am.mu.Lock()
@@ -124,7 +130,7 @@ func TestAddsLinesAndForwards(t *testing.T) {
 	}
 	var m bytes.Buffer
 	s.writeMetrics(&m)
-	for _, want := range []string{"alertlines_alerts_received_total 2", "alertlines_alerts_enriched_total 1", `alertlines_alerts_skipped_total{reason="no_query"} 1`, `alertlines_forwards_total{result="ok"} 2`} {
+	for _, want := range []string{"alertlines_alerts_received_total 2", "alertlines_alerts_enriched_total 1", `alertlines_alerts_skipped_total{reason="grafana_managed"} 1`, `alertlines_forwards_total{result="ok"} 2`} {
 		if !strings.Contains(m.String(), want) {
 			t.Errorf("metrics lack %s:\n%s", want, m.String())
 		}
@@ -148,7 +154,8 @@ func TestNeverInTheWay(t *testing.T) {
 	s.Log = func(f string, a ...any) { logged = append(logged, f) }
 	post(t, s, batch(time.Now().Add(time.Hour)))
 	post(t, s, batch(time.Now().Add(time.Hour)))
-	if len(am.batches) != 3 || len(logged) != 1 {
+	// (Each problem once: Loki's error, and the Grafana-managed alert.)
+	if len(am.batches) != 3 || len(logged) != 2 {
 		t.Errorf("batches %d, logged %v", len(am.batches), logged)
 	}
 	// Resolved alerts and unreadable bodies pass untouched.
@@ -179,16 +186,69 @@ func TestAlertmanagerAnswers(t *testing.T) {
 	if rec := post(t, s, batch(time.Now().Add(time.Hour))); rec.Code != http.StatusBadGateway {
 		t.Errorf("unreachable: %d", rec.Code)
 	}
-	// Anything else goes to the first Alertmanager.
+	// Nothing else is passed on.
 	s = server(fakeLoki{}, time.Second, up)
 	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v2/status", nil))
-	if rec.Body.String() != "passed /api/v2/status" {
-		t.Errorf("pass-through: %q", rec.Body)
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v2/alerts", nil))
+	if rec.Code != 404 {
+		t.Errorf("GET alerts: %d %q", rec.Code, rec.Body)
 	}
 	rec = httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Body.String() != "ok\n" {
 		t.Errorf("healthz: %q", rec.Body)
+	}
+}
+
+func TestAuthTenantsAndPaths(t *testing.T) {
+	am := newAM(t, 200)
+	s := server(fakeLoki{}, time.Second, am)
+	s.Username, s.Password = "ruler", "pw"
+	if rec := post(t, s, batch(time.Now().Add(time.Hour))); rec.Code != 401 {
+		t.Fatalf("no auth: %d", rec.Code)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/prefix/api/v2/alerts", strings.NewReader(batch(time.Now().Add(time.Hour))))
+	req.SetBasicAuth("ruler", "pw")
+	req.Header.Set("X-Scope-OrgID", "team-a")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != 200 || am.tenants[0] != "team-a" || am.auth[0] != "" {
+		t.Fatalf("auth, prefix: %d tenants %v auth %v", rec.Code, am.tenants, am.auth)
+	}
+	if _, has := am.last()[0]["annotations"].(map[string]any)["log_lines"]; !has {
+		t.Error("a prefixed path got no lines")
+	}
+	// Only listed tenants get lines; the alerts still pass.
+	s = server(fakeLoki{}, time.Second, am)
+	s.Tenants = []string{"team-a"}
+	post(t, s, batch(time.Now().Add(time.Hour)), "X-Scope-OrgID", "team-b")
+	if _, has := am.last()[0]["annotations"].(map[string]any)["log_lines"]; has {
+		t.Error("an unlisted tenant got lines")
+	}
+	s.BearerToken = "t0ken"
+	if rec := post(t, s, batch(time.Now().Add(time.Hour)), "Authorization", "Bearer wrong"); rec.Code != 401 {
+		t.Errorf("bearer: %d", rec.Code)
+	}
+}
+
+func TestBatchCap(t *testing.T) {
+	am := newAM(t, 200)
+	s := server(fakeLoki{}, 5*time.Second, am)
+	var alerts []string
+	for range maxAlerts + 50 {
+		alerts = append(alerts, `{"labels":{"alertname":"A"},"annotations":{"alertlines_query":"{a=\"b\"}"},"endsAt":"2099-01-01T00:00:00Z"}`)
+	}
+	if rec := post(t, s, "["+strings.Join(alerts, ",")+"]"); rec.Code != 200 {
+		t.Fatalf("%d", rec.Code)
+	}
+	b := am.last()
+	with := 0
+	for _, a := range b {
+		if _, has := a["annotations"].(map[string]any)["log_lines"]; has {
+			with++
+		}
+	}
+	if len(b) != maxAlerts+50 || with != maxAlerts {
+		t.Errorf("%d alerts, %d with lines", len(b), with)
 	}
 }
