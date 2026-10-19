@@ -1,41 +1,37 @@
 # State
 
 Current project: #9 alertlines (log lines in Loki alerts: a proxy between the
-Loki ruler and Alertmanager). Phase: spec. Research round 10 is in IDEAS.md.
+Loki ruler and Alertmanager). Phase: build. Spec: projects/alertlines/SPEC.md.
+Research round 10 is in IDEAS.md.
 
 ## Next step
 
-Write projects/alertlines/SPEC.md. First verify, with real grafana/loki and
-prom/alertmanager containers:
-- what the ruler sends to Alertmanager: POST /api/v2/alerts, the labels,
-  annotations, startsAt and generatorURL;
-- whether the ruler's rules API (/loki/api/v1/rules or /prometheus/api/v1/rules)
-  lets an alert be matched to its rule and LogQL;
-- how query_range for the log part of a metric query returns lines (turning
-  `count_over_time({app="x"} |= "error" [5m])` into `{app="x"} |= "error"`);
-- check the current Grafana and Loki docs for any new way to put log lines in
-  alerts (the search found nothing dated 2026).
+Milestone 1 (SPEC.md):
+- set up the module (`github.com/ganeshphutane-g/alertlines`, Go 1.24, use
+  GOTOOLCHAIN=local), LICENSE, Makefile (version from `alertlines/v*` tags) and
+  CI;
+- the LogQL scanner: the range-vector argument and range from a metric
+  expression;
+- generatorURL decoding;
+- grouping-label filters;
+- the Loki query_range client (with the tenant header);
+- limits and redaction;
+- `alertlines check`.
 
-Then scope v1:
-- the proxy (Alertmanager v2 API in, out);
-- finding the query (annotation `logql`, else the ruler's API);
-- limits (lines, bytes, time) and redaction patterns;
-- the annotation format for templates;
-- a pass-through when Loki is slow or down, so alerts are never delayed beyond
-  a few seconds or lost;
-- tests against real containers.
+Verified on 2026-10-19 with Loki 3.7.8 (details in SPEC.md):
+- the ruler posts /api/v2/alerts with the expression in generatorURL's Explore
+  link, plus X-Scope-OrgID;
+- the log part returns the lines via query_range.
 
-Tags: every Makefile now takes its version from `<project>/vX.Y.Z` tags only, so
-the owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).
+A test setup that works (in /tmp/claude-0/al last run):
+- Loki's default config, plus a ruler (local rules storage
+  /etc/loki/rules/fake/, evaluation_interval 10s, enable_api, alertmanager_url
+  pointing at a port other than 9095, which is Loki's own gRPC port);
+- `docker run --network host grafana/loki:latest`;
+- logs pushed with POST /loki/api/v1/push.
 
-Verified on 2026-10-18 (details in SPEC.md): the Kuma 2.5.6 push API (GET/POST,
-404 for unknown tokens, any status accepted) and the Gatus external-endpoint API
-(Bearer token, 401, at least one ordinary endpoint required). Still to check in
-the tests: a missed push turning a Kuma push monitor down.
-
-For a Kuma test server, use kumafile's internal/testkit approach (setup-database,
-then the Socket.IO "setup" call); copy it into pushprobe. A Gatus test server needs
-a config with at least one ordinary endpoint.
+Tags: every Makefile takes its version from `<project>/vX.Y.Z` tags only, so the
+owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).
 
 The Docker daemon here is 29.8.2 (API 1.56). Start it with `sudo nohup dockerd >
 /tmp/claude-0/dockerd.log 2>&1 &`.
