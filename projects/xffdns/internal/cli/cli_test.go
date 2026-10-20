@@ -189,8 +189,14 @@ metrics_listen: "127.0.0.1:0"
 	if err != nil || binary.BigEndian.Uint16(buf) != 77 || buf[3]&0xF != 3 || n < 12 {
 		t.Fatal(err)
 	}
+	// The start-up probe's query is in the log too: find this one by name.
+	var got map[string]any
 	f.mu.Lock()
-	got := f.log[0]
+	for _, e := range f.log {
+		if e["question"].(map[string]string)["name"] == "served.example" {
+			got = e
+		}
+	}
 	f.mu.Unlock()
 	if got["client"] != "127.0.0.1" || got["client_id"] != "lan" {
 		t.Fatal(got)

@@ -29,9 +29,9 @@ A CLI that walks a pull the way dockerd resolves it and shows each step:
 - Docker forums "Downloading from the registry is slow, what next?", and
   2025–2026 guides that time `curl /v2/` by hand to find auth, TLS or mirror
   delays (search summary);
-- Docker Hub's pull limits since April 2025 (10 an hour per IP without login,
-  by a search summary; verify before the spec) make "is it the rate limit?" a
-  common question.
+- Docker Hub's pull limits make "is it the rate limit?" a common question.
+  Hub's headers on 2026-10-21 said 100 an hour per IP without login (checked;
+  a search summary's "10 an hour" was wrong).
 
 **Upstream:** no verbose-pull PR in docker/cli; the open pull PR #7379 adds
 `--dry-run`, which is something else (checked).

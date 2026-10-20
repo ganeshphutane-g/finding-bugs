@@ -1,44 +1,39 @@
 # State
 
-Current project: #10, xffdns (AdGuard Home real-client-IP bridge; the name is
-free on GitHub, checked 2026-10-21). Phase: build. Spec: projects/xffdns/SPEC.md
-(verified behaviour and captured PROXY headers are in it).
+Current project: #11, pullwhy ("why is my docker pull slow or failing?";
+the name is free on GitHub, checked 2026-10-21; "pulltrace" is taken). Phase:
+spec. Research round 12 is in IDEAS.md.
 
 ## Next step
 
-xffdns milestones 1-4 are done, plus README, CHANGELOG, LICENSE, Dockerfile,
-systemd unit (exposure 1.4) and CI (.github/workflows/xffdns.yml; green on
-AdGuard Home latest, v0.107.73 and v0.107.45, e2e ran 18 s). The e2e test covers
-HAProxy v1/v2, Traefik v2, nginx v1 and dnsdist v2 UDP/TCP. Phase: full review
-(milestone 5); fix findings, then mark done (owner tags xffdns/v1.0.0) and start
-research round 12.
+Write projects/pullwhy/SPEC.md. Verified 2026-10-21: an anonymous HEAD of
+registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest (token from
+auth.docker.io, scope repository:...:pull) returns `ratelimit-limit:
+100;w=3600`, `ratelimit-remaining: 8;w=3600` (this sandbox shares its egress
+IP), the same as `x-ratelimit-*`, and `docker-ratelimit-source: <IP>`. So it is
+100 an hour per IP without login, not 10 as a search summary said. Still to
+verify:
+- the limit and headers with a logged-in free account (no account here: say
+  so in the spec);
+- how dockerd resolves a pull on both image stores: registry-mirrors (docker.io
+  only, tried in order, fallback to the registry), insecure-registries, the
+  daemon's proxy settings (daemon.json "proxies" and the service environment),
+  and whether the containerd store also reads /etc/containerd/certs.d
+  (hosts.toml) or /etc/docker/certs.d;
+- where the CLI's credentials come from (config.json auths, credsStore,
+  credHelpers) and how they reach the daemon (X-Registry-Auth);
+- a test bed: registry:2 with htpasswd auth and TLS, registry:2 as a
+  pull-through mirror of a local upstream, a proxy (tinyproxy or squid) in
+  front, with `docker pull` side by side.
 
-Facts found: AdGuard Home's plain-DoH setting is http.doh.insecure_enabled from
-v0.107.74, tls.allow_unencrypted_doh up to v0.107.73. The image (uid 65532)
-binds :53 on Docker networks; on the host network it needs --user 0:0
---cap-drop ALL --cap-add NET_BIND_SERVICE (cap-add alone fails as non-root).
-
-Test setup (AdGuard Home v0.107.79):
-- `docker run -d --name agh --network host adguard/adguardhome:latest`;
-- POST :3000/control/install/configure with
-  {"web":{"ip":"127.0.0.1","port":3080},"dns":{"ip":"127.0.0.1","port":5354},"username":"admin","password":"..."};
-- `sed -i 's/insecure_enabled: false/insecure_enabled: true/'` on
-  /opt/adguardhome/conf/AdGuardHome.yaml, restart;
-- clients: POST /control/clients/add {"name","ids":[ip or id],"use_global_settings":true,
-  "use_global_blocked_services":false,"blocked_services":["youtube"],"filtering_enabled":true};
-  youtube blocks www.ggpht.com, tiktok blocks amemv.com;
-- local rule ||example.com^ (upstreams are unreachable here; failed queries are
-  not logged); read GET /control/querylog?limit=N (client, client_id,
-  client_proto, reason, client_info.name).
-- dnsdist: powerdns/dnsdist-20 pulls; HAProxy haproxy:lts; Traefik traefik:latest.
-- Still to find: the oldest AdGuard release with http.doh.insecure_enabled, for
-  the CI matrix.
+Then scope v1 (a read-only CLI: `pullwhy IMAGE` replays the resolution and
+timings and names the likely cause; `--json`; never changes daemon config).
 
 Tags: every Makefile takes its version from `<project>/vX.Y.Z` tags only, so the
 owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).
 
 The Docker daemon here is 29.8.2 (API 1.56). Start it with `sudo nohup dockerd >
-/tmp/claude-0/dockerd.log 2>&1 &`.
+/tmp/dockerd.log 2>&1 &`.
 
 Uptime Kuma test server, should a later project need one: `docker run -d -p
 127.0.0.1:3901:3001 louislam/uptime-kuma:2`, then POST /setup-database
@@ -57,7 +52,7 @@ Actions as codeberg.org/forgejo/forgejo:16.
 ## Notes for runs
 
 - The Docker daemon is not running at session start. Start it detached with
-  `sudo nohup dockerd > /tmp/claude-0/dockerd.log 2>&1 &` and wait a few seconds
+  `sudo nohup dockerd > /tmp/dockerd.log 2>&1 &` and wait a few seconds
   (a plain `&` inside a compound command dies with the shell).
 - Integration tests: `MOP_INTEGRATION=1 go test ./...` (label-scoped, safe) or
   `MOP_INTEGRATION=destructive` (unscoped; only on a throwaway daemon like this one).
@@ -79,8 +74,8 @@ Actions as codeberg.org/forgejo/forgejo:16.
   github.com/minio/minio@v0.0.0-20260212201848-7aac2a2c5b7c` (about 2.5 minutes).
   Garage (dxflrs/garage), SeaweedFS (chrislusf/seaweedfs) and RustFS (rustfs/rustfs)
   pull from Docker Hub.
-- pushdir tests need rclone: `GOBIN=/tmp/claude-0/rclone-bin go install
-  github.com/rclone/rclone@v1.75.2` then `RCLONE_BIN=/tmp/claude-0/rclone-bin/rclone
+- pushdir tests need rclone: `GOBIN=/tmp/rclone-bin go install
+  github.com/rclone/rclone@v1.75.2` then `RCLONE_BIN=/tmp/rclone-bin/rclone
   make test`. Docker builds here cannot reach the Go proxy: to check the image, copy
   the project to a temp folder, run `go mod vendor`, and build with `-mod=vendor`.
 - Docker Hub pulls can fail with 429 (rate limit). Tests must not depend on pulling
@@ -221,6 +216,28 @@ Actions as codeberg.org/forgejo/forgejo:16.
    - **Owner checks before going public:** read the README; run `alertlines
      check` on a few of your own rules; then point a test ruler at it.
 
+10. **xffdns** (projects/xffdns, v1.0.0 at the commit after the second review;
+    see LOG). Real client addresses for AdGuard Home behind proxies
+    (AdGuardHome#2798, 96 👍).
+    - **How:** takes DNS over UDP, TCP and DoT, with or without a PROXY v1/v2
+      header (only from `proxy_from`), and passes each query to AdGuard Home's
+      DoH endpoint with the client in X-Forwarded-For; client IDs from the DoT
+      name. AdGuard Home's per-client settings, blocked services, access list
+      and query log follow the forwarded address (verified).
+    - **Also:** `check` (reads the query log to prove AdGuard Home trusts it,
+      exit 3 with the fix if not), a start-up probe with hints, limits per
+      client and in all, a UDP rate limit (AdGuard Home does not limit DoH),
+      certificate reload, /metrics and /healthz, a Docker image and a hardened
+      systemd unit (exposure 1.4).
+    - **Tests:** end to end against AdGuard Home v0.107.45, v0.107.73 and
+      latest, with HAProxy v1/v2, Traefik v2, nginx v1 and dnsdist v2 UDP/TCP
+      in front, plus a spoofed header; CI green.
+    - **Reviews:** two full reviews, 15 and 13 findings, all addressed with
+      tests (parser cost, slot starvation, per-client limits, deadlines,
+      redirects, UDP source address on wildcard listeners, docs).
+    - **Owner checks before going public:** README; try it behind your own
+      proxy with an Android phone's Private DNS; GitHub Actions green.
+
 ## Blockers for the owner
 
 - The finding-bugs repo itself is PUBLIC (seen 2026-10-15). Everything in it
@@ -228,14 +245,14 @@ Actions as codeberg.org/forgejo/forgejo:16.
   changing visibility, so the owner decides: make it private (GitHub > Settings >
   Danger Zone), or keep it public knowingly.
 
-- Creating new repos fails: the Claude GitHub app gets "403 Resource not accessible
+- Creating new repos fails: the GitHub app this automation uses gets "403 Resource not accessible
   by integration". To give docker-mop its own repo, create an empty private repo
-  `ganeshphutane-g/docker-mop` on GitHub and give the Claude GitHub app access to it
-  (GitHub settings > Applications > Claude > Repository access). The next run will
+  `ganeshphutane-g/docker-mop` on GitHub and give that GitHub app access to it
+  (GitHub settings > Applications > that app > Repository access). The next run will
   move the project there with its history.
 - Same for bucketmove, pushdir, pgcarry and issuemove (one empty private repo each,
-  with the Claude app given access), if they should live on their own.
-- Same for pushdir: an empty private repo `ganeshphutane-g/pushdir` with the Claude
+  with that app given access), if they should live on their own.
+- Same for pushdir: an empty private repo `ganeshphutane-g/pushdir` with that
   app given access lets the next run move it there (its README already uses that
   module path for `go install`).
 - Pushing git tags is refused by this environment's git proxy (branch pushes work).
