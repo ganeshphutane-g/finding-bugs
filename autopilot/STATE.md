@@ -6,15 +6,17 @@ free on GitHub, checked 2026-10-21). Phase: build. Spec: projects/xffdns/SPEC.md
 
 ## Next step
 
-Milestones 1-3 are done (wire formats; config, rate limiter and DoH client;
-listeners, metrics, run and check; unit tests pass with -race). `xffdns check`
-was tried against real AdGuard Home: exit 0 when trusted, exit 3 when
-127.0.0.1 is not in trusted_proxies, a hint when insecure_enabled is off (404).
-Next: milestone 4, integration tests (internal/e2e, XFFDNS_INTEGRATION=1) with
-AdGuard Home, HAProxy, Traefik and dnsdist on the host network; clients bind
-127.0.0.77 etc. so the PROXY source differs from the proxy's 127.0.0.1. Use
-names under example.com (blocked by a local rule, so logged here). Then CI,
-Docker, systemd, README, review.
+xffdns milestones 1-4 are done, plus README, CHANGELOG, LICENSE, Dockerfile,
+systemd unit (exposure 1.4) and CI (.github/workflows/xffdns.yml; green on
+AdGuard Home latest, v0.107.73 and v0.107.45, e2e ran 18 s). The e2e test covers
+HAProxy v1/v2, Traefik v2, nginx v1 and dnsdist v2 UDP/TCP. Phase: full review
+(milestone 5); fix findings, then mark done (owner tags xffdns/v1.0.0) and start
+research round 12.
+
+Facts found: AdGuard Home's plain-DoH setting is http.doh.insecure_enabled from
+v0.107.74, tls.allow_unencrypted_doh up to v0.107.73. The image (uid 65532)
+binds :53 on Docker networks; on the host network it needs --user 0:0
+--cap-drop ALL --cap-add NET_BIND_SERVICE (cap-add alone fails as non-root).
 
 Test setup (AdGuard Home v0.107.79):
 - `docker run -d --name agh --network host adguard/adguardhome:latest`;
