@@ -152,7 +152,7 @@ func TestThroughProxies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	up, err := upstream.New(upstream.Options{URL: ag.Web + "/dns-query", Timeout: 4 * time.Second})
+	up, err := upstream.New(upstream.Options{URL: ag.Web + "/dns-query", Timeout: 4 * time.Second, MaxConns: conf.Limits.MaxInflight})
 	if err != nil {
 		t.Fatal(err)
 	}

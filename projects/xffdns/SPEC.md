@@ -132,34 +132,47 @@ the client gets SERVFAIL, with its own ID and question.
 
 | Limit | Default |
 | --- | --- |
-| UDP queries per second per client subnet (/24 for IPv4, /56 for IPv6, AdGuard's defaults) | 50 |
-| Clients tracked by the limiter (beyond that, the stalest are dropped) | 10,000 |
-| Open TCP/DoT connections | 1,000 |
+| UDP queries per second per client subnet (/24 for IPv4, /56 for IPv6; AdGuard's defaults, as is the rate) | 20 |
+| Clients tracked by the limiter (in two generations of up to this many; the older is dropped whole) | 10,000 |
+| Open TCP/DoT connections, all listeners | 1,000 |
+| Open TCP/DoT connections per client (IPv4 address, IPv6 /64; counted after the PROXY header) | 32 |
 | Queries in flight per connection | 32 |
 | Queries in flight in all | 2,000 |
 | Idle timeout for TCP/DoT | 30 s |
 | Time for the PROXY header and the TLS handshake | 5 s each |
-| Query size | 65,535 bytes |
+| Query size | 4,096 bytes |
+| Connections to AdGuard Home | as many as queries in flight |
 
-- Queries over the UDP limit are dropped.
+- Queries must be plain queries: no answer or authority records, at most 3
+  additional ones. Anything else is dropped (UDP) or closes the connection.
+- Queries over the UDP limit are dropped, before they are parsed.
 - Queries over the in-flight limit get SERVFAIL on UDP. On TCP, xffdns stops
-  reading from that connection until queries finish.
+  reading from that connection until queries finish. A query stops counting
+  once AdGuard Home has answered it, even if its client is slow to read.
+- Redirects from the upstream are not followed; they count as errors.
 
 **UDP answers.**
 - An answer larger than the client's buffer is truncated to the header and
   question, with TC set.
 - The buffer is 512 bytes without EDNS. With EDNS it is the advertised size,
   at most 4,096.
+- The truncated answer keeps the upstream's flags and extended rcode; error
+  answers xffdns makes echo the query's RD and CD.
 
 ### Commands
 
 - `xffdns run [-c xffdns.yaml]`: serve.
-- `xffdns check [-c ...] [--ip 192.0.2.10] [--name example.com]
-  [--adguard-url ... --adguard-user ... --adguard-password ...]`:
+- `xffdns check [-c ... | --url ... [--ca-file ...] [--server-name ...]]
+  [--ip 192.0.2.10] [--name ...] [--client-id ...] [--adguard-url ...
+  --adguard-user ...]`, with the password in `XFFDNS_ADGUARD_PASSWORD`:
   - Sends one query to the upstream as the given IP and prints the answer.
+    The name defaults to a new `xffdns-check-<random>.example.com`. Loopback
+    and unspecified IPs are refused: AdGuard would log them either way.
   - With AdGuard API credentials, it also reads the query log. It reports
     whether AdGuard logged the forwarded IP or xffdns's own address. Its own
-    address means it is not in `trusted_proxies`, and the check fails.
+    address means it is not in `trusted_proxies`, and the check fails. The
+    entry is the one that was not in the log before the query, so clocks do
+    not matter.
 - `xffdns version`.
 
 **Exit codes:** 0 fine, 1 error, 2 bad usage, 3 `check` saw AdGuard ignore the
@@ -168,12 +181,13 @@ forwarded address.
 ### Observability
 
 - `/metrics` and `/healthz` on `metrics_listen`, which is off by default:
-  - queries by listener and result (answered, servfail, refused_proxy,
-    rate_limited, truncated);
+  - queries by listener and result (answered, servfail, truncated,
+    rate_limited, busy, malformed);
   - upstream latency as a histogram;
   - upstream errors;
   - open connections;
-  - PROXY header errors;
+  - PROXY header errors (untrusted source, bad header);
+  - connections closed at once (max_conns, max_conns_per_client, TLS);
   - certificate reloads.
 - Logs:
   - one line at start for each listener;
@@ -198,11 +212,14 @@ listeners:
   - name: lan
     protocol: udp
     address: "192.168.1.2:53"
-limits: {udp_qps: 50}
+limits: {udp_qps: 20}
 metrics_listen: "127.0.0.1:9354"
 ```
 
-`${XFFDNS_*}` environment variables are expanded, and no others.
+`${XFFDNS_*}` environment variables are expanded, and no others, in these
+fields: the upstream's url, ca_file and server_name, metrics_listen, and each
+listener's name, address, cert_file, key_file, server_name, client_id and
+proxy_from entries.
 
 ### Packaging
 
@@ -258,11 +275,12 @@ protocol code is written here from the RFCs and the PROXY protocol spec
    - Checks, read from the query log and from blocked answers: queries over
      UDP, TCP and DoT give the right client IP, client ID and blocked
      services.
-   - In front of xffdns: HAProxy (v1 and v2), Traefik (v2) and dnsdist (v2
-     over UDP).
+   - In front of xffdns: HAProxy (v1 and v2), Traefik (v2), nginx (v1) and
+     dnsdist (v2 over UDP and TCP).
    - A spoofed header from a source outside `proxy_from` is refused.
-   - CI matrix: AdGuard latest, and the oldest version that has
-     `insecure_enabled`.
+   - CI matrix: AdGuard latest; v0.107.73, the last with
+     `tls.allow_unencrypted_doh` (v0.107.74 renamed it
+     `http.doh.insecure_enabled`); and v0.107.45.
 5. **Release.**
    - Dockerfile, systemd unit, README, CHANGELOG, LICENSE.
    - A full review, with every finding fixed.

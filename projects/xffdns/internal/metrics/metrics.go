@@ -15,13 +15,12 @@ import (
 
 // Results of a query, for the queries counter.
 const (
-	Answered     = "answered"
-	ServFail     = "servfail"
-	Truncated    = "truncated"
-	RateLimited  = "rate_limited"
-	Busy         = "busy"
-	Malformed    = "malformed"
-	RefusedProxy = "refused_proxy"
+	Answered    = "answered"
+	ServFail    = "servfail"
+	Truncated   = "truncated"
+	RateLimited = "rate_limited"
+	Busy        = "busy"
+	Malformed   = "malformed"
 )
 
 // escape makes a label value safe in the text format.

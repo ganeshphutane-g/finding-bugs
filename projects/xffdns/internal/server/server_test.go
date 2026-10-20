@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -65,6 +66,9 @@ func (f *fake) Exchange(ctx context.Context, q []byte, client netip.Addr, id str
 	a[2] |= 0x80
 	if strings.HasPrefix(in.Name, "big.") {
 		a = append(a, make([]byte, 2000)...)
+	}
+	if strings.HasPrefix(in.Name, "huge.") {
+		a = append(a, make([]byte, 60000)...)
 	}
 	return a, nil
 }
@@ -113,7 +117,7 @@ func v2(src string, udp bool) []byte {
 
 func limits(mod func(*config.Limits)) config.Limits {
 	qps := 0
-	l := config.Limits{UDPQPS: &qps, SubnetV4: 24, SubnetV6: 56, Clients: 100, MaxConns: 100, MaxInflightPerConn: 8,
+	l := config.Limits{UDPQPS: &qps, SubnetV4: 24, SubnetV6: 56, Clients: 100, MaxConns: 100, MaxConnsPerClient: 100, MaxInflightPerConn: 8,
 		MaxInflight: 100, IdleTimeout: config.Duration(5 * time.Second), HandshakeTimeout: config.Duration(2 * time.Second)}
 	if mod != nil {
 		mod(&l)
@@ -543,5 +547,100 @@ func TestClientIDFromSNI(t *testing.T) {
 		if got := clientIDFromSNI(sni, "dns.example.com"); got != want {
 			t.Errorf("%s: %q", sni, got)
 		}
+	}
+}
+
+func TestPerClientConns(t *testing.T) {
+	f := &fake{}
+	s, m := start(t, f, limits(func(l *config.Limits) { l.MaxConnsPerClient = 1 }),
+		config.Listener{Name: "t", Protocol: "tcp"},
+		config.Listener{Name: "tp", Protocol: "tcp", ProxyProtocol: true, ProxyFrom: []string{"127.0.0.1/32"}})
+	c1, _ := net.Dial("tcp", s.Addr("t").String())
+	defer c1.Close()
+	(tcpConn{c1}).send(t, query(1, "a.example"))
+	(tcpConn{c1}).recv(t)
+	c2, _ := net.Dial("tcp", s.Addr("t").String())
+	defer c2.Close()
+	if !closed(c2) {
+		t.Fatal("a second connection from the same client stayed open")
+	}
+	// Behind a proxy, clients are told apart by the PROXY header: the
+	// proxy's own address does not count.
+	for i, src := range []string{"192.0.2.1:1000", "192.0.2.2:1000"} {
+		p, _ := net.Dial("tcp", s.Addr("tp").String())
+		defer p.Close()
+		p.Write(v2(src, false))
+		(tcpConn{p}).send(t, query(uint16(10+i), "b.example"))
+		if a := (tcpConn{p}).recv(t); dnsmsg.ID(a) != uint16(10+i) {
+			t.Fatal("a proxied client was refused")
+		}
+	}
+	if !strings.Contains(metricsText(m), `reason="max_conns_per_client"} 1`) {
+		t.Fatal(metricsText(m))
+	}
+}
+
+// A client that sends queries and never reads the answers must not hold
+// the slots other clients need.
+func TestSlowReader(t *testing.T) {
+	f := &fake{}
+	s, _ := start(t, f, limits(func(l *config.Limits) { l.MaxInflight = 4; l.MaxInflightPerConn = 64 }),
+		config.Listener{Name: "t", Protocol: "tcp"}, config.Listener{Name: "u", Protocol: "udp"})
+	// A small receive window, set before connecting, so the server's writes block.
+	d := net.Dialer{Control: func(_, _ string, rc syscall.RawConn) error {
+		return rc.Control(func(fd uintptr) { syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 2048) })
+	}}
+	c, err := d.Dial("tcp", s.Addr("t").String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var qs [][]byte
+	for i := range 64 {
+		qs = append(qs, query(uint16(i), "huge.example")) // 60 KB answers, never read
+	}
+	(tcpConn{c}).send(t, qs...)
+	time.Sleep(500 * time.Millisecond)
+	if a := udpAsk(t, s.Addr("u"), query(99, "other.example")); a == nil || a[3]&0xF != 0 {
+		t.Fatalf("another client was starved: %x", a)
+	}
+}
+
+func TestQueryLimits(t *testing.T) {
+	f := &fake{}
+	s, _ := start(t, f, limits(nil), config.Listener{Name: "t", Protocol: "tcp"}, config.Listener{Name: "u", Protocol: "udp"})
+	// Over MaxQuery on TCP: closed.
+	c, _ := net.Dial("tcp", s.Addr("t").String())
+	defer c.Close()
+	c.Write([]byte{0x20, 0x00})
+	if !closed(c) {
+		t.Fatal("an 8 KB query was taken")
+	}
+	// A query with answer records, over UDP: dropped.
+	q := query(1, "a.example")
+	q[7] = 1
+	if udpAsk(t, s.Addr("u"), q) != nil {
+		t.Fatal("answered a query with an answer section")
+	}
+	if udpAsk(t, s.Addr("u"), append(query(2, "b.example"), make([]byte, MaxQuery)...)) != nil {
+		t.Fatal("answered an oversized datagram")
+	}
+}
+
+// The PROXY header and the TLS handshake each get handshake_timeout.
+func TestHandshakeDeadlines(t *testing.T) {
+	cf, kf, pool := cert(t)
+	f := &fake{}
+	s, _ := start(t, f, limits(func(l *config.Limits) { l.HandshakeTimeout = config.Duration(400 * time.Millisecond) }),
+		config.Listener{Name: "dp", Protocol: "dot", CertFile: cf, KeyFile: kf, ProxyProtocol: true, ProxyFrom: []string{"127.0.0.1/32"}})
+	raw, _ := net.Dial("tcp", s.Addr("dp").String())
+	defer raw.Close()
+	time.Sleep(300 * time.Millisecond)
+	raw.Write(v2("192.0.2.5:1", false))
+	time.Sleep(300 * time.Millisecond)
+	tc := tls.Client(raw, &tls.Config{RootCAs: pool, ServerName: "dns.example.test"})
+	(tcpConn{tc}).send(t, query(1, "late.example"))
+	if a := (tcpConn{tc}).recv(t); dnsmsg.ID(a) != 1 {
+		t.Fatal("no answer")
 	}
 }

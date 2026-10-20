@@ -85,9 +85,13 @@ func TestErrors(t *testing.T) {
 		case <-time.After(5 * time.Second):
 		}
 	})
+	mux.HandleFunc("/moved", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/elsewhere", http.StatusPermanentRedirect)
+	})
+	mux.HandleFunc("/elsewhere", func(w http.ResponseWriter, r *http.Request) { t.Error("a redirect was followed") })
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	for path, want := range map[string]error{"/status": ErrStatus, "/html": ErrAnswer, "/short": ErrAnswer, "/slow": ErrTimeout} {
+	for path, want := range map[string]error{"/moved": ErrStatus, "/status": ErrStatus, "/html": ErrAnswer, "/short": ErrAnswer, "/slow": ErrTimeout} {
 		c, _ := New(Options{URL: srv.URL + path, Timeout: 200 * time.Millisecond})
 		if _, err := c.Exchange(context.Background(), query, netip.MustParseAddr("192.0.2.1"), ""); !errors.Is(err, want) {
 			t.Errorf("%s: %v", path, err)

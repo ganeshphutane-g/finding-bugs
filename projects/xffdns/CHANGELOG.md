@@ -12,8 +12,10 @@ First release.
 - Client IDs: from the DoT name (`<id>.<server_name>`), or one per listener.
 - DoT certificates are read again when their files change.
 - Limits: UDP queries per second per client subnet (AdGuard Home does not
-  limit DoH), connections, queries in flight, idle and handshake timeouts.
-  UDP answers that are too big are truncated.
+  limit DoH; the default is AdGuard Home's 20), connections in all and per
+  client, queries in flight, query size (4 KB, plain queries only), idle and
+  handshake timeouts. UDP answers that are too big are truncated, keeping the
+  upstream's flags.
 - `xffdns check` sends a query as an address of your choice and reads AdGuard
   Home's query log to tell whether it took the address, and what to change if
   not.

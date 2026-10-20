@@ -22,12 +22,12 @@ listeners:
     key_file: /k.pem
     server_name: Dns.Example.com.
     proxy_protocol: true
-    proxy_from: ["172.18.0.0/16", "10.0.0.7", "2001:db8::/64"]
+    proxy_from: ["172.18.0.0/16", "${XFFDNS_PROXY}", "2001:db8::/64"]
   - protocol: udp
     address: "192.168.1.2:53"
     client_id: lan-1
 limits: {udp_qps: 0, idle_timeout: 10}
-`), env(map[string]string{"XFFDNS_PORT": "3080"}))
+`), env(map[string]string{"XFFDNS_PORT": "3080", "XFFDNS_PROXY": "10.0.0.7"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,11 +74,29 @@ func TestProblems(t *testing.T) {
 		{"upstream: {url: '${HOME}'}", "only XFFDNS_"},
 		{"upstream: {url: '${XFFDNS_NOPE}'}", "no value for XFFDNS_NOPE"},
 		{"upstream: {timeout: soon}", "not a duration"},
+		{"upstream: {timeout: 0}", "not a duration"},
+		{"upstream: {url: 'http://127.0.0.1:80'}\nlisteners: [{protocol: udp, address: ':53'}]", "has no path"},
+		{"upstream: {url: 'http://agh/dns-query'}\nlisteners: [{protocol: udp, address: ':53', proxy_protocol: true, proxy_from: ['::ffff:0:0/80']}]", "not an address"},
 	} {
 		_, err := Load([]byte(c.file), env(nil))
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s\n got %v\nwant %q", c.file, err, c.want)
 		}
+	}
+}
+
+func TestMappedPrefixes(t *testing.T) {
+	c, err := Load([]byte("upstream: {url: 'http://agh/dns-query'}\nlisteners: [{protocol: tcp, address: ':53', proxy_protocol: true, "+
+		"proxy_from: ['::ffff:10.0.0.0/104', '::ffff:192.0.2.1', '2001:db8::/32']}]"), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range c.Listeners[0].Trusted {
+		got = append(got, p.String())
+	}
+	if strings.Join(got, " ") != "10.0.0.0/8 192.0.2.1/32 2001:db8::/32" {
+		t.Fatal(got)
 	}
 }
 

@@ -105,7 +105,20 @@ func TestCheck(t *testing.T) {
 	if code != exitError || !strings.Contains(out, "insecure_enabled") {
 		t.Fatalf("%d\n%s", code, out)
 	}
-	for _, args := range [][]string{{"--ip", "nope"}, {"--client-id", "Kid"}, {"--url", doh, "-c", conf}, {"--url", "ftp://x"}, {"extra"}} {
+	// The same name again: the new entry is found, not the old one.
+	f.trust = true
+	code, out = runCheck(t, pw, "--url", doh, "--adguard-user", "admin", "--name", "again.example.com")
+	f.trust = false
+	code2, out2 := runCheck(t, pw, "--url", doh, "--adguard-user", "admin", "--name", "again.example.com")
+	if code != 0 || code2 != exitIgnored {
+		t.Fatalf("%d %d\n%s\n%s", code, code2, out, out2)
+	}
+	if code, _ := runCheck(t, nil, "-h"); code != 0 {
+		t.Fatal("-h:", code)
+	}
+	for _, args := range [][]string{{"--ip", "nope"}, {"--ip", "fe80::1%eth0"}, {"--ip", "127.0.0.1"}, {"--ip", "::1"},
+		{"--name", "a..b"}, {"--name", strings.Repeat("a", 64) + ".com"}, {"-c", conf, "--ca-file", "x"},
+		{"--client-id", "Kid"}, {"--url", doh, "-c", conf}, {"--url", "ftp://x"}, {"extra"}} {
 		if code, out := runCheck(t, nil, args...); code != exitUsage {
 			t.Errorf("%v: %d\n%s", args, code, out)
 		}

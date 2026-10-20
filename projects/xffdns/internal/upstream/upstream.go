@@ -33,7 +33,8 @@ type Options struct {
 	Timeout    time.Duration
 	CAFile     string
 	ServerName string
-	// MaxConns bounds the connections to AdGuard Home.
+	// MaxConns bounds the connections to AdGuard Home (default 64). Over
+	// HTTP/1.1 each query in flight needs one.
 	MaxConns int
 	// UserAgent goes with each request.
 	UserAgent string
@@ -98,7 +99,11 @@ func HTTPClient(o Options) (*http.Client, error) {
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 5 * time.Second,
 	}
-	return &http.Client{Transport: tr, Timeout: 30 * time.Second}, nil
+	return &http.Client{Transport: tr, Timeout: 30 * time.Second,
+		// A redirect would resend the query, and the client's address, somewhere
+		// else (or drop the body); report it instead.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}, nil
 }
 
 // URL is where queries for clientID go.

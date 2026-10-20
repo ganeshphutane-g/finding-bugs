@@ -32,8 +32,12 @@ import (
 // writeTimeout bounds writing one answer to a TCP or DoT client.
 const writeTimeout = 10 * time.Second
 
-// udpBuf holds the largest datagram: a PROXY v2 header and a DNS message.
-const udpBuf = 16 + 4096 + 65535
+// MaxQuery is the largest query taken. Queries are small (a name, an OPT
+// record); allowing 64 KB would let each one cost that much memory.
+const MaxQuery = 4096
+
+// udpBuf holds the largest datagram taken: a PROXY v2 header and a query.
+const udpBuf = 16 + 4096 + MaxQuery
 
 // Exchanger sends a query on to AdGuard Home (upstream.Client).
 type Exchanger interface {
@@ -60,9 +64,10 @@ type Server struct {
 	wg       sync.WaitGroup // every goroutine that handles a query or connection
 	loops    sync.WaitGroup // the accept and read loops
 
-	mu    sync.Mutex
-	bound []*bound
-	open  map[net.Conn]struct{}
+	mu        sync.Mutex
+	bound     []*bound
+	open      map[net.Conn]struct{}
+	perClient map[netip.Prefix]int // open connections by client (IPv4 address, IPv6 /64)
 
 	logMu   sync.Mutex
 	logLast map[string]time.Time
@@ -83,14 +88,15 @@ func New(o Options) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	l := o.Limits
 	return &Server{
-		o:        o,
-		limiter:  ratelimit.New(*l.UDPQPS, l.SubnetV4, l.SubnetV6, l.Clients),
-		inflight: make(chan struct{}, l.MaxInflight),
-		conns:    make(chan struct{}, l.MaxConns),
-		ctx:      ctx,
-		cancel:   cancel,
-		open:     map[net.Conn]struct{}{},
-		logLast:  map[string]time.Time{},
+		o:         o,
+		limiter:   ratelimit.New(*l.UDPQPS, l.SubnetV4, l.SubnetV6, l.Clients),
+		inflight:  make(chan struct{}, l.MaxInflight),
+		conns:     make(chan struct{}, l.MaxConns),
+		ctx:       ctx,
+		cancel:    cancel,
+		open:      map[net.Conn]struct{}{},
+		perClient: map[netip.Prefix]int{},
+		logLast:   map[string]time.Time{},
 	}
 }
 
@@ -310,7 +316,7 @@ func isDial(err error) bool {
 }
 
 func (s *Server) serveUDP(b *bound) {
-	buf := make([]byte, udpBuf)
+	buf := make([]byte, udpBuf+1) // one more, to tell a datagram that is too big
 	name := b.conf.Name
 	for {
 		n, from, err := b.pc.ReadFrom(buf)
@@ -323,6 +329,10 @@ func (s *Server) serveUDP(b *bound) {
 			continue
 		}
 		peer := addrPort(from)
+		if n > udpBuf {
+			s.o.Metrics.Query(name, metrics.Malformed)
+			continue
+		}
 		pkt := buf[:n]
 		client := peer.Addr()
 		if b.conf.ProxyProtocol {
@@ -342,14 +352,19 @@ func (s *Server) serveUDP(b *bound) {
 			}
 			pkt = payload
 		}
-		msg := append([]byte(nil), pkt...)
-		q, err := dnsmsg.Parse(msg)
-		if err != nil || !q.IsQuery() {
+		// The limit comes first: junk counts against it too.
+		if !s.limiter.Allow(client) {
+			s.o.Metrics.Query(name, metrics.RateLimited)
+			continue
+		}
+		if len(pkt) > MaxQuery || dnsmsg.CheckQuery(pkt) != nil {
 			s.o.Metrics.Query(name, metrics.Malformed)
 			continue
 		}
-		if !s.limiter.Allow(client) {
-			s.o.Metrics.Query(name, metrics.RateLimited)
+		msg := append([]byte(nil), pkt...)
+		q, err := dnsmsg.Parse(msg)
+		if err != nil {
+			s.o.Metrics.Query(name, metrics.Malformed)
 			continue
 		}
 		select {
@@ -362,8 +377,8 @@ func (s *Server) serveUDP(b *bound) {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			defer func() { <-s.inflight }()
 			ans, result := s.exchange(msg, q, client, b.conf.ClientID)
+			<-s.inflight
 			if fit := dnsmsg.FitUDP(q, ans); len(fit) != len(ans) {
 				ans, result = fit, metrics.Truncated
 			}
@@ -426,6 +441,36 @@ func (s *Server) track(c net.Conn, add bool) {
 	}
 }
 
+func clientKey(a netip.Addr) netip.Prefix {
+	bits := 32
+	if !a.Is4() {
+		bits = 64
+	}
+	p, _ := a.WithZone("").Prefix(bits)
+	return p
+}
+
+// addClient counts a connection for client, unless it has too many.
+func (s *Server) addClient(client netip.Addr) bool {
+	k := clientKey(client)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perClient[k] >= s.o.Limits.MaxConnsPerClient {
+		return false
+	}
+	s.perClient[k]++
+	return true
+}
+
+func (s *Server) dropClient(client netip.Addr) {
+	k := clientKey(client)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.perClient[k]--; s.perClient[k] <= 0 {
+		delete(s.perClient, k)
+	}
+}
+
 // bufConn reads through r: what it buffered after a PROXY header belongs to
 // the TLS handshake.
 type bufConn struct {
@@ -457,7 +502,14 @@ func (s *Server) handleConn(b *bound, c net.Conn, peer netip.AddrPort) {
 			client = h.Source.Addr().Unmap()
 		}
 		conn = &bufConn{Conn: c, r: r}
+		c.SetReadDeadline(time.Time{}) // the handshake has its own timeout
 	}
+	if !s.addClient(client) {
+		s.o.Metrics.ConnRefused(name, "max_conns_per_client")
+		s.logEvery("max-conns-client-"+name, "closed a connection: the client has limits.max_conns_per_client open", "listener", name, "client", client)
+		return
+	}
+	defer s.dropClient(client)
 	id := b.conf.ClientID
 	if b.tls != nil {
 		tc := tls.Server(conn, b.tls)
@@ -498,12 +550,20 @@ func (s *Server) queries(b *bound, conn net.Conn, r *bufio.Reader, client netip.
 			return
 		}
 		n := int(binary.BigEndian.Uint16(lb[:]))
+		if n > MaxQuery {
+			s.o.Metrics.Query(name, metrics.Malformed)
+			return
+		}
 		msg := make([]byte, n)
 		if _, err := io.ReadFull(r, msg); err != nil {
 			return
 		}
+		if err := dnsmsg.CheckQuery(msg); err != nil {
+			s.o.Metrics.Query(name, metrics.Malformed)
+			return
+		}
 		q, err := dnsmsg.Parse(msg)
-		if err != nil || !q.IsQuery() {
+		if err != nil {
 			s.o.Metrics.Query(name, metrics.Malformed)
 			return
 		}
@@ -518,8 +578,11 @@ func (s *Server) queries(b *bound, conn net.Conn, r *bufio.Reader, client netip.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-s.inflight; <-perConn }()
+			defer func() { <-perConn }()
 			ans, result := s.exchange(msg, q, client, id)
+			// The global slot is for queries waiting on AdGuard Home, not on
+			// a slow reader.
+			<-s.inflight
 			out := make([]byte, 2+len(ans))
 			binary.BigEndian.PutUint16(out, uint16(len(ans)))
 			copy(out[2:], ans)

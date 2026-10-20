@@ -71,7 +71,10 @@ docker run --network host --user 0:0 --cap-drop ALL --cap-add NET_BIND_SERVICE .
 2. Run `systemctl enable --now xffdns`.
 
 It runs as a throwaway user, with only the capability to bind low ports. The
-unit's comments show how to hand it Let's Encrypt keys.
+unit's comments show how to hand it Let's Encrypt keys. With `LoadCredential`,
+systemd copies the keys when the service starts, so restart xffdns after a
+renewal. Certificate files xffdns reads directly are picked up without a
+restart.
 
 ## Quick start
 
@@ -124,15 +127,16 @@ This is real output from AdGuard Home v0.107.79:
 
 ```console
 $ XFFDNS_ADGUARD_PASSWORD=... xffdns check -c xffdns.yaml --ip 192.168.5.77 --adguard-user admin
-query   xffdns-check.example.com A, as 192.168.5.77, to http://127.0.0.1:3080/dns-query
-answer  NOERROR, 1 records, in 2ms
+query   xffdns-check-a29ca18a.example.com A, as 192.168.5.77, to http://127.0.0.1:3080/dns-query
+answer  NOERROR, 1 records, in 1ms
 log     client 192.168.5.77
 
 AdGuard Home sees the address xffdns sends.
 ```
 
-`check` sends one query as `--ip` (192.0.2.10 by default), then reads AdGuard
-Home's query log. If AdGuard Home logged xffdns's own address, `check` says
+`check` sends one query as `--ip` (192.0.2.10 by default), for a new name each
+time, then reads AdGuard Home's query log. With `--url` instead of `-c`, give
+`--ca-file` and `--server-name` for https as needed. If AdGuard Home logged xffdns's own address, `check` says
 so and exits 3:
 
 ```console
@@ -224,13 +228,14 @@ listeners:
     proxy_protocol: false      # true: a PROXY header (v1/v2; v2 on UDP) is required...
     proxy_from: []             # ...and only these addresses or CIDRs may send one
 limits:
-  udp_qps: 50                  # UDP queries a second per client subnet (0: no limit)
+  udp_qps: 20                  # UDP queries a second per client subnet (0: no limit)
   subnet_v4: 24                # the subnets it counts by
   subnet_v6: 56
-  clients: 10000               # subnets it keeps track of
-  max_conns: 1000              # TCP and DoT connections
+  clients: 10000               # subnets it keeps track of (up to twice this, in two generations)
+  max_conns: 1000              # TCP and DoT connections, all listeners
+  max_conns_per_client: 32     # per IPv4 address or IPv6 /64 (behind a proxy: the PROXY source)
   max_inflight_per_conn: 32
-  max_inflight: 2000           # queries waiting on AdGuard Home
+  max_inflight: 2000           # queries waiting on AdGuard Home (and the connections to it)
   idle_timeout: 30s            # TCP and DoT
   handshake_timeout: 5s        # the PROXY header and the TLS handshake
 metrics_listen: ""             # such as 127.0.0.1:9354: /metrics and /healthz
@@ -243,13 +248,21 @@ metrics_listen: ""             # such as 127.0.0.1:9354: /metrics and /healthz
   could claim any address.
 - A v2 `LOCAL` header, which proxies send for health checks, counts as the
   proxy itself.
+- Only plain queries are taken: up to 4 KB, with no answer or authority
+  records. Anything else is dropped, or closes the connection.
+- Redirects from AdGuard Home are not followed: a redirect would send the
+  query, and the client's address, somewhere else.
 
 **UDP.**
 - Answers larger than the client can take are truncated, with TC set, so the
   client retries over TCP. A client can take 512 bytes, or its EDNS size up to
   4096.
 - AdGuard Home's own `ratelimit` does not apply to DoH. That is why xffdns has
-  `udp_qps`. Queries over the limit are dropped, as AdGuard Home does.
+  `udp_qps`, with AdGuard Home's default of 20. Queries over the limit are
+  dropped, as AdGuard Home does.
+- **Do not open a UDP listener to the internet.** UDP source addresses can be
+  forged, so an open UDP resolver can be used to flood someone else with
+  answers larger than the queries. For clients outside your network, use DoT.
 
 **Metrics:**
 - `xffdns_queries_total` by listener and result: answered, servfail,

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"strings"
 	"testing"
+	"time"
 )
 
 // query builds a query for name/A, with an OPT record advertising size when
@@ -149,5 +150,71 @@ func TestSetID(t *testing.T) {
 	SetID(m[:1], 3) // too short: no panic
 	if ID(nil) != 0 {
 		t.Fatal("ID of nothing")
+	}
+}
+
+func TestCheckQuery(t *testing.T) {
+	if err := CheckQuery(query(1, "example.com", 1232)); err != nil {
+		t.Fatal(err)
+	}
+	resp := query(1, "example.com", 0)
+	resp[2] |= 0x80
+	withAnswer := query(1, "example.com", 0)
+	binary.BigEndian.PutUint16(withAnswer[6:], 1)
+	many := query(1, "example.com", 0)
+	binary.BigEndian.PutUint16(many[10:], 500)
+	for name, m := range map[string][]byte{"response": resp, "answer": withAnswer, "500 additional": many, "short": {1, 2}} {
+		if CheckQuery(m) == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// A message built to be slow: thousands of records whose names are long
+// pointer chains. Parsing must stay cheap (it once took ~50ms).
+func TestParseCost(t *testing.T) {
+	m := make([]byte, HeaderLen)
+	m = append(m, 1, 'a')
+	for i := 0; i < 60; i++ { // a chain of pointers, each to the one before
+		p := len(m) - 2
+		m = append(m, 0xC0|byte(p>>8), byte(p))
+	}
+	m = append(m, 0)
+	last := len(m) - 3
+	n := 0
+	for len(m)+13 < 65000 {
+		m = append(m, 0xC0|byte(last>>8), byte(last), 0, 1, 0, 1, 0, 0, 0, 0, 0, 0)
+		n++
+	}
+	binary.BigEndian.PutUint16(m[10:], uint16(n))
+	start := time.Now()
+	for range 10 {
+		Parse(m)
+	}
+	if d := time.Since(start) / 10; d > 5*time.Millisecond {
+		t.Fatalf("a crafted message took %s to parse", d)
+	}
+}
+
+func TestFlagsKept(t *testing.T) {
+	q := query(9, "example.com", 1232)
+	q[3] |= 0x10 // CD
+	in, _ := Parse(q)
+	if r := Reply(in, RcodeServFail, false); r[3]&0x10 == 0 {
+		t.Fatal("CD was not echoed")
+	}
+	// A big upstream answer with AA, AD and an extended rcode (BADVERS = 16).
+	big := Reply(in, 0, false)
+	big[2] |= 0x04 // AA
+	big[3] |= 0x20 // AD
+	big[len(big)-6] = 1
+	big = append(big[:len(big)-11:len(big)-11], append(make([]byte, 0, 2000), big[len(big)-11:]...)...)
+	big = append(big, make([]byte, 1500)...)
+	binary.BigEndian.PutUint16(big[len(big)-1502:], 1500) // the OPT's rdlength covers the padding
+	small, _ := Parse(query(9, "example.com", 512))
+	small.Flags |= 0x10
+	r := FitUDP(small, big)
+	if len(r) > 512 || r[2]&0x04 == 0 || r[3]&0x20 == 0 || r[2]&0x02 == 0 || r[len(r)-6] != 1 {
+		t.Fatalf("%x", r)
 	}
 }

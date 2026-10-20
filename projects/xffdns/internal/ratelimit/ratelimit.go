@@ -9,7 +9,7 @@ import (
 )
 
 // Limiter allows rate queries a second per subnet, in bursts of up to one
-// second's worth. It keeps at most about 2*max subnets: two generations,
+// second's worth. It keeps at most 2*max subnets: two generations,
 // the older one dropped whole when the newer one fills.
 type Limiter struct {
 	rate      float64

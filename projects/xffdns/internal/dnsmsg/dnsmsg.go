@@ -15,6 +15,7 @@ const (
 	flagTC = 1 << 9
 	flagRD = 1 << 8
 	flagRA = 1 << 7
+	flagCD = 1 << 4
 
 	RcodeFormErr  = 1
 	RcodeServFail = 2
@@ -37,6 +38,7 @@ var (
 	ErrShort    = errors.New("the message is cut short")
 	ErrQuestion = errors.New("the message has more than one question")
 	ErrName     = errors.New("a name is malformed")
+	ErrNotQuery = errors.New("the message is not a plain query")
 )
 
 // Info is what xffdns knows about a message.
@@ -55,6 +57,75 @@ type Info struct {
 	// buffer size it advertises.
 	OPT     bool
 	UDPSize int
+	// ExtRcode is the OPT record's upper 8 bits of the rcode (RFC 6891).
+	ExtRcode byte
+}
+
+// maxHops bounds the compression pointers followed in one name. Real
+// messages need one or two; long chains only cost time.
+const maxHops = 8
+
+// CheckQuery is a cheap look at a header before parsing: a query (QR not
+// set) with at most one question, no answer or authority records, and at
+// most a few additional ones (OPT, a TSIG or SIG(0)).
+func CheckQuery(msg []byte) error {
+	if len(msg) < HeaderLen {
+		return ErrShort
+	}
+	if msg[2]&0x80 != 0 {
+		return ErrNotQuery
+	}
+	if binary.BigEndian.Uint16(msg[4:]) > 1 || binary.BigEndian.Uint16(msg[6:]) != 0 ||
+		binary.BigEndian.Uint16(msg[8:]) != 0 || binary.BigEndian.Uint16(msg[10:]) > 3 {
+		return ErrNotQuery
+	}
+	return nil
+}
+
+// skipName returns the offset just past the name at off, without reading it.
+func skipName(msg []byte, off int) (int, error) {
+	for hops := 0; ; {
+		if off >= len(msg) {
+			return 0, ErrShort
+		}
+		l := int(msg[off])
+		switch {
+		case l == 0:
+			return off + 1, nil
+		case l&0xC0 == 0xC0:
+			if off+1 >= len(msg) {
+				return 0, ErrShort
+			}
+			// The name ends here in the record; check where it points.
+			end := off + 2
+			for p := int(binary.BigEndian.Uint16(msg[off:]) & 0x3FFF); ; {
+				if hops++; hops > maxHops || p >= len(msg) {
+					return 0, ErrName
+				}
+				switch l := int(msg[p]); {
+				case l == 0:
+					return end, nil
+				case l&0xC0 == 0xC0:
+					if p+1 >= len(msg) {
+						return 0, ErrShort
+					}
+					p = int(binary.BigEndian.Uint16(msg[p:]) & 0x3FFF)
+					continue
+				case l > 63:
+					return 0, ErrName
+				default:
+					p += 1 + l
+					if hops++; hops > 128 {
+						return 0, ErrName
+					}
+				}
+			}
+		case l > 63:
+			return 0, ErrName
+		default:
+			off += 1 + l
+		}
+	}
 }
 
 // Parse reads a message: its header, its question (at most one) and, past
@@ -87,7 +158,7 @@ func Parse(msg []byte) (*Info, error) {
 		off = end + 4
 	}
 	for i := 0; i < int(an)+int(ns)+int(ar); i++ {
-		_, end, err := readName(msg, off, true)
+		end, err := skipName(msg, off)
 		if err != nil {
 			return nil, err
 		}
@@ -103,6 +174,7 @@ func Parse(msg []byte) (*Info, error) {
 		if typ == typeOPT && i >= int(an)+int(ns) {
 			in.OPT = true
 			in.UDPSize = int(class)
+			in.ExtRcode = msg[end+4]
 		}
 		off = end + 10 + rdlen
 	}
@@ -132,7 +204,7 @@ func readName(msg []byte, off int, pointers bool) (string, int, error) {
 			if !pointers || off+1 >= len(msg) {
 				return "", 0, ErrName
 			}
-			if hops++; hops > 64 {
+			if hops++; hops > maxHops {
 				return "", 0, ErrName
 			}
 			if end < 0 {
@@ -185,7 +257,7 @@ func ID(msg []byte) uint16 {
 // truncated answer when tc is set. It keeps the query's ID, opcode, RD and
 // question, and has an OPT record when the query had one.
 func Reply(q *Info, rcode int, tc bool) []byte {
-	flags := flagQR | flagRA | q.Flags&(0x7800|flagRD) | uint16(rcode&0xF)
+	flags := flagQR | flagRA | q.Flags&(0x7800|flagRD|flagCD) | uint16(rcode&0xF)
 	if tc {
 		flags |= flagTC
 	}
@@ -211,9 +283,13 @@ func FitUDP(q *Info, resp []byte) []byte {
 		return resp
 	}
 	r := Reply(q, 0, true)
-	// Keep the upstream's rcode.
+	// Keep the upstream's flags (AA, AD, CD, rcode), with TC set, and its
+	// extended rcode.
 	if len(resp) >= 4 {
-		r[3] = r[3]&0xF0 | resp[3]&0x0F
+		binary.BigEndian.PutUint16(r[2:], binary.BigEndian.Uint16(resp[2:])|flagTC)
+	}
+	if a, err := Parse(resp); err == nil && a.ExtRcode != 0 && q.OPT {
+		r[len(r)-6] = a.ExtRcode // the OPT record's TTL starts 6 bytes from the end
 	}
 	return r
 }

@@ -70,6 +70,7 @@ type Limits struct {
 	// Clients is how many client subnets the limiter keeps track of.
 	Clients            int      `yaml:"clients"`
 	MaxConns           int      `yaml:"max_conns"`
+	MaxConnsPerClient  int      `yaml:"max_conns_per_client"`
 	MaxInflightPerConn int      `yaml:"max_inflight_per_conn"`
 	MaxInflight        int      `yaml:"max_inflight"`
 	IdleTimeout        Duration `yaml:"idle_timeout"`
@@ -79,7 +80,7 @@ type Limits struct {
 // Defaults.
 const (
 	DefaultTimeout   = 4 * time.Second
-	DefaultUDPQPS    = 50
+	DefaultUDPQPS    = 20 // AdGuard Home's own ratelimit default
 	DefaultIdle      = 30 * time.Second
 	DefaultHandshake = 5 * time.Second
 )
@@ -102,6 +103,7 @@ func (c *Config) applyDefaults() {
 	def(&l.SubnetV6, 56)
 	def(&l.Clients, 10000)
 	def(&l.MaxConns, 1000)
+	def(&l.MaxConnsPerClient, 32)
 	def(&l.MaxInflightPerConn, 32)
 	def(&l.MaxInflight, 2000)
 	if l.IdleTimeout == 0 {
@@ -176,8 +178,11 @@ func Parse(data []byte, lookup func(string) (string, bool)) (*Config, error) {
 	fill(&c.MetricsListen)
 	for i := range c.Listeners {
 		l := &c.Listeners[i]
-		for _, s := range []*string{&l.Address, &l.CertFile, &l.KeyFile, &l.ServerName, &l.ClientID} {
+		for _, s := range []*string{&l.Name, &l.Address, &l.CertFile, &l.KeyFile, &l.ServerName, &l.ClientID} {
 			fill(s)
+		}
+		for j := range l.ProxyFrom {
+			fill(&l.ProxyFrom[j])
 		}
 	}
 	c.applyDefaults()
@@ -195,6 +200,8 @@ func (c *Config) Check() []string {
 		add("upstream.url: missing, such as http://127.0.0.1:80/dns-query")
 	} else if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		add("upstream.url: %q is not an http:// or https:// address with no user, query or fragment", c.Upstream.URL)
+	} else if u.Path == "" || u.Path == "/" {
+		add("upstream.url: %q has no path; AdGuard Home's is /dns-query", c.Upstream.URL)
 	} else if u.Scheme == "http" && (c.Upstream.CAFile != "" || c.Upstream.ServerName != "") {
 		add("upstream: ca_file and server_name are for https:// only")
 	}
@@ -257,22 +264,34 @@ func (c *Config) Check() []string {
 	}
 	lm := c.Limits
 	if *lm.UDPQPS < 0 || lm.SubnetV4 < 1 || lm.SubnetV4 > 32 || lm.SubnetV6 < 1 || lm.SubnetV6 > 128 ||
-		lm.Clients < 1 || lm.MaxConns < 1 || lm.MaxInflightPerConn < 1 || lm.MaxInflight < 1 {
+		lm.Clients < 1 || lm.MaxConns < 1 || lm.MaxConnsPerClient < 1 || lm.MaxInflightPerConn < 1 || lm.MaxInflight < 1 {
 		add("limits: udp_qps must be 0 or more; subnet_v4 1-32, subnet_v6 1-128; the rest at least 1")
 	}
 	return out
 }
 
+// parsePrefix reads an address or CIDR. IPv4-mapped IPv6 is turned into
+// IPv4, as client addresses are.
 func parsePrefix(s string) (netip.Prefix, error) {
-	if strings.Contains(s, "/") {
-		p, err := netip.ParsePrefix(s)
-		return p.Masked(), err
+	if !strings.Contains(s, "/") {
+		a, err := netip.ParseAddr(s)
+		if err != nil || a.Zone() != "" {
+			return netip.Prefix{}, errors.New("not an address")
+		}
+		a = a.Unmap()
+		return netip.PrefixFrom(a, a.BitLen()), nil
 	}
-	a, err := netip.ParseAddr(s)
+	p, err := netip.ParsePrefix(s)
 	if err != nil {
-		return netip.Prefix{}, err
+		return p, err
 	}
-	return netip.PrefixFrom(a, a.BitLen()), nil
+	if a := p.Addr(); a.Is4In6() {
+		if p.Bits() < 96 {
+			return netip.Prefix{}, errors.New("an IPv4-mapped prefix shorter than /96")
+		}
+		p = netip.PrefixFrom(a.Unmap(), p.Bits()-96)
+	}
+	return p.Masked(), nil
 }
 
 func hostPort(s string) bool {
@@ -320,7 +339,7 @@ type Duration time.Duration
 
 // UnmarshalYAML reads a duration.
 func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
-	if secs, err := strconv.Atoi(n.Value); err == nil && secs >= 0 {
+	if secs, err := strconv.Atoi(n.Value); err == nil && secs > 0 {
 		*d = Duration(time.Duration(secs) * time.Second)
 		return nil
 	}

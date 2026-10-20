@@ -3,7 +3,9 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -71,6 +73,21 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	return exitUsage
 }
 
+// parse parses flags; when it returns false, the command exits with code.
+func parse(fs *flag.FlagSet, args []string) (int, bool) {
+	err := fs.Parse(args)
+	switch {
+	case errors.Is(err, flag.ErrHelp):
+		return exitOK, false
+	case err != nil:
+		return exitUsage, false
+	case fs.NArg() > 0:
+		fmt.Fprintf(fs.Output(), "%s: unexpected %q\n", fs.Name(), fs.Arg(0))
+		return exitUsage, false
+	}
+	return 0, true
+}
+
 func newFlags(name string, stderr io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet("xffdns "+name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -78,9 +95,9 @@ func newFlags(name string, stderr io.Writer) *flag.FlagSet {
 	return fs
 }
 
-func newUpstream(u config.Upstream) (*upstream.Client, error) {
+func newUpstream(u config.Upstream, maxConns int) (*upstream.Client, error) {
 	return upstream.New(upstream.Options{URL: u.URL, Timeout: time.Duration(u.Timeout), CAFile: u.CAFile,
-		ServerName: u.ServerName, UserAgent: "xffdns/" + Version})
+		ServerName: u.ServerName, UserAgent: "xffdns/" + Version, MaxConns: maxConns})
 }
 
 func run(args []string, stderr io.Writer) int {
@@ -93,8 +110,8 @@ func run(args []string, stderr io.Writer) int {
 func serve(ctx context.Context, args []string, stderr io.Writer, ready func(*server.Server)) int {
 	fs := newFlags("run", stderr)
 	path := fs.String("c", "xffdns.yaml", "the configuration file")
-	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
-		return exitUsage
+	if code, ok := parse(fs, args); !ok {
+		return code
 	}
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	conf, err := config.LoadFile(*path)
@@ -102,7 +119,9 @@ func serve(ctx context.Context, args []string, stderr io.Writer, ready func(*ser
 		fmt.Fprintf(stderr, "xffdns: %s: %v\n", *path, err)
 		return exitError
 	}
-	up, err := newUpstream(conf.Upstream)
+	// As many connections as queries may wait on AdGuard Home, so none
+	// queue inside the HTTP client.
+	up, err := newUpstream(conf.Upstream, conf.Limits.MaxInflight)
 	if err != nil {
 		fmt.Fprintf(stderr, "xffdns: upstream: %v\n", err)
 		return exitError
@@ -148,16 +167,35 @@ func check(args []string, stdout, stderr io.Writer, lookup func(string) (string,
 	path := fs.String("c", "", "the configuration file (for upstream)")
 	rawURL := fs.String("url", "", "AdGuard Home's DoH URL, instead of -c")
 	ipFlag := fs.String("ip", "192.0.2.10", "the client address to send")
-	name := fs.String("name", "xffdns-check.example.com", "the name to ask for")
+	name := fs.String("name", "", "the name to ask for (default: xffdns-check-<random>.example.com)")
 	clientID := fs.String("client-id", "", "a client ID to send")
+	caFile := fs.String("ca-file", "", "with --url: a CA for https")
+	serverName := fs.String("server-name", "", "with --url: the name AdGuard Home's certificate is for")
 	agURL := fs.String("adguard-url", "", "AdGuard Home's web address (default: the DoH URL's)")
 	agUser := fs.String("adguard-user", "", "an AdGuard Home user, to read the query log")
-	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
-		return exitUsage
+	if code, ok := parse(fs, args); !ok {
+		return code
 	}
 	ip, err := netip.ParseAddr(*ipFlag)
-	if err != nil {
-		fmt.Fprintf(stderr, "xffdns check: --ip %q is not an address\n", *ipFlag)
+	if err != nil || ip.Zone() != "" {
+		fmt.Fprintf(stderr, "xffdns check: --ip %q is not an address (with no zone)\n", *ipFlag)
+		return exitUsage
+	}
+	if ip.Unmap().IsLoopback() || ip.IsUnspecified() {
+		fmt.Fprintf(stderr, "xffdns check: --ip %s would tell nothing: AdGuard Home logs that address whether or not it trusts xffdns\n", ip)
+		return exitUsage
+	}
+	if *name == "" {
+		b := make([]byte, 4)
+		rand.Read(b)
+		*name = "xffdns-check-" + hex.EncodeToString(b) + ".example.com"
+	}
+	if !validName(*name) {
+		fmt.Fprintf(stderr, "xffdns check: --name %q is not a DNS name\n", *name)
+		return exitUsage
+	}
+	if (*caFile != "" || *serverName != "") && *rawURL == "" {
+		fmt.Fprintln(stderr, "xffdns check: --ca-file and --server-name go with --url (with -c, the file's upstream settings are used)")
 		return exitUsage
 	}
 	if *clientID != "" && !config.ValidClientID(*clientID) {
@@ -170,7 +208,7 @@ func check(args []string, stdout, stderr io.Writer, lookup func(string) (string,
 		fmt.Fprintln(stderr, "xffdns check: use -c or --url, not both")
 		return exitUsage
 	case *rawURL != "":
-		up = config.Upstream{URL: *rawURL, Timeout: config.Duration(config.DefaultTimeout)}
+		up = config.Upstream{URL: *rawURL, Timeout: config.Duration(config.DefaultTimeout), CAFile: *caFile, ServerName: *serverName}
 	default:
 		if *path == "" {
 			*path = "xffdns.yaml"
@@ -187,12 +225,28 @@ func check(args []string, stdout, stderr io.Writer, lookup func(string) (string,
 		fmt.Fprintf(stderr, "xffdns check: %q is not an http:// or https:// address\n", up.URL)
 		return exitUsage
 	}
-	client, err := newUpstream(up)
+	client, err := newUpstream(up, 1)
 	if err != nil {
 		fmt.Fprintf(stderr, "xffdns check: %v\n", err)
 		return exitError
 	}
 	defer client.Close()
+
+	pass, _ := lookup("XFFDNS_ADGUARD_PASSWORD")
+	web := *agURL
+	if web == "" {
+		web = (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
+	}
+	var aglog *queryLog
+	if *agUser != "" {
+		// What the log holds for the name already, so the new entry is told
+		// apart without trusting either clock.
+		aglog = &queryLog{web: web, user: *agUser, pass: pass, name: *name, up: up}
+		if err := aglog.snapshot(); err != nil {
+			fmt.Fprintf(stdout, "log     %v\n", err)
+			return exitError
+		}
+	}
 
 	q := makeQuery(*name)
 	fmt.Fprintf(stdout, "query   %s A, as %s, to %s\n", strings.TrimSuffix(*name, "."), ip, client.URL(*clientID))
@@ -208,16 +262,11 @@ func check(args []string, stdout, stderr io.Writer, lookup func(string) (string,
 	}
 	fmt.Fprintf(stdout, "answer  %s, %d records, in %s\n", rcodeName(ans), binary.BigEndian.Uint16(ans[6:]), time.Since(sent).Round(time.Millisecond))
 
-	if *agUser == "" {
+	if aglog == nil {
 		fmt.Fprintln(stdout, "\nTo see whether AdGuard Home took the address, give --adguard-user (and XFFDNS_ADGUARD_PASSWORD),\nor look for the query in its query log.")
 		return exitOK
 	}
-	pass, _ := lookup("XFFDNS_ADGUARD_PASSWORD")
-	web := *agURL
-	if web == "" {
-		web = (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
-	}
-	entry, err := findInLog(web, *agUser, pass, *name, sent, up)
+	entry, err := aglog.find()
 	if err != nil {
 		fmt.Fprintf(stdout, "log     %v\n", err)
 		return exitError
@@ -241,14 +290,26 @@ func check(args []string, stdout, stderr io.Writer, lookup func(string) (string,
 	return exitOK
 }
 
+// validName reports whether name is a DNS name xffdns can ask for.
+func validName(name string) bool {
+	name = strings.TrimSuffix(name, ".")
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	for _, l := range strings.Split(name, ".") {
+		if l == "" || len(l) > 63 {
+			return false
+		}
+	}
+	return true
+}
+
+// makeQuery builds a query for name/A (a name validName accepts).
 func makeQuery(name string) []byte {
 	m := make([]byte, 12, 64)
 	binary.BigEndian.PutUint16(m, uint16(time.Now().UnixNano()))
 	m[2], m[5] = 1, 1 // RD, one question
 	for _, l := range strings.Split(strings.TrimSuffix(name, "."), ".") {
-		if l == "" || len(l) > 63 {
-			continue
-		}
 		m = append(m, byte(len(l)))
 		m = append(m, l...)
 	}
@@ -272,42 +333,74 @@ type logEntry struct {
 	} `json:"question"`
 }
 
-// findInLog looks for the query in AdGuard Home's query log, for a few
-// seconds.
-func findInLog(web, user, pass, name string, sent time.Time, up config.Upstream) (*logEntry, error) {
+// queryLog reads AdGuard Home's query log for one name.
+type queryLog struct {
+	web, user, pass, name string
+	up                    config.Upstream
+	seen                  map[logEntry]bool
+}
+
+func (l *queryLog) read() ([]logEntry, error) {
 	// The same TLS settings as the DoH client, and never an environment proxy.
-	c, err := upstream.HTTPClient(upstream.Options{CAFile: up.CAFile, ServerName: up.ServerName})
+	c, err := upstream.HTTPClient(upstream.Options{CAFile: l.up.CAFile, ServerName: l.up.ServerName})
 	if err != nil {
 		return nil, err
 	}
-	name = strings.TrimSuffix(strings.ToLower(name), ".")
+	name := strings.TrimSuffix(strings.ToLower(l.name), ".")
+	req, err := http.NewRequest("GET", strings.TrimSuffix(l.web, "/")+"/control/querylog?limit=50&search="+url.QueryEscape(name), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(l.user, l.pass)
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("AdGuard Home refused the user (%s); set XFFDNS_ADGUARD_PASSWORD", resp.Status)
+	}
+	var body struct {
+		Data []logEntry `json:"data"`
+	}
+	err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body)
+	if resp.StatusCode != http.StatusOK || err != nil {
+		return nil, fmt.Errorf("reading the query log: %s %v", resp.Status, err)
+	}
+	var out []logEntry
+	for _, e := range body.Data {
+		if strings.TrimSuffix(strings.ToLower(e.Question.Name), ".") == name {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// snapshot notes the entries already there.
+func (l *queryLog) snapshot() error {
+	es, err := l.read()
+	if err != nil {
+		return err
+	}
+	l.seen = map[logEntry]bool{}
+	for _, e := range es {
+		l.seen[e] = true
+	}
+	return nil
+}
+
+// find waits a few seconds for an entry that was not there before.
+func (l *queryLog) find() (*logEntry, error) {
 	for try := 0; try < 6; try++ {
 		if try > 0 {
 			time.Sleep(500 * time.Millisecond)
 		}
-		req, err := http.NewRequest("GET", strings.TrimSuffix(web, "/")+"/control/querylog?limit=20&search="+url.QueryEscape(name), nil)
+		es, err := l.read()
 		if err != nil {
 			return nil, err
 		}
-		req.SetBasicAuth(user, pass)
-		resp, err := c.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		var body struct {
-			Data []logEntry `json:"data"`
-		}
-		err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&body)
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return nil, fmt.Errorf("AdGuard Home refused the user (%s); set XFFDNS_ADGUARD_PASSWORD", resp.Status)
-		}
-		if resp.StatusCode != http.StatusOK || err != nil {
-			return nil, fmt.Errorf("reading the query log: %s %v", resp.Status, err)
-		}
-		for _, e := range body.Data {
-			t, err := time.Parse(time.RFC3339Nano, e.Time)
-			if err == nil && !t.Before(sent.Add(-2*time.Second)) && strings.TrimSuffix(strings.ToLower(e.Question.Name), ".") == name {
+		for _, e := range es {
+			if !l.seen[e] {
 				return &e, nil
 			}
 		}
