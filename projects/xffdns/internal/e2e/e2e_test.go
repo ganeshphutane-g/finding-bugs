@@ -211,7 +211,18 @@ setACL({"0.0.0.0/0"})
 newServer({address=%q, useProxyProtocol=true, healthCheckMode="up"})
 `, dd, at("pp")))
 	testkit.Run(t, "dnsdist", "-v", dir+"/dnsdist.conf:/etc/dnsdist/dnsdist.conf:ro", image("DNSDIST", "powerdns/dnsdist-20"))
-	for _, p := range []int{hap1, hap2, trf, dd} {
+	ngx := testkit.FreePort(t)
+	testkit.WriteFile(t, dir, "nginx.conf", fmt.Sprintf(`events {}
+stream {
+  server {
+    listen 127.0.0.1:%d;
+    proxy_pass %s;
+    proxy_protocol on;
+  }
+}
+`, ngx, at("ppdot")))
+	testkit.Run(t, "nginx", "-v", dir+"/nginx.conf:/etc/nginx/nginx.conf:ro", image("NGINX", "nginx:stable"))
+	for _, p := range []int{hap1, hap2, trf, dd, ngx} {
 		testkit.WaitTCP(t, fmt.Sprintf("127.0.0.1:%d", p))
 	}
 	hp := func(p int) string { return fmt.Sprintf("127.0.0.1:%d", p) }
@@ -227,6 +238,7 @@ newServer({address=%q, useProxyProtocol=true, healthCheckMode="up"})
 		{"haproxy-v1", client{proto: "tcp", addr: hp(hap1), from: "127.0.0.80"}, ""},
 		{"haproxy-v2-dot", client{proto: "dot", addr: hp(hap2), from: "127.0.0.81", sni: "phone." + serverName}, "phone"},
 		{"traefik-v2-dot", client{proto: "dot", addr: hp(trf), from: "127.0.0.82", sni: serverName}, ""},
+		{"nginx-v1-dot", client{proto: "dot", addr: hp(ngx), from: "127.0.0.90", sni: "tv." + serverName}, "tv"},
 		{"dnsdist-udp", client{proto: "udp", addr: hp(dd), from: "127.0.0.83"}, ""},
 		{"dnsdist-tcp", client{proto: "tcp", addr: hp(dd), from: "127.0.0.84"}, ""},
 	}

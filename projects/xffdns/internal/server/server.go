@@ -293,12 +293,20 @@ func (s *Server) exchange(msg []byte, q *dnsmsg.Info, client netip.Addr, id stri
 			kind = "bad_answer"
 		case errors.Is(err, context.Canceled):
 			kind = "shutdown"
+		case isDial(err):
+			kind = "connect"
 		}
 		s.o.Metrics.UpstreamError(kind)
 		s.logEvery("upstream-"+kind, "AdGuard Home did not answer a query", "error", err)
 		return dnsmsg.Reply(q, dnsmsg.RcodeServFail, false), metrics.ServFail
 	}
 	return ans, metrics.Answered
+}
+
+// isDial reports whether err is a failure to connect to AdGuard Home.
+func isDial(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
 func (s *Server) serveUDP(b *bound) {

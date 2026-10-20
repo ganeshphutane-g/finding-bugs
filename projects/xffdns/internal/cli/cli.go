@@ -201,7 +201,8 @@ func check(args []string, stdout, stderr io.Writer, lookup func(string) (string,
 	if err != nil {
 		fmt.Fprintf(stdout, "failed  %v\n", err)
 		if errors.Is(err, upstream.ErrStatus) && u.Scheme == "http" {
-			fmt.Fprintln(stdout, "        Over plain http, AdGuard Home needs http.doh.insecure_enabled: true in AdGuardHome.yaml.")
+			fmt.Fprintln(stdout, "        Over plain http, AdGuard Home needs http.doh.insecure_enabled: true in AdGuardHome.yaml\n"+
+				"        (tls.allow_unencrypted_doh: true up to v0.107.73).")
 		}
 		return exitError
 	}
