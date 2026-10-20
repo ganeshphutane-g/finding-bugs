@@ -1,0 +1,9 @@
+Headers captured on 2026-10-21 from real proxies, as hex, one connection or
+datagram per file. Each sender forwarded to a local capture server.
+
+haproxy-v1.hex      HAProxy 3.4.7, mode tcp, "server ... send-proxy"; then "HELLO"
+haproxy-v2.hex      HAProxy 3.4.7, mode tcp, "server ... send-proxy-v2"; then "HELLO"
+traefik-v2.hex      Traefik 3.7.15, TCP router HostSNI(`*`), serversTransport
+                    proxyProtocol version 2; then "HELLO"
+dnsdist-v2-udp.hex  dnsdist 2.0.11, newServer{useProxyProtocol=true}, one UDP
+                    query for example.com/A
