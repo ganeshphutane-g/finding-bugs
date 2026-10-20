@@ -1,37 +1,30 @@
 # State
 
-Current project: #10, the AdGuard Home real-client-IP bridge (working name
-xffdns; check the name is free). Phase: spec. Research round 11 is in IDEAS.md.
+Current project: #10, xffdns (AdGuard Home real-client-IP bridge; the name is
+free on GitHub, checked 2026-10-21). Phase: build. Spec: projects/xffdns/SPEC.md
+(verified behaviour and captured PROXY headers are in it).
 
 ## Next step
 
-Write projects/<name>/SPEC.md. First verify, with adguard/adguardhome:latest
-(v0.107.79 now):
-- per-client settings and blocked services by the X-Forwarded-For IP;
-- `http.doh.insecure_enabled: true` (the setting's name in this version) and
-  the default `trusted_proxies` 127.0.0.0/8, ::1;
-- the client ID path `/dns-query/{ClientID}`: a DoT SNI client ID could map to
-  it;
-- what HAProxy (haproxy:lts) and Traefik send with PROXY protocol v1/v2 for DoT
-  TCP passthrough.
+Milestone 1: internal/dnsmsg and internal/proxyproto with tests (fixtures from
+real HAProxy 3.4.7, Traefik 3.7.15 and dnsdist 2.0.11 are in
+internal/proxyproto/testdata/). Then milestones 2-5 as in the spec.
 
-Setup that works:
-- `docker run --network host adguard/adguardhome`;
-- POST /control/install/configure with
+Test setup (AdGuard Home v0.107.79):
+- `docker run -d --name agh --network host adguard/adguardhome:latest`;
+- POST :3000/control/install/configure with
   {"web":{"ip":"127.0.0.1","port":3080},"dns":{"ip":"127.0.0.1","port":5354},"username":"admin","password":"..."};
-- then edit /opt/adguardhome/conf/AdGuardHome.yaml and restart.
-
-Upstreams cannot be reached from here, so add a local rule (POST
-/control/filtering/set_rules) to get logged answers.
-
-Then scope v1:
-- listeners: DNS over UDP and TCP, and DoT (own certificate, or passthrough
-  with PROXY protocol), each optionally behind PROXY v1/v2;
-- forwarding to AdGuard's DoH with XFF, keeping the client ID;
-- trusted sources for PROXY headers;
-- timeouts, limits and metrics;
-- a Docker image and a systemd unit;
-- tests against real AdGuard Home and HAProxy containers.
+- `sed -i 's/insecure_enabled: false/insecure_enabled: true/'` on
+  /opt/adguardhome/conf/AdGuardHome.yaml, restart;
+- clients: POST /control/clients/add {"name","ids":[ip or id],"use_global_settings":true,
+  "use_global_blocked_services":false,"blocked_services":["youtube"],"filtering_enabled":true};
+  youtube blocks www.ggpht.com, tiktok blocks amemv.com;
+- local rule ||example.com^ (upstreams are unreachable here; failed queries are
+  not logged); read GET /control/querylog?limit=N (client, client_id,
+  client_proto, reason, client_info.name).
+- dnsdist: powerdns/dnsdist-20 pulls; HAProxy haproxy:lts; Traefik traefik:latest.
+- Still to find: the oldest AdGuard release with http.doh.insecure_enabled, for
+  the CI matrix.
 
 Tags: every Makefile takes its version from `<project>/vX.Y.Z` tags only, so the
 owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).
