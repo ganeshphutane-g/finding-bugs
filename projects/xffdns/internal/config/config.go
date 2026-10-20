@@ -281,7 +281,7 @@ func hostPort(s string) bool {
 		return false
 	}
 	n, err := strconv.Atoi(port)
-	return err == nil && n > 0 && n < 65536
+	return err == nil && n >= 0 && n < 65536 // 0: any free port
 }
 
 func validHost(s string) bool {

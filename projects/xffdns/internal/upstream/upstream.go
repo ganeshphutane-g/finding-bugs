@@ -61,6 +61,17 @@ func New(o Options) (*Client, error) {
 		return nil, err
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/")
+	hc, err := HTTPClient(o)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{url: u, http: hc, timeout: o.Timeout, ua: o.UserAgent}, nil
+}
+
+// HTTPClient makes the HTTP client New uses: o's TLS settings, a bounded
+// pool, and never a proxy from the environment, since AdGuard Home must see
+// xffdns itself as the sender, a trusted proxy.
+func HTTPClient(o Options) (*http.Client, error) {
 	tlsConf := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: o.ServerName}
 	if o.CAFile != "" {
 		pem, err := os.ReadFile(o.CAFile)
@@ -77,8 +88,6 @@ func New(o Options) (*Client, error) {
 		o.MaxConns = 64
 	}
 	tr := &http.Transport{
-		// Never through an HTTP proxy from the environment: AdGuard Home
-		// must see xffdns itself as the sender, a trusted proxy.
 		Proxy:               nil,
 		DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		TLSClientConfig:     tlsConf,
@@ -89,7 +98,7 @@ func New(o Options) (*Client, error) {
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 5 * time.Second,
 	}
-	return &Client{url: u, http: &http.Client{Transport: tr}, timeout: o.Timeout, ua: o.UserAgent}, nil
+	return &http.Client{Transport: tr, Timeout: 30 * time.Second}, nil
 }
 
 // URL is where queries for clientID go.
