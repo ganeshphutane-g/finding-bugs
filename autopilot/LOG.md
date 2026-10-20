@@ -40,8 +40,8 @@ Newest first.
   - a parser regression from the first fix rejected names of four or more
     labels behind a compression pointer.
 - One CI run failed on a test that raced the new start-up probe. It was fixed
-  the same hour, along with a too-tight timing test; CI on e52932e was
-  still running when this entry was written (see the next line, if any).
+  the same hour, along with a too-tight timing test. CI is green on e52932e
+  (all three AdGuard Home versions, end to end).
 - Research round 12: kumarest (Uptime Kuma#118, 706 👍) was set aside, because
   the maintainer's HTTP API PRs are in the 3.1.0 milestone. The restic
   snapshot wrapper fell to an upstream path-rewrite PR, and qbitmove to qui.
