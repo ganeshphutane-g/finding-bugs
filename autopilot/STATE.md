@@ -6,9 +6,15 @@ free on GitHub, checked 2026-10-21). Phase: build. Spec: projects/xffdns/SPEC.md
 
 ## Next step
 
-Milestone 1: internal/dnsmsg and internal/proxyproto with tests (fixtures from
-real HAProxy 3.4.7, Traefik 3.7.15 and dnsdist 2.0.11 are in
-internal/proxyproto/testdata/). Then milestones 2-5 as in the spec.
+Milestones 1-3 are done (wire formats; config, rate limiter and DoH client;
+listeners, metrics, run and check; unit tests pass with -race). `xffdns check`
+was tried against real AdGuard Home: exit 0 when trusted, exit 3 when
+127.0.0.1 is not in trusted_proxies, a hint when insecure_enabled is off (404).
+Next: milestone 4, integration tests (internal/e2e, XFFDNS_INTEGRATION=1) with
+AdGuard Home, HAProxy, Traefik and dnsdist on the host network; clients bind
+127.0.0.77 etc. so the PROXY source differs from the proxy's 127.0.0.1. Use
+names under example.com (blocked by a local rule, so logged here). Then CI,
+Docker, systemd, README, review.
 
 Test setup (AdGuard Home v0.107.79):
 - `docker run -d --name agh --network host adguard/adguardhome:latest`;
