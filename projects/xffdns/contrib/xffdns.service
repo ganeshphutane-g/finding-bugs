@@ -1,0 +1,56 @@
+# Install: copy xffdns to /usr/local/bin, this file to /etc/systemd/system/
+# and the file to /etc/xffdns/xffdns.yaml, then
+#   systemctl daemon-reload && systemctl enable --now xffdns
+#
+# DoT certificates: the service runs as a throwaway user, which cannot read
+# root's 0600 key files (Let's Encrypt's). Either hand them over with
+# LoadCredential (below) and restart xffdns when they are renewed (certbot:
+# --deploy-hook "systemctl restart xffdns"), or make them readable to a group
+# and add SupplementaryGroups=that-group. With LoadCredential, the files are at
+#   cert_file: /run/credentials/xffdns.service/cert.pem
+#   key_file:  /run/credentials/xffdns.service/key.pem
+
+[Unit]
+Description=xffdns: real client addresses for AdGuard Home
+Documentation=https://github.com/ganeshphutane-g/finding-bugs/tree/main/projects/xffdns
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/xffdns run -c /etc/xffdns/xffdns.yaml
+#LoadCredential=cert.pem:/etc/letsencrypt/live/dns.example.com/fullchain.pem
+#LoadCredential=key.pem:/etc/letsencrypt/live/dns.example.com/privkey.pem
+Restart=on-failure
+RestartSec=2s
+
+DynamicUser=yes
+# Ports 53 and 853, and nothing else.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+UMask=0077
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

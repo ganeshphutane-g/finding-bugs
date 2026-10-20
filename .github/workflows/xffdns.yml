@@ -1,0 +1,39 @@
+name: xffdns
+
+on:
+  push:
+    paths: ["projects/xffdns/**", ".github/workflows/xffdns.yml"]
+  pull_request:
+    paths: ["projects/xffdns/**", ".github/workflows/xffdns.yml"]
+
+defaults:
+  run:
+    working-directory: projects/xffdns
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # latest; the last release with tls.allow_unencrypted_doh; an older one.
+        adguard: ["adguard/adguardhome:latest", "adguard/adguardhome:v0.107.73", "adguard/adguardhome:v0.107.45"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/xffdns/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: cross-builds
+        run: |
+          for target in linux/amd64 linux/arm64 linux/arm/7 darwin/arm64 freebsd/amd64 windows/amd64; do
+            IFS=/ read -r os arch arm <<< "$target"
+            GOOS=$os GOARCH=$arch GOARM=$arm go build -o /dev/null . || exit 1
+          done
+      - name: tests, also against real AdGuard Home, HAProxy, Traefik and dnsdist
+        run: XFFDNS_INTEGRATION=1 XFFDNS_ADGUARD_IMAGE=${{ matrix.adguard }} go test -race -count=1 -timeout 20m ./...
+      - name: the Docker image builds and runs
+        run: |
+          docker build -t xffdns:ci --build-arg VERSION=ci .
+          docker run --rm xffdns:ci version
