@@ -216,8 +216,8 @@ Actions as codeberg.org/forgejo/forgejo:16.
    - **Owner checks before going public:** read the README; run `alertlines
      check` on a few of your own rules; then point a test ruler at it.
 
-10. **xffdns** (projects/xffdns, v1.0.0 at the commit after the second review;
-    see LOG). Real client addresses for AdGuard Home behind proxies
+10. **xffdns** (projects/xffdns, v1.0.0 at commit e52932e). Real client
+    addresses for AdGuard Home behind proxies
     (AdGuardHome#2798, 96 👍).
     - **How:** takes DNS over UDP, TCP and DoT, with or without a PROXY v1/v2
       header (only from `proxy_from`), and passes each query to AdGuard Home's

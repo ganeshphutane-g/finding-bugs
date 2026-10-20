@@ -2,6 +2,61 @@
 
 Newest first.
 
+## 2026-10-21 (IST) — run 10
+
+- Project #10 **xffdns**, from spec to v1.0.0 in one run.
+  - **What:** real client addresses for AdGuard Home behind proxies
+    (AdGuardHome#2798, 96 👍). It takes DNS over UDP, TCP and DoT, with or
+    without a PROXY header, and passes each query to AdGuard Home's DoH with
+    the client in X-Forwarded-For.
+  - **Verified on real servers first:**
+    - AdGuard Home's per-client settings, blocked services and access list
+      follow the forwarded address;
+    - a client ID in the path wins over the address;
+    - AdGuard Home takes the first X-Forwarded-For entry;
+    - its ratelimit does not apply to DoH;
+    - the plain-DoH setting was renamed in v0.107.74.
+  - **PROXY headers captured** from HAProxy 3.4.7, Traefik 3.7.15 and dnsdist
+    2.0.11; they are now the parser's test fixtures.
+  - **Built:**
+    - DNS and PROXY v1/v2 parsers;
+    - the DoH client;
+    - UDP/TCP/DoT listeners with limits;
+    - certificate reload;
+    - metrics and health;
+    - `run` and `check`; `check` reads AdGuard Home's query log and exits 3,
+      with the fix, when AdGuard Home ignores the address;
+    - a Docker image and a systemd unit.
+  - **Tested end to end** in CI against AdGuard Home v0.107.45, v0.107.73 and
+    latest, with HAProxy, Traefik, nginx and dnsdist in front, from client
+    addresses 127.0.0.77 and up. Mutation checks confirm the tests catch an
+    ignored PROXY source.
+- Two full reviews: 15 and 13 findings, all addressed with tests. The worst:
+  - a crafted query cost ~50 ms to parse before any rate limit;
+  - slow readers and single clients could hold every in-flight slot;
+  - there was no per-client connection cap;
+  - UDP answers on wildcard addresses went out from the wrong source address
+    (now IP_PKTINFO);
+  - a parser regression from the first fix rejected names of four or more
+    labels behind a compression pointer.
+- One CI run failed on a test that raced the new start-up probe. It was fixed
+  the same hour, along with a too-tight timing test; CI on e52932e was
+  still running when this entry was written (see the next line, if any).
+- Research round 12: kumarest (Uptime Kuma#118, 706 👍) was set aside, because
+  the maintainer's HTTP API PRs are in the 3.1.0 milestone. The restic
+  snapshot wrapper fell to an upstream path-rewrite PR, and qbitmove to qui.
+  Chosen: **pullwhy**, "why is my docker pull slow or failing?" (docker/cli#336,
+  244 👍). Docker Hub's headers today say 100 anonymous pulls an hour per IP.
+- Next: the pullwhy spec (STATE.md).
+- Owner:
+  - the finding-bugs repo is still public (your decision);
+  - create the v1.0.0 tags in the web UI:
+    - `xffdns/v1.0.0` at e52932e;
+    - `alertlines/v1.0.0` at 5e2f87c;
+    - `pushprobe/v1.0.0` at 0e881d2;
+    - `docker-edit/v1.0.0` at cdc7019;
+  - optionally, give projects their own repos.
+
 ## 2026-10-20 (IST) — run 9
 
 - Project #9 **alertlines**, from spec to v1.0.0 in one run.
