@@ -631,13 +631,14 @@ func TestQueryLimits(t *testing.T) {
 func TestHandshakeDeadlines(t *testing.T) {
 	cf, kf, pool := cert(t)
 	f := &fake{}
-	s, _ := start(t, f, limits(func(l *config.Limits) { l.HandshakeTimeout = config.Duration(400 * time.Millisecond) }),
+	// Each step takes 1s of its 1.5s: both fit only with a deadline each.
+	s, _ := start(t, f, limits(func(l *config.Limits) { l.HandshakeTimeout = config.Duration(1500 * time.Millisecond) }),
 		config.Listener{Name: "dp", Protocol: "dot", CertFile: cf, KeyFile: kf, ProxyProtocol: true, ProxyFrom: []string{"127.0.0.1/32"}})
 	raw, _ := net.Dial("tcp", s.Addr("dp").String())
 	defer raw.Close()
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(time.Second)
 	raw.Write(v2("192.0.2.5:1", false))
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(time.Second)
 	tc := tls.Client(raw, &tls.Config{RootCAs: pool, ServerName: "dns.example.test"})
 	(tcpConn{tc}).send(t, query(1, "late.example"))
 	if a := (tcpConn{tc}).recv(t); dnsmsg.ID(a) != 1 {
