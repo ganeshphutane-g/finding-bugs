@@ -66,3 +66,32 @@ func TestHandler(t *testing.T) {
 		t.Fatal(resp.Status)
 	}
 }
+
+func TestHealthy(t *testing.T) {
+	m := New()
+	now := time.Unix(1000, 0)
+	m.now = func() time.Time { return now }
+	if ok, _ := m.Healthy(); !ok {
+		t.Fatal("unhealthy before any query")
+	}
+	m.UpstreamError("timeout")
+	if ok, msg := m.Healthy(); ok || !strings.Contains(msg, "never") {
+		t.Fatal(msg)
+	}
+	srv := httptest.NewServer(m.Handler())
+	defer srv.Close()
+	if resp, _ := srv.Client().Get(srv.URL + "/healthz"); resp.StatusCode != 503 {
+		t.Fatal(resp.Status)
+	}
+	now = now.Add(time.Second)
+	m.UpstreamOK()
+	if ok, _ := m.Healthy(); !ok {
+		t.Fatal("unhealthy after an answer")
+	}
+	now = now.Add(time.Second)
+	m.UpstreamError("timeout")
+	now = now.Add(2 * time.Minute)
+	if ok, _ := m.Healthy(); !ok {
+		t.Fatal("an old error still counts")
+	}
+}

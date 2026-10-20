@@ -32,6 +32,10 @@ import (
 // writeTimeout bounds writing one answer to a TCP or DoT client.
 const writeTimeout = 10 * time.Second
 
+// maxPending bounds the bytes of TCP answers waiting on slow readers, in
+// all; past it, a connection that would add more is closed.
+const maxPending = 64 << 20
+
 // MaxQuery is the largest query taken. Queries are small (a name, an OPT
 // record); allowing 64 KB would let each one cost that much memory.
 const MaxQuery = 4096
@@ -54,20 +58,22 @@ type Options struct {
 
 // Server serves listeners.
 type Server struct {
-	o        Options
-	limiter  *ratelimit.Limiter
-	inflight chan struct{}
-	conns    chan struct{}
-	ctx      context.Context // cancelled when shutdown runs out of time
-	cancel   context.CancelFunc
-	closing  atomic.Bool
-	wg       sync.WaitGroup // every goroutine that handles a query or connection
-	loops    sync.WaitGroup // the accept and read loops
+	o          Options
+	limiter    *ratelimit.Limiter
+	inflight   chan struct{}
+	conns      chan struct{}
+	ctx        context.Context // cancelled when shutdown runs out of time
+	cancel     context.CancelFunc
+	closing    atomic.Bool
+	pending    atomic.Int64   // bytes of TCP answers not yet written
+	maxPending atomic.Int64   // maxPending (less in tests)
+	wg         sync.WaitGroup // every goroutine that handles a query or connection
+	loops      sync.WaitGroup // the accept and read loops
 
 	mu        sync.Mutex
 	bound     []*bound
 	open      map[net.Conn]struct{}
-	perClient map[netip.Prefix]int // open connections by client (IPv4 address, IPv6 /64)
+	perClient map[netip.Prefix]*clientState // by client: an IPv4 address, an IPv6 subnet_v6
 
 	logMu   sync.Mutex
 	logLast map[string]time.Time
@@ -75,7 +81,7 @@ type Server struct {
 
 type bound struct {
 	conf config.Listener
-	pc   net.PacketConn
+	udp  []*udpSock
 	ln   net.Listener
 	tls  *tls.Config
 }
@@ -87,7 +93,7 @@ func New(o Options) *Server {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	l := o.Limits
-	return &Server{
+	s := &Server{
 		o:         o,
 		limiter:   ratelimit.New(*l.UDPQPS, l.SubnetV4, l.SubnetV6, l.Clients),
 		inflight:  make(chan struct{}, l.MaxInflight),
@@ -95,9 +101,11 @@ func New(o Options) *Server {
 		ctx:       ctx,
 		cancel:    cancel,
 		open:      map[net.Conn]struct{}{},
-		perClient: map[netip.Prefix]int{},
+		perClient: map[netip.Prefix]*clientState{},
 		logLast:   map[string]time.Time{},
 	}
+	s.maxPending.Store(maxPending)
+	return s
 }
 
 // Start binds every listener (all or none) and serves them.
@@ -118,14 +126,21 @@ func (s *Server) Start(ls []config.Listener) error {
 	s.mu.Unlock()
 	for _, b := range bs {
 		s.loops.Add(1)
-		go func() {
-			defer s.loops.Done()
-			if b.pc != nil {
-				s.serveUDP(b)
-			} else {
-				s.serveTCP(b)
+		if len(b.udp) > 0 {
+			s.loops.Done()
+			for _, u := range b.udp {
+				s.loops.Add(1)
+				go func() {
+					defer s.loops.Done()
+					s.serveUDP(b, u)
+				}()
 			}
-		}()
+		} else {
+			go func() {
+				defer s.loops.Done()
+				s.serveTCP(b)
+			}()
+		}
 		s.o.Log.Info("listening", "listener", b.conf.Name, "protocol", b.conf.Protocol, "address", b.addr().String(),
 			"proxy_protocol", b.conf.ProxyProtocol)
 	}
@@ -161,7 +176,7 @@ func (s *Server) bind(l config.Listener) (*bound, error) {
 	}
 	var err error
 	if l.Protocol == "udp" {
-		b.pc, err = net.ListenPacket("udp", l.Address)
+		b.udp, err = listenUDP(l.Address)
 	} else {
 		b.ln, err = net.Listen("tcp", l.Address)
 	}
@@ -172,16 +187,17 @@ func (s *Server) bind(l config.Listener) (*bound, error) {
 }
 
 func (b *bound) addr() net.Addr {
-	if b.pc != nil {
-		return b.pc.LocalAddr()
+	if len(b.udp) > 0 {
+		return b.udp[0].pc.LocalAddr()
 	}
 	return b.ln.Addr()
 }
 
 func (b *bound) close() {
-	if b.pc != nil {
-		b.pc.Close()
-	} else {
+	for _, u := range b.udp {
+		u.pc.Close()
+	}
+	if b.ln != nil {
 		b.ln.Close()
 	}
 }
@@ -204,9 +220,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 	s.closing.Store(true)
 	s.mu.Lock()
 	for _, b := range s.bound {
-		if b.pc != nil {
-			b.pc.SetReadDeadline(time.Now()) // stop reading; answers can still go out
-		} else {
+		for _, u := range b.udp {
+			u.pc.SetReadDeadline(time.Now()) // stop reading; answers can still go out
+		}
+		if b.ln != nil {
 			b.ln.Close()
 		}
 	}
@@ -233,8 +250,8 @@ func (s *Server) Shutdown(ctx context.Context) {
 	}
 	s.cancel()
 	for _, b := range s.bound {
-		if b.pc != nil {
-			b.pc.Close()
+		for _, u := range b.udp {
+			u.pc.Close()
 		}
 	}
 }
@@ -306,6 +323,7 @@ func (s *Server) exchange(msg []byte, q *dnsmsg.Info, client netip.Addr, id stri
 		s.logEvery("upstream-"+kind, "AdGuard Home did not answer a query", "error", err)
 		return dnsmsg.Reply(q, dnsmsg.RcodeServFail, false), metrics.ServFail
 	}
+	s.o.Metrics.UpstreamOK()
 	return ans, metrics.Answered
 }
 
@@ -315,11 +333,11 @@ func isDial(err error) bool {
 	return errors.As(err, &op) && op.Op == "dial"
 }
 
-func (s *Server) serveUDP(b *bound) {
+func (s *Server) serveUDP(b *bound, u *udpSock) {
 	buf := make([]byte, udpBuf+1) // one more, to tell a datagram that is too big
 	name := b.conf.Name
 	for {
-		n, from, err := b.pc.ReadFrom(buf)
+		n, to, from, err := u.read(buf)
 		if err != nil {
 			if s.closing.Load() || errors.Is(err, net.ErrClosed) {
 				return
@@ -367,22 +385,35 @@ func (s *Server) serveUDP(b *bound) {
 			s.o.Metrics.Query(name, metrics.Malformed)
 			continue
 		}
+		cs := s.clientFor(client)
+		busy := true
 		select {
-		case s.inflight <- struct{}{}:
+		case cs.inflight <- struct{}{}:
+			select {
+			case s.inflight <- struct{}{}:
+				busy = false
+			default:
+				<-cs.inflight
+			}
 		default:
+		}
+		if busy {
+			s.release(cs)
 			s.o.Metrics.Query(name, metrics.Busy)
-			b.pc.WriteTo(dnsmsg.Reply(q, dnsmsg.RcodeServFail, false), from)
+			u.write(dnsmsg.Reply(q, dnsmsg.RcodeServFail, false), to, from)
 			continue
 		}
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
+			defer s.release(cs)
+			defer func() { <-cs.inflight }()
 			ans, result := s.exchange(msg, q, client, b.conf.ClientID)
 			<-s.inflight
 			if fit := dnsmsg.FitUDP(q, ans); len(fit) != len(ans) {
 				ans, result = fit, metrics.Truncated
 			}
-			if _, err := b.pc.WriteTo(ans, from); err != nil && !s.closing.Load() {
+			if _, err := u.write(ans, to, from); err != nil && !s.closing.Load() {
 				s.logEvery("udp-write-"+name, "sending a UDP answer failed", "listener", name, "error", err)
 			}
 			s.o.Metrics.Query(name, result)
@@ -441,34 +472,62 @@ func (s *Server) track(c net.Conn, add bool) {
 	}
 }
 
-func clientKey(a netip.Addr) netip.Prefix {
+// clientState is what one client has open: connections, and queries not
+// yet answered (counted until the answer is written, so a client that is
+// slow to read only uses up its own share).
+type clientState struct {
+	key      netip.Prefix
+	refs     int
+	conns    int
+	inflight chan struct{}
+}
+
+func (s *Server) clientKey(a netip.Addr) netip.Prefix {
 	bits := 32
 	if !a.Is4() {
-		bits = 64
+		bits = s.o.Limits.SubnetV6
 	}
 	p, _ := a.WithZone("").Prefix(bits)
 	return p
 }
 
-// addClient counts a connection for client, unless it has too many.
-func (s *Server) addClient(client netip.Addr) bool {
-	k := clientKey(client)
+// clientFor returns client's state, to be given back with s.release.
+func (s *Server) clientFor(a netip.Addr) *clientState {
+	k := s.clientKey(a)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.perClient[k] >= s.o.Limits.MaxConnsPerClient {
+	cs := s.perClient[k]
+	if cs == nil {
+		cs = &clientState{key: k, inflight: make(chan struct{}, s.o.Limits.MaxInflightPerClient)}
+		s.perClient[k] = cs
+	}
+	cs.refs++
+	return cs
+}
+
+func (s *Server) release(cs *clientState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cs.refs--; cs.refs <= 0 {
+		delete(s.perClient, cs.key)
+	}
+}
+
+// addConn counts a connection for the client, unless it has too many.
+func (s *Server) addConn(cs *clientState) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cs.conns >= s.o.Limits.MaxConnsPerClient {
 		return false
 	}
-	s.perClient[k]++
+	cs.conns++
 	return true
 }
 
-func (s *Server) dropClient(client netip.Addr) {
-	k := clientKey(client)
+func (s *Server) dropConn(cs *clientState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.perClient[k]--; s.perClient[k] <= 0 {
-		delete(s.perClient, k)
-	}
+	cs.conns--
 }
 
 // bufConn reads through r: what it buffered after a PROXY header belongs to
@@ -504,12 +563,15 @@ func (s *Server) handleConn(b *bound, c net.Conn, peer netip.AddrPort) {
 		conn = &bufConn{Conn: c, r: r}
 		c.SetReadDeadline(time.Time{}) // the handshake has its own timeout
 	}
-	if !s.addClient(client) {
+	cs := s.clientFor(client)
+	defer s.release(cs)
+	if !s.addConn(cs) {
 		s.o.Metrics.ConnRefused(name, "max_conns_per_client")
-		s.logEvery("max-conns-client-"+name, "closed a connection: the client has limits.max_conns_per_client open", "listener", name, "client", client)
+		s.logEvery("max-conns-client-"+name, "closed a connection: the client has limits.max_conns_per_client open "+
+			"(behind a proxy with no PROXY header, every connection is from the proxy)", "listener", name, "client", client)
 		return
 	}
-	defer s.dropClient(client)
+	defer s.dropConn(cs)
 	id := b.conf.ClientID
 	if b.tls != nil {
 		tc := tls.Server(conn, b.tls)
@@ -528,12 +590,12 @@ func (s *Server) handleConn(b *bound, c net.Conn, peer netip.AddrPort) {
 	} else if r == nil {
 		r = bufio.NewReader(c)
 	}
-	s.queries(b, conn, r, client, id)
+	s.queries(b, conn, r, client, cs, id)
 }
 
 // queries reads queries off one connection until it is idle, closed or
 // broken, answering each as AdGuard Home does, in any order (RFC 7766).
-func (s *Server) queries(b *bound, conn net.Conn, r *bufio.Reader, client netip.Addr, id string) {
+func (s *Server) queries(b *bound, conn net.Conn, r *bufio.Reader, client netip.Addr, cs *clientState, id string) {
 	name := b.conf.Name
 	idle := time.Duration(s.o.Limits.IdleTimeout)
 	perConn := make(chan struct{}, s.o.Limits.MaxInflightPerConn)
@@ -567,22 +629,38 @@ func (s *Server) queries(b *bound, conn net.Conn, r *bufio.Reader, client netip.
 			s.o.Metrics.Query(name, metrics.Malformed)
 			return
 		}
-		// Both block: a busy connection stops being read until its
-		// queries are answered.
+		// All three block: a busy connection, or client, stops being read
+		// until its queries are answered.
 		perConn <- struct{}{}
+		select {
+		case cs.inflight <- struct{}{}:
+		case <-s.ctx.Done():
+			<-perConn
+			return
+		}
 		select {
 		case s.inflight <- struct{}{}:
 		case <-s.ctx.Done():
+			<-cs.inflight
+			<-perConn
 			return
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-perConn }()
+			defer func() { <-perConn; <-cs.inflight }()
 			ans, result := s.exchange(msg, q, client, id)
 			// The global slot is for queries waiting on AdGuard Home, not on
 			// a slow reader.
 			<-s.inflight
+			if s.pending.Add(int64(len(ans))) > s.maxPending.Load() {
+				s.pending.Add(-int64(len(ans)))
+				s.o.Metrics.Query(name, metrics.Busy)
+				s.logEvery("pending-"+name, "closed a connection: too many answers are waiting on slow readers", "listener", name, "client", client)
+				conn.Close()
+				return
+			}
+			defer s.pending.Add(-int64(len(ans)))
 			out := make([]byte, 2+len(ans))
 			binary.BigEndian.PutUint16(out, uint16(len(ans)))
 			copy(out[2:], ans)

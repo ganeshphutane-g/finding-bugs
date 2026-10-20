@@ -37,6 +37,9 @@ type Metrics struct {
 	conns    atomic.Int64
 	hist     []atomic.Uint64 // per bucket, then +Inf
 	sumMicro atomic.Uint64
+	lastOK   atomic.Int64 // unix nanoseconds of the last answer from AdGuard Home
+	lastErr  atomic.Int64 // and of the last failure
+	now      func() time.Time
 }
 
 // New makes the metrics.
@@ -51,6 +54,7 @@ func New() *Metrics {
 			"xffdns_cert_reloads_total":    "Certificate reloads, by listener and result.",
 		},
 		hist: make([]atomic.Uint64, len(buckets)+1),
+		now:  time.Now,
 	}
 }
 
@@ -87,7 +91,33 @@ func (m *Metrics) Query(listener, result string) {
 }
 
 // UpstreamError counts a failed exchange.
-func (m *Metrics) UpstreamError(kind string) { m.inc("xffdns_upstream_errors_total", "kind", kind) }
+func (m *Metrics) UpstreamError(kind string) {
+	if m != nil {
+		m.lastErr.Store(m.now().UnixNano())
+	}
+	m.inc("xffdns_upstream_errors_total", "kind", kind)
+}
+
+// UpstreamOK notes an answer from AdGuard Home.
+func (m *Metrics) UpstreamOK() {
+	if m != nil {
+		m.lastOK.Store(m.now().UnixNano())
+	}
+}
+
+// Healthy is false while AdGuard Home is failing: its last exchange, within
+// the last minute, was an error.
+func (m *Metrics) Healthy() (bool, string) {
+	ok, bad := m.lastOK.Load(), m.lastErr.Load()
+	if bad > ok && m.now().Sub(time.Unix(0, bad)) < time.Minute {
+		last := "never"
+		if ok > 0 {
+			last = time.Unix(0, ok).UTC().Format(time.RFC3339)
+		}
+		return false, "AdGuard Home is not answering (last answer: " + last + ")"
+	}
+	return true, "ok"
+}
 
 // ProxyError counts a bad or unwanted PROXY header.
 func (m *Metrics) ProxyError(listener, reason string) {
@@ -165,6 +195,12 @@ func (m *Metrics) Handler() http.Handler {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		m.Write(w)
 	})
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok\n") })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		ok, msg := m.Healthy()
+		if !ok {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		io.WriteString(w, msg+"\n")
+	})
 	return mux
 }

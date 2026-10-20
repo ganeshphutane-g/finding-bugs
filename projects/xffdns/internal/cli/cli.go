@@ -44,7 +44,8 @@ naming the real client in X-Forwarded-For.
 
 Usage:
   xffdns run   [-c xffdns.yaml]
-  xffdns check [-c xffdns.yaml | --url URL] [--ip 192.0.2.10] [--name NAME] [--client-id ID]
+  xffdns check [-c xffdns.yaml | --url URL [--ca-file FILE] [--server-name NAME]]
+               [--ip 192.0.2.10] [--name NAME] [--client-id ID]
                [--adguard-url URL --adguard-user USER]   (password: XFFDNS_ADGUARD_PASSWORD)
   xffdns version
 
@@ -131,6 +132,10 @@ func serve(ctx context.Context, args []string, stderr io.Writer, ready func(*ser
 	srv := server.New(server.Options{Upstream: up, Limits: conf.Limits, Metrics: m, Log: log})
 	if err := srv.Start(conf.Listeners); err != nil {
 		fmt.Fprintf(stderr, "xffdns: %v\n", err)
+		if errors.Is(err, syscall.EADDRINUSE) {
+			fmt.Fprintln(stderr, "xffdns: something already listens there. AdGuard Home itself takes port 53 on every address by default:\n"+
+				"        give xffdns other addresses or ports, or narrow AdGuard Home's dns.bind_hosts.")
+		}
 		return exitError
 	}
 	var hs *http.Server
@@ -146,6 +151,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, ready func(*ser
 		log.Info("metrics", "address", ln.Addr().String())
 	}
 	log.Info("xffdns started", "version", Version, "upstream", conf.Upstream.URL)
+	go probe(up, conf.Upstream.URL, m, log)
 	if ready != nil {
 		ready(srv)
 	}
@@ -158,6 +164,35 @@ func serve(ctx context.Context, args []string, stderr io.Writer, ready func(*ser
 		hs.Shutdown(sctx)
 	}
 	return exitOK
+}
+
+// probe asks AdGuard Home one question at start, so a wrong URL or setting
+// shows in the log at once, not as SERVFAILs later.
+func probe(up *upstream.Client, rawURL string, m *metrics.Metrics, log *slog.Logger) {
+	q := []byte{0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1} // . NS
+	if _, err := up.Exchange(context.Background(), q, netip.MustParseAddr("127.0.0.1"), ""); err != nil {
+		m.UpstreamError("probe")
+		log.Error("AdGuard Home did not answer a test query; queries will get SERVFAIL until it does",
+			"upstream", rawURL, "error", err, "hint", hint(err, rawURL))
+		return
+	}
+	m.UpstreamOK()
+	log.Info("AdGuard Home answers; run `xffdns check` once to see that it takes the client addresses")
+}
+
+// hint says what usually causes err.
+func hint(err error, rawURL string) string {
+	switch {
+	case errors.Is(err, upstream.ErrStatus) && strings.Contains(err.Error(), "404") && strings.HasPrefix(rawURL, "http:"):
+		return "plain-HTTP DoH is off: set http.doh.insecure_enabled: true in AdGuardHome.yaml (tls.allow_unencrypted_doh: true up to v0.107.73)"
+	case errors.Is(err, upstream.ErrStatus):
+		return "check that the URL is AdGuard Home's web address followed by /dns-query"
+	case errors.Is(err, upstream.ErrAnswer):
+		return "that address answered, but not with DNS: is it AdGuard Home's web port, with the path /dns-query?"
+	case errors.Is(err, upstream.ErrTimeout):
+		return "AdGuard Home is slow or unreachable from here"
+	}
+	return "is AdGuard Home running at that address, and reachable from here?"
 }
 
 var rcodes = map[int]string{0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP", 5: "REFUSED"}
@@ -225,6 +260,10 @@ func check(args []string, stdout, stderr io.Writer, lookup func(string) (string,
 		fmt.Fprintf(stderr, "xffdns check: %q is not an http:// or https:// address\n", up.URL)
 		return exitUsage
 	}
+	if u.Path == "" || u.Path == "/" {
+		fmt.Fprintf(stderr, "xffdns check: %q has no path; AdGuard Home's is /dns-query\n", up.URL)
+		return exitUsage
+	}
 	client, err := newUpstream(up, 1)
 	if err != nil {
 		fmt.Fprintf(stderr, "xffdns check: %v\n", err)
@@ -253,11 +292,7 @@ func check(args []string, stdout, stderr io.Writer, lookup func(string) (string,
 	sent := time.Now()
 	ans, err := client.Exchange(context.Background(), q, ip, *clientID)
 	if err != nil {
-		fmt.Fprintf(stdout, "failed  %v\n", err)
-		if errors.Is(err, upstream.ErrStatus) && u.Scheme == "http" {
-			fmt.Fprintln(stdout, "        Over plain http, AdGuard Home needs http.doh.insecure_enabled: true in AdGuardHome.yaml\n"+
-				"        (tls.allow_unencrypted_doh: true up to v0.107.73).")
-		}
+		fmt.Fprintf(stdout, "failed  %v\n        %s.\n", err, hint(err, up.URL))
 		return exitError
 	}
 	fmt.Fprintf(stdout, "answer  %s, %d records, in %s\n", rcodeName(ans), binary.BigEndian.Uint16(ans[6:]), time.Since(sent).Round(time.Millisecond))
@@ -276,7 +311,12 @@ func check(args []string, stdout, stderr io.Writer, lookup func(string) (string,
 	} else {
 		fmt.Fprintf(stdout, "log     client %s\n", entry.Client)
 	}
-	if got, err := netip.ParseAddr(entry.Client); err != nil || got.Unmap() != ip.Unmap() {
+	got, err := netip.ParseAddr(entry.Client)
+	if err == nil && got.Unmap() != ip.Unmap() && got.Unmap() == anonymized(ip) {
+		fmt.Fprintf(stdout, "\nAdGuard Home anonymizes client addresses (%s is %s in its log), so it took the address xffdns sent.\n", ip, got)
+		return exitOK
+	}
+	if err != nil || got.Unmap() != ip.Unmap() {
 		fmt.Fprintf(stdout, "\nAdGuard Home logged the query as from %s, not %s: it does not trust xffdns's X-Forwarded-For.\n"+
 			"Add the address xffdns connects from (%s, if that is it) to dns.trusted_proxies in AdGuardHome.yaml, and restart it.\n",
 			entry.Client, ip, entry.Client)
@@ -288,6 +328,18 @@ func check(args []string, stdout, stderr io.Writer, lookup func(string) (string,
 	}
 	fmt.Fprintln(stdout, "\nAdGuard Home sees the address xffdns sends.")
 	return exitOK
+}
+
+// anonymized is ip as AdGuard Home's anonymize_client_ip logs it: IPv4 to
+// its /16, IPv6 to its /48.
+func anonymized(ip netip.Addr) netip.Addr {
+	ip = ip.Unmap()
+	bits := 48
+	if ip.Is4() {
+		bits = 16
+	}
+	p, _ := ip.Prefix(bits)
+	return p.Addr()
 }
 
 // validName reports whether name is a DNS name xffdns can ask for.

@@ -99,7 +99,7 @@ Any number of listeners, each one of these protocols:
   anyone could claim any address.
 - A connection with no header, or a bad one, is closed.
 - v2 `LOCAL` (health checks) uses the connection's own address.
-- The header must arrive within `proxy_header_timeout`.
+- The header must arrive within `handshake_timeout`.
 
 **The client's address.** It is the PROXY source if there is one, and the
 peer address otherwise. IPv4-mapped IPv6 is unmapped. It goes into
@@ -135,7 +135,9 @@ the client gets SERVFAIL, with its own ID and question.
 | UDP queries per second per client subnet (/24 for IPv4, /56 for IPv6; AdGuard's defaults, as is the rate) | 20 |
 | Clients tracked by the limiter (in two generations of up to this many; the older is dropped whole) | 10,000 |
 | Open TCP/DoT connections, all listeners | 1,000 |
-| Open TCP/DoT connections per client (IPv4 address, IPv6 /64; counted after the PROXY header) | 32 |
+| Open TCP/DoT connections per client (IPv4 address, IPv6 `subnet_v6`; counted after the PROXY header) | 32 |
+| Queries not yet answered, per client (held until the answer is written) | 64 |
+| Bytes of TCP answers waiting on slow readers, in all (past it, the connection that would add more is closed) | 64 MB |
 | Queries in flight per connection | 32 |
 | Queries in flight in all | 2,000 |
 | Idle timeout for TCP/DoT | 30 s |
@@ -150,6 +152,10 @@ the client gets SERVFAIL, with its own ID and question.
   reading from that connection until queries finish. A query stops counting
   once AdGuard Home has answered it, even if its client is slow to read.
 - Redirects from the upstream are not followed; they count as errors.
+- UDP on a wildcard address binds an IPv4 and an IPv6-only socket and answers
+  from each query's destination address (IP_PKTINFO).
+- At start, one test query to AdGuard Home; its failure is logged with a hint.
+  `/healthz` answers 503 while the last exchange in the past minute failed.
 
 **UDP answers.**
 - An answer larger than the client's buffer is truncated to the header and

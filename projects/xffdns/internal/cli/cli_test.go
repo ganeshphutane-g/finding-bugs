@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,9 +23,10 @@ import (
 // fakeAdGuard serves DoH and a query log. It logs each query as from the
 // X-Forwarded-For address when trust is set, else as from the connection.
 type fakeAdGuard struct {
-	mu    sync.Mutex
-	trust bool
-	log   []map[string]any
+	mu        sync.Mutex
+	trust     bool
+	anonymize bool
+	log       []map[string]any
 }
 
 func (f *fakeAdGuard) handler() http.Handler {
@@ -39,6 +41,9 @@ func (f *fakeAdGuard) handler() http.Handler {
 		f.mu.Lock()
 		if f.trust {
 			client = r.Header.Get("X-Forwarded-For")
+		}
+		if f.anonymize {
+			client = anonymized(netip.MustParseAddr(client)).String()
 		}
 		f.log = append([]map[string]any{{"client": client, "client_id": r.PathValue("id"), "time": time.Now().Format(time.RFC3339Nano),
 			"question": map[string]string{"name": strings.TrimSuffix(name, ".")}}}, f.log...)
@@ -113,12 +118,19 @@ func TestCheck(t *testing.T) {
 	if code != 0 || code2 != exitIgnored {
 		t.Fatalf("%d %d\n%s\n%s", code, code2, out, out2)
 	}
+	// AdGuard Home with anonymize_client_ip logs 192.168.0.0 for 192.168.5.77.
+	f.trust, f.anonymize = true, true
+	code, out = runCheck(t, pw, "--url", doh, "--adguard-user", "admin", "--ip", "192.168.5.77")
+	f.anonymize = false
+	if code != 0 || !strings.Contains(out, "anonymizes") {
+		t.Fatalf("%d\n%s", code, out)
+	}
 	if code, _ := runCheck(t, nil, "-h"); code != 0 {
 		t.Fatal("-h:", code)
 	}
 	for _, args := range [][]string{{"--ip", "nope"}, {"--ip", "fe80::1%eth0"}, {"--ip", "127.0.0.1"}, {"--ip", "::1"},
 		{"--name", "a..b"}, {"--name", strings.Repeat("a", 64) + ".com"}, {"-c", conf, "--ca-file", "x"},
-		{"--client-id", "Kid"}, {"--url", doh, "-c", conf}, {"--url", "ftp://x"}, {"extra"}} {
+		{"--client-id", "Kid"}, {"--url", doh, "-c", conf}, {"--url", "ftp://x"}, {"--url", srv.URL}, {"extra"}} {
 		if code, out := runCheck(t, nil, args...); code != exitUsage {
 			t.Errorf("%v: %d\n%s", args, code, out)
 		}
@@ -156,8 +168,9 @@ metrics_listen: "127.0.0.1:0"
 	ready := make(chan *server.Server, 1)
 	done := make(chan int)
 	var logs strings.Builder
+	logw := &syncWriter{w: &logs}
 	go func() {
-		done <- serve(ctx, []string{"-c", conf}, &syncWriter{w: &logs}, func(s *server.Server) { ready <- s })
+		done <- serve(ctx, []string{"-c", conf}, logw, func(s *server.Server) { ready <- s })
 	}()
 	var s *server.Server
 	select {
@@ -182,11 +195,16 @@ metrics_listen: "127.0.0.1:0"
 	if got["client"] != "127.0.0.1" || got["client_id"] != "lan" {
 		t.Fatal(got)
 	}
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if strings.Contains(snapshot(&logs, logw), "AdGuard Home answers") {
+			break
+		}
+	}
 	cancel()
 	if code := <-done; code != 0 {
 		t.Fatal(code)
 	}
-	for _, want := range []string{"listening", "metrics", "xffdns started", "stopping"} {
+	for _, want := range []string{"listening", "metrics", "xffdns started", "AdGuard Home answers", "stopping"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("no %q in the log:\n%s", want, logs.String())
 		}
@@ -202,4 +220,36 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.w.Write(p)
+}
+
+func TestServeProbeFails(t *testing.T) {
+	// Plain-HTTP DoH off: AdGuard Home answers 404.
+	ag := httptest.NewServer(http.NotFoundHandler())
+	defer ag.Close()
+	conf := filepath.Join(t.TempDir(), "x.yaml")
+	os.WriteFile(conf, []byte(fmt.Sprintf("upstream: {url: %q}\nlisteners: [{protocol: udp, address: \"127.0.0.1:0\"}]\n", ag.URL+"/dns-query")), 0o600)
+	ctx, cancel := context.WithCancel(context.Background())
+	var logs strings.Builder
+	w := &syncWriter{w: &logs}
+	done := make(chan int)
+	go func() { done <- serve(ctx, []string{"-c", conf}, w, nil) }()
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		w.mu.Lock()
+		found := strings.Contains(logs.String(), "insecure_enabled")
+		w.mu.Unlock()
+		if found {
+			break
+		}
+	}
+	cancel()
+	<-done
+	if !strings.Contains(logs.String(), "did not answer a test query") || !strings.Contains(logs.String(), "insecure_enabled") {
+		t.Fatal(logs.String())
+	}
+}
+
+func snapshot(b *strings.Builder, w *syncWriter) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return b.String()
 }

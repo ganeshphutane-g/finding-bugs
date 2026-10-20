@@ -68,13 +68,15 @@ type Limits struct {
 	SubnetV4 int `yaml:"subnet_v4"`
 	SubnetV6 int `yaml:"subnet_v6"`
 	// Clients is how many client subnets the limiter keeps track of.
-	Clients            int      `yaml:"clients"`
-	MaxConns           int      `yaml:"max_conns"`
-	MaxConnsPerClient  int      `yaml:"max_conns_per_client"`
-	MaxInflightPerConn int      `yaml:"max_inflight_per_conn"`
-	MaxInflight        int      `yaml:"max_inflight"`
-	IdleTimeout        Duration `yaml:"idle_timeout"`
-	HandshakeTimeout   Duration `yaml:"handshake_timeout"`
+	Clients           int `yaml:"clients"`
+	MaxConns          int `yaml:"max_conns"`
+	MaxConnsPerClient int `yaml:"max_conns_per_client"`
+	// MaxInflightPerClient bounds one client's queries not yet answered.
+	MaxInflightPerClient int      `yaml:"max_inflight_per_client"`
+	MaxInflightPerConn   int      `yaml:"max_inflight_per_conn"`
+	MaxInflight          int      `yaml:"max_inflight"`
+	IdleTimeout          Duration `yaml:"idle_timeout"`
+	HandshakeTimeout     Duration `yaml:"handshake_timeout"`
 }
 
 // Defaults.
@@ -104,6 +106,7 @@ func (c *Config) applyDefaults() {
 	def(&l.Clients, 10000)
 	def(&l.MaxConns, 1000)
 	def(&l.MaxConnsPerClient, 32)
+	def(&l.MaxInflightPerClient, 64)
 	def(&l.MaxInflightPerConn, 32)
 	def(&l.MaxInflight, 2000)
 	if l.IdleTimeout == 0 {
@@ -264,7 +267,7 @@ func (c *Config) Check() []string {
 	}
 	lm := c.Limits
 	if *lm.UDPQPS < 0 || lm.SubnetV4 < 1 || lm.SubnetV4 > 32 || lm.SubnetV6 < 1 || lm.SubnetV6 > 128 ||
-		lm.Clients < 1 || lm.MaxConns < 1 || lm.MaxConnsPerClient < 1 || lm.MaxInflightPerConn < 1 || lm.MaxInflight < 1 {
+		lm.Clients < 1 || lm.MaxConns < 1 || lm.MaxConnsPerClient < 1 || lm.MaxInflightPerClient < 1 || lm.MaxInflightPerConn < 1 || lm.MaxInflight < 1 {
 		add("limits: udp_qps must be 0 or more; subnet_v4 1-32, subnet_v6 1-128; the rest at least 1")
 	}
 	return out

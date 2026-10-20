@@ -65,13 +65,17 @@ but one:
 docker run --network host --user 0:0 --cap-drop ALL --cap-add NET_BIND_SERVICE ...
 ```
 
+uid 65532 must be able to read the key file, too: for example `chgrp 65532
+privkey.pem && chmod 640 privkey.pem`.
+
 **systemd:**
 1. Copy the binary to `/usr/local/bin/`, `contrib/xffdns.service` to
    `/etc/systemd/system/`, and your file to `/etc/xffdns/xffdns.yaml`.
 2. Run `systemctl enable --now xffdns`.
 
-It runs as a throwaway user, with only the capability to bind low ports. The
-unit's comments show how to hand it Let's Encrypt keys. With `LoadCredential`,
+It runs as a throwaway user, with only the capability to bind low ports, so
+keep `xffdns.yaml` readable to all (it holds no secrets). The unit's comments
+show how to hand it Let's Encrypt keys. With `LoadCredential`,
 systemd copies the keys when the service starts, so restart xffdns after a
 renewal. Certificate files xffdns reads directly are picked up without a
 restart.
@@ -101,19 +105,31 @@ Restart AdGuard Home.
 
 ### 2. Write `xffdns.yaml`
 
+Here xffdns, AdGuard Home and the proxy (Traefik, HAProxy or nginx) share one
+host. The proxy takes port 853 and passes the connections to xffdns:
+
 ```yaml
 upstream:
   url: "http://127.0.0.1:80/dns-query"   # AdGuard Home's web address + /dns-query
 listeners:
-  - name: dot                            # Android Private DNS, behind Traefik
+  - name: dot                            # Android Private DNS, through the proxy
     protocol: dot
-    address: ":8853"
+    address: "127.0.0.1:8853"            # only the proxy reaches it
     cert_file: /etc/xffdns/fullchain.pem
     key_file: /etc/xffdns/privkey.pem
     server_name: dns.example.com         # kid.dns.example.com → client ID "kid"
     proxy_protocol: true
-    proxy_from: ["172.18.0.2"]           # Traefik's address
-  - name: lan                            # plain DNS for the LAN
+    proxy_from: ["127.0.0.1"]            # the proxy
+```
+
+**Plain DNS too.** If AdGuard Home cannot see your LAN clients either (say it
+runs in a container that hides them), add `udp` and `tcp` listeners on port 53
+of the LAN address. AdGuard Home takes port 53 on every address by default, so
+first narrow its `dns.bind_hosts` (to `127.0.0.1`, for example) or move its
+`dns.port`. Otherwise xffdns stops with "address already in use".
+
+```yaml
+  - name: lan
     protocol: udp
     address: "192.168.1.2:53"
   - name: lan-tcp
@@ -147,7 +163,8 @@ Add the address xffdns connects from (127.0.0.1, if that is it) to dns.trusted_p
 ```
 
 When plain-HTTP DoH is off, AdGuard Home answers 404, and `check` names the
-setting.
+setting. With AdGuard Home's `anonymize_client_ip` on, the log shows the
+address's /16 (or IPv6 /48), and `check` takes that as a pass.
 
 ### 4. Run it
 
@@ -155,11 +172,14 @@ setting.
 xffdns run -c xffdns.yaml
 ```
 
-Then point your proxy, or your clients, at it.
+Then point your proxy, or your clients, at it. At start, xffdns sends AdGuard
+Home one test query and logs what went wrong, if anything: plain-HTTP DoH off,
+a wrong URL, or nothing listening.
 
 ## Proxies in front of it
 
-All four are tested with xffdns and AdGuard Home in CI.
+All four are tested with xffdns and AdGuard Home in CI. Each passes port 853
+to xffdns on 127.0.0.1:8853, as in the Quick start.
 
 **HAProxy**, DoT passed through (xffdns has the certificate):
 
@@ -173,7 +193,10 @@ backend xffdns
   server x 127.0.0.1:8853 send-proxy-v2   # or send-proxy (v1)
 ```
 
-**Traefik v3:**
+**Traefik** (tested with 3.7; older releases set the PROXY protocol
+differently, so check Traefik's documentation for yours). The static
+configuration needs an entry point, `entryPoints: {dot: {address: ":853"}}`,
+and the dynamic configuration:
 
 ```yaml
 tcp:
@@ -183,7 +206,7 @@ tcp:
     xffdns:
       loadBalancer:
         serversTransport: pp
-        servers: [{address: "xffdns:8853"}]
+        servers: [{address: "127.0.0.1:8853"}]
   serversTransports:
     pp: {proxyProtocol: {version: 2}}
 ```
@@ -233,9 +256,10 @@ limits:
   subnet_v6: 56
   clients: 10000               # subnets it keeps track of (up to twice this, in two generations)
   max_conns: 1000              # TCP and DoT connections, all listeners
-  max_conns_per_client: 32     # per IPv4 address or IPv6 /64 (behind a proxy: the PROXY source)
+  max_conns_per_client: 32     # per IPv4 address or IPv6 subnet_v6 (behind a proxy: the PROXY source)
   max_inflight_per_conn: 32
   max_inflight: 2000           # queries waiting on AdGuard Home (and the connections to it)
+  max_inflight_per_client: 64  # one client's queries not yet answered
   idle_timeout: 30s            # TCP and DoT
   handshake_timeout: 5s        # the PROXY header and the TLS handshake
 metrics_listen: ""             # such as 127.0.0.1:9354: /metrics and /healthz
@@ -246,10 +270,19 @@ metrics_listen: ""             # such as 127.0.0.1:9354: /metrics and /healthz
 - A PROXY header from an address outside `proxy_from` is refused: the
   connection is closed, or the datagram dropped. Without that rule, anyone
   could claim any address.
+- **On UDP, `proxy_from` trusts a source address, and UDP source addresses
+  can be forged.** Bind a UDP listener with `proxy_protocol` to an address
+  only the proxy can reach, such as 127.0.0.1. Otherwise anyone who can forge
+  the proxy's address can claim to be any client.
 - A v2 `LOCAL` header, which proxies send for health checks, counts as the
   proxy itself.
+- **The per-client limits apply to what xffdns sees as the client.** Behind a
+  proxy that sends no PROXY header, every connection comes from the proxy.
+  Turn the PROXY protocol on, or raise `max_conns_per_client` and
+  `max_inflight_per_client`.
 - Only plain queries are taken: up to 4 KB, with no answer or authority
-  records. Anything else is dropped, or closes the connection.
+  records. Zone transfers, NOTIFY and UPDATE are not. Anything else is
+  dropped, or closes the connection.
 - Redirects from AdGuard Home are not followed: a redirect would send the
   query, and the client's address, somewhere else.
 
@@ -260,6 +293,8 @@ metrics_listen: ""             # such as 127.0.0.1:9354: /metrics and /healthz
 - AdGuard Home's own `ratelimit` does not apply to DoH. That is why xffdns has
   `udp_qps`, with AdGuard Home's default of 20. Queries over the limit are
   dropped, as AdGuard Home does.
+- On a wildcard address (`:53`), answers go out from the address the query
+  came to, so hosts with several addresses work.
 - **Do not open a UDP listener to the internet.** UDP source addresses can be
   forged, so an open UDP resolver can be used to flood someone else with
   answers larger than the queries. For clients outside your network, use DoT.
@@ -273,6 +308,9 @@ metrics_listen: ""             # such as 127.0.0.1:9354: /metrics and /healthz
 - `xffdns_conns_refused_total`;
 - `xffdns_open_conns`;
 - `xffdns_cert_reloads_total`.
+
+`/healthz` answers 503 while AdGuard Home is failing: when the last exchange
+in the past minute was an error.
 
 **Exit codes:**
 

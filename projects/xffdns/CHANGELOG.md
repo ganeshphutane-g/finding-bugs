@@ -13,13 +13,18 @@ First release.
 - DoT certificates are read again when their files change.
 - Limits: UDP queries per second per client subnet (AdGuard Home does not
   limit DoH; the default is AdGuard Home's 20), connections in all and per
-  client, queries in flight, query size (4 KB, plain queries only), idle and
+  client, queries in flight in all and per client, bytes of answers waiting on
+  slow readers, query size (4 KB, plain queries only), idle and
   handshake timeouts. UDP answers that are too big are truncated, keeping the
   upstream's flags.
 - `xffdns check` sends a query as an address of your choice and reads AdGuard
   Home's query log to tell whether it took the address, and what to change if
   not.
-- `/metrics` and `/healthz`.
+- On a wildcard address, UDP answers go out from the address each query came
+  to (IP_PKTINFO), on IPv4 and IPv6.
+- A test query to AdGuard Home at start, with a hint when it fails (plain-HTTP
+  DoH off, wrong URL, nothing listening), and a hint when a port is taken.
+- `/metrics`, and `/healthz`, which answers 503 while AdGuard Home is failing.
 - A distroless Docker image and a hardened systemd unit (systemd's exposure
   score 1.4).
 - Tested against AdGuard Home v0.107.45, v0.107.73 and the latest release, with

@@ -218,3 +218,40 @@ func TestFlagsKept(t *testing.T) {
 		t.Fatalf("%x", r)
 	}
 }
+
+// Names that end in a pointer to a long name, and pointers to names that
+// themselves end in pointers, are fine.
+func TestCompressedNames(t *testing.T) {
+	for _, qname := range []string{"a.www.example.com", "x.a.www.example.com", "1.2.3.4.in-addr.arpa"} {
+		m := query(1, qname, 0)
+		binary.BigEndian.PutUint16(m[2:], flagQR)
+		binary.BigEndian.PutUint16(m[6:], 2)
+		// An answer owned by the question's name (0xC00C), then one owned by
+		// "cdn" + a pointer to the first answer's owner.
+		m = append(m, 0xC0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 1)
+		first := len(m) - 16
+		m = append(m, 3, 'c', 'd', 'n', 0xC0|byte(first>>8), byte(first), 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 2)
+		if _, err := Parse(m); err != nil {
+			t.Errorf("%s: %v", qname, err)
+		}
+	}
+}
+
+func TestDOEchoed(t *testing.T) {
+	q := query(1, "example.com", 1232)
+	q[len(q)-4] = 0x80 // DO, in the OPT's flags
+	in, _ := Parse(q)
+	if !in.DO {
+		t.Fatal("DO not read")
+	}
+	r := Reply(in, RcodeServFail, false)
+	if a, _ := Parse(r); !a.DO {
+		t.Fatal("DO not echoed")
+	}
+	q2 := query(1, "example.com", 1232)
+	q2[len(q2)-4] = 0 // the helper sets DO
+	in2, _ := Parse(q2)
+	if a, _ := Parse(Reply(in2, RcodeServFail, false)); a.DO {
+		t.Fatal("DO set without being asked")
+	}
+}

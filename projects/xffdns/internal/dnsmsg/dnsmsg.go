@@ -57,8 +57,10 @@ type Info struct {
 	// buffer size it advertises.
 	OPT     bool
 	UDPSize int
-	// ExtRcode is the OPT record's upper 8 bits of the rcode (RFC 6891).
+	// ExtRcode is the OPT record's upper 8 bits of the rcode (RFC 6891);
+	// DO is its DNSSEC OK bit (RFC 3225).
 	ExtRcode byte
+	DO       bool
 }
 
 // maxHops bounds the compression pointers followed in one name. Real
@@ -82,47 +84,39 @@ func CheckQuery(msg []byte) error {
 	return nil
 }
 
-// skipName returns the offset just past the name at off, without reading it.
+// skipName returns the offset just past the name at off, without reading
+// it. It still walks the whole name, through pointers, to check it ends:
+// at most maxHops pointer jumps and 128 labels.
 func skipName(msg []byte, off int) (int, error) {
-	for hops := 0; ; {
+	end := -1 // where the name ends in place: just past the first pointer
+	for hops, labels := 0, 0; ; {
 		if off >= len(msg) {
 			return 0, ErrShort
 		}
 		l := int(msg[off])
 		switch {
 		case l == 0:
-			return off + 1, nil
+			if end < 0 {
+				end = off + 1
+			}
+			return end, nil
 		case l&0xC0 == 0xC0:
 			if off+1 >= len(msg) {
 				return 0, ErrShort
 			}
-			// The name ends here in the record; check where it points.
-			end := off + 2
-			for p := int(binary.BigEndian.Uint16(msg[off:]) & 0x3FFF); ; {
-				if hops++; hops > maxHops || p >= len(msg) {
-					return 0, ErrName
-				}
-				switch l := int(msg[p]); {
-				case l == 0:
-					return end, nil
-				case l&0xC0 == 0xC0:
-					if p+1 >= len(msg) {
-						return 0, ErrShort
-					}
-					p = int(binary.BigEndian.Uint16(msg[p:]) & 0x3FFF)
-					continue
-				case l > 63:
-					return 0, ErrName
-				default:
-					p += 1 + l
-					if hops++; hops > 128 {
-						return 0, ErrName
-					}
-				}
+			if hops++; hops > maxHops {
+				return 0, ErrName
 			}
+			if end < 0 {
+				end = off + 2
+			}
+			off = int(binary.BigEndian.Uint16(msg[off:]) & 0x3FFF)
 		case l > 63:
 			return 0, ErrName
 		default:
+			if labels++; labels > 128 {
+				return 0, ErrName
+			}
 			off += 1 + l
 		}
 	}
@@ -175,6 +169,7 @@ func Parse(msg []byte) (*Info, error) {
 			in.OPT = true
 			in.UDPSize = int(class)
 			in.ExtRcode = msg[end+4]
+			in.DO = msg[end+6]&0x80 != 0
 		}
 		off = end + 10 + rdlen
 	}
@@ -270,8 +265,13 @@ func Reply(q *Info, rcode int, tc bool) []byte {
 	}
 	if q.OPT {
 		binary.BigEndian.PutUint16(out[10:], 1)
-		// Root name, type OPT, class = buffer size, TTL 0, no options.
-		out = append(out, 0, 0, typeOPT, byte(ednsSize>>8), byte(ednsSize&0xFF), 0, 0, 0, 0, 0, 0)
+		var do byte
+		if q.DO {
+			do = 0x80
+		}
+		// Root name, type OPT, class = buffer size, TTL = extended rcode 0,
+		// version 0 and the DO bit echoed, no options.
+		out = append(out, 0, 0, typeOPT, byte(ednsSize>>8), byte(ednsSize&0xFF), 0, 0, do, 0, 0, 0)
 	}
 	return out
 }

@@ -117,7 +117,7 @@ func v2(src string, udp bool) []byte {
 
 func limits(mod func(*config.Limits)) config.Limits {
 	qps := 0
-	l := config.Limits{UDPQPS: &qps, SubnetV4: 24, SubnetV6: 56, Clients: 100, MaxConns: 100, MaxConnsPerClient: 100, MaxInflightPerConn: 8,
+	l := config.Limits{UDPQPS: &qps, SubnetV4: 24, SubnetV6: 56, Clients: 100, MaxConns: 100, MaxConnsPerClient: 100, MaxInflightPerClient: 100, MaxInflightPerConn: 8,
 		MaxInflight: 100, IdleTimeout: config.Duration(5 * time.Second), HandshakeTimeout: config.Duration(2 * time.Second)}
 	if mod != nil {
 		mod(&l)
@@ -642,5 +642,93 @@ func TestHandshakeDeadlines(t *testing.T) {
 	(tcpConn{tc}).send(t, query(1, "late.example"))
 	if a := (tcpConn{tc}).recv(t); dnsmsg.ID(a) != 1 {
 		t.Fatal("no answer")
+	}
+}
+
+// One client with many slow queries gets its share of the in-flight slots,
+// not all of them.
+func TestPerClientInflight(t *testing.T) {
+	f := &fake{}
+	s, m := start(t, f, limits(func(l *config.Limits) { l.MaxInflight = 8; l.MaxInflightPerClient = 4; l.MaxInflightPerConn = 64 }),
+		config.Listener{Name: "t", Protocol: "tcp"}, config.Listener{Name: "u", Protocol: "udp"})
+	for range 2 {
+		c, _ := net.Dial("tcp", s.Addr("t").String())
+		defer c.Close()
+		var qs [][]byte
+		for i := range 20 {
+			qs = append(qs, query(uint16(i), "slow.example"))
+		}
+		(tcpConn{c}).send(t, qs...)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := f.count(); n > 4 {
+		t.Fatalf("%d queries of one client reached the upstream at once", n)
+	}
+	// Another client (127.0.0.2) is answered at once.
+	d := net.Dialer{LocalAddr: &net.UDPAddr{IP: net.ParseIP("127.0.0.2")}}
+	u, err := d.Dial("udp", s.Addr("u").String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer u.Close()
+	u.Write(query(99, "other.example"))
+	u.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 512)
+	if n, err := u.Read(buf); err != nil || buf[3]&0xF != 0 || dnsmsg.ID(buf[:n]) != 99 {
+		t.Fatalf("another client was not served: %v %x", err, buf[:4])
+	}
+	if strings.Contains(metricsText(m), `listener="u",result="busy"`) {
+		t.Fatal("another client was busy")
+	}
+}
+
+// On a wildcard address, the answer comes from the address the query was
+// sent to, so a connected client takes it.
+func TestUDPWildcardSource(t *testing.T) {
+	f := &fake{}
+	m := metrics.New()
+	s := New(Options{Upstream: f, Limits: limits(nil), Metrics: m})
+	if err := s.Start([]config.Listener{{Name: "w", Protocol: "udp", Address: ":0"}}); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Shutdown(context.Background())
+	port := s.Addr("w").(*net.UDPAddr).Port
+	for _, dst := range []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"} {
+		a := udpAsk(t, &net.UDPAddr{IP: net.ParseIP(dst), Port: port}, query(7, "w.example"))
+		if dnsmsg.ID(a) != 7 {
+			t.Fatalf("no answer from %s", dst)
+		}
+	}
+}
+
+// Answers waiting on readers that do not read are bounded in all: past the
+// budget, such a connection is closed.
+func TestPendingBudget(t *testing.T) {
+	f := &fake{}
+	s, m := start(t, f, limits(func(l *config.Limits) { l.MaxInflightPerConn = 64; l.MaxInflightPerClient = 64 }),
+		config.Listener{Name: "t", Protocol: "tcp"})
+	s.maxPending.Store(200 << 10)
+	d := net.Dialer{Control: func(_, _ string, rc syscall.RawConn) error {
+		return rc.Control(func(fd uintptr) { syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 2048) })
+	}}
+	c, err := d.Dial("tcp", s.Addr("t").String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var qs [][]byte
+	for i := range 64 {
+		qs = append(qs, query(uint16(i), "huge.example"))
+	}
+	(tcpConn{c}).send(t, qs...)
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(metricsText(m), `listener="t",result="busy"`) {
+		if time.Now().After(deadline) {
+			t.Fatal("the budget was not enforced:\n" + metricsText(m))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if s.pending.Load() > s.maxPending.Load() {
+		t.Fatal(s.pending.Load())
 	}
 }
