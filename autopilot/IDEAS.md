@@ -3,6 +3,105 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 12 — 2026-10-21 IST
+
+One research pass (GitHub search plus web search), then the top candidates
+re-checked for upstream work. "checked" means seen in a GitHub search result on
+2026-10-21. Issue threads could not be read (search only), so maintainer
+positions are unknown unless a PR shows them.
+
+### Chosen: pullwhy, "why is my docker pull slow or failing?" (project #11)
+
+A CLI that walks a pull the way dockerd resolves it and shows each step:
+- registry and mirror choice, from daemon.json (registry-mirrors apply to
+  docker.io only), insecure registries and the daemon's proxy settings;
+- the auth flow (token endpoint, scope, anonymous or with credentials from the
+  CLI's config and helpers);
+- manifest and platform resolution;
+- redirects to blob storage or a CDN;
+- Docker Hub's rate-limit headers (remaining pulls);
+- time and speed per layer, and where it stalls or fails.
+
+**Demand:**
+- docker/cli#336 "docker pull should have a --verbose option to see all of the
+  network calls": 244 👍, open since 2017-07, updated 2026-03-10 (checked);
+- docker/cli#4161 "verbose log for docker pull": 33 👍, open (checked);
+- Docker forums "Downloading from the registry is slow, what next?", and
+  2025–2026 guides that time `curl /v2/` by hand to find auth, TLS or mirror
+  delays (search summary);
+- Docker Hub's pull limits since April 2025 (10 an hour per IP without login,
+  by a search summary; verify before the spec) make "is it the rate limit?" a
+  common question.
+
+**Upstream:** no verbose-pull PR in docker/cli; the open pull PR #7379 adds
+`--dry-run`, which is something else (checked).
+
+**Gap:**
+- crane, regctl and skopeo log HTTP when asked, but do not follow dockerd's
+  mirror and daemon config.
+- `dockerd --debug` logs are coarse and need daemon access.
+- No dedicated tool found.
+
+**Scores:** 4/4/4/4/4 = **20**.
+
+**Risks:**
+- Fidelity: if pullwhy resolves differently from dockerd, it misleads. Test
+  side by side with real `docker pull` against registry:2 with auth, a
+  pull-through mirror, a TLS registry and a proxy.
+- Both image stores (classic and containerd) must be covered.
+- Docker could add `--verbose` itself.
+
+### Candidates set aside after re-checking
+
+- **kumarest** (a REST API for Uptime Kuma 2), 22 on paper. uptime-kuma#118
+  "API functionality" has 706 👍 and has been open since 2021-07 (checked). But
+  both of the owner's PRs are in the 3.1.0 milestone, as drafts with merge
+  conflicts (checked):
+  - #3854, "Document the Socket.io API and try to convert it to a HTTP
+    request", which resolves #118;
+  - #7551, "migrate to better auth api key".
+
+  Upstream is building it. Re-check if 3.1.0 slips a long way.
+- **Snapshot-consistent restic backups** (ZFS/btrfs/LVM snapshot, then restic
+  on the real paths), 18 (was 21). restic#2092 has 141 👍 and is open (checked),
+  but upstream PR #21771, "Allow rewriting snapshot paths with `--path-from` and
+  `--path-to`", has been open since 2026-04 (checked). What remains is the
+  snapshot orchestration (#3557, 48 👍), which borgmatic does for borg.
+- **Syncthing hooks and conflict watcher**, 19:
+  - syncthing#5601 hooks: 53 👍, open since 2019 (search summary);
+  - #8114, conflict count in the UI: 47 👍;
+  - no upstream hook PR found (checked);
+  - the other requests are weak.
+- **qbitmove** (qBittorrent settings and torrent migration), 17:
+  - qBittorrent#6236: 80 👍; #13789: 55 👍 (search summary);
+  - autobrr/qui (about 4.7k★) is adding the full preferences UI right now
+    (PRs #3240 to #3255, merged 2026-10-17, checked) and has torrent exports in
+    its automations. Too close.
+- **appdb-move** (app-aware SQLite to Postgres/MariaDB), 19. The evidence is
+  failure reports, not requests:
+  - vaultwarden#7133, after pgloader;
+  - Sonarr#8117.
+
+  Each app needs a profile kept up to date.
+
+### Rejected in round 12
+
+- **Upstream building it:**
+  - Gitea project-board automation (PR #30205);
+  - Gitea repo-scoped tokens (merged #37306);
+  - Headscale OIDC groups (PR #3216);
+  - Kuma status-page heartbeat range (PR #7620).
+- **Covered:**
+  - qBittorrent free-space guard (qui, qBitrr);
+  - NPM config as code (rejected in round 2; a Bash CLI and a Terraform
+    provider exist);
+  - targeted media scans (autopulse);
+  - Kometa for Jellyfin (done).
+- **Not doable or weak:**
+  - several logins for one registry (credential helpers only get the host);
+  - a Dockge successor (large, and Komodo exists);
+  - Vaultwarden Secrets Manager (9 👍).
+
 ## Research round 11 — 2026-10-20 IST
 
 Round 8's bar, across about 40 more repos (backups, proxies, identity, media,
