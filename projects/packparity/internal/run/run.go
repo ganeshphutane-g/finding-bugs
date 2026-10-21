@@ -157,9 +157,13 @@ func Sync(o Options) (*SyncResult, error) {
 		if err := addParity(&o, s, st, repo.Config, cdata, now); err != nil {
 			return nil, err
 		}
+		res.Added++
 		o.logf("config: took the changed config; the old one's parity is in removed/")
 	case !cok:
+		// Another repository, or one restic changed: nothing is added or
+		// retired until that is settled.
 		res.ConfigChanged = true
+		return res, nil
 	}
 
 	// Parity that was retired for a file that is back.
@@ -184,10 +188,6 @@ func Sync(o Options) (*SyncResult, error) {
 		}
 	}
 	sort.Strings(gone)
-	if len(gone) > 0 && res.ConfigChanged {
-		o.logf("config changed: not retiring parity for %d gone files until that is settled", len(gone))
-		gone = nil
-	}
 	if len(gone) > massMin && len(gone)*massShare > len(have) && !o.AllowMassRemoval {
 		return nil, fmt.Errorf("%d of %d files with parity are gone from %s; that looks like the wrong repository or a damaged disk, not a prune. Check, then run again with --allow-mass-removal if it is right",
 			len(gone), len(have), o.Repo)

@@ -1,0 +1,36 @@
+name: packparity
+
+on:
+  push:
+    paths: ["projects/packparity/**", ".github/workflows/packparity.yml"]
+  pull_request:
+    paths: ["projects/packparity/**", ".github/workflows/packparity.yml"]
+
+defaults:
+  run:
+    working-directory: projects/packparity
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/packparity/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: cross-builds
+        run: |
+          for target in linux/amd64 linux/arm64 linux/arm/7 darwin/arm64 freebsd/amd64; do
+            IFS=/ read -r os arch arm <<< "$target"
+            GOOS=$os GOARCH=$arch GOARM=$arm go build -o /dev/null . || exit 1
+          done
+      - name: restic and rest-server
+        run: |
+          GOBIN=/tmp/restic-bin go install github.com/restic/restic/cmd/restic@v0.18.1
+          GOBIN=/tmp/restic-bin go install github.com/restic/rest-server/cmd/rest-server@v0.14.0
+      - name: tests, also end to end with real restic and rest-server
+        run: PATH=/tmp/restic-bin:$PATH PACKPARITY_INTEGRATION=1 go test -race -count=1 -timeout 25m ./...
