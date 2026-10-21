@@ -41,7 +41,12 @@ Newest first.
     - crafted parity files crashed every command (a fuzz test now covers
       this);
     - an unmounted parity disk was silently started over (now `--init`).
-- **Research round 14** started (agent running).
+- **Research round 14:**
+  - Seven candidates scored. **wgresolve** chosen (20): systemd#9911
+    (51 👍, seen), a WireGuard mailing-list request, forum threads on six
+    platforms, six 0–1★ attempts.
+  - Upstream systemd PR #21562 is still a draft (updated 2026-04).
+  - Next: three checks, then the spec.
 - The sandbox disk filled up once; it was cleared by removing scratch copies
   and stopped containers.
 

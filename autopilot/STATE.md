@@ -1,14 +1,18 @@
 # State
 
-Current project: none; research round 14 is under way (an agent was started
-at 21:45 UTC on 2026-10-21; its report was not recorded yet).
+Current project: #13, wgresolve (keep WireGuard peers with dynamic-DNS
+endpoints connected; the name is free on GitHub, checked 2026-10-22). Phase:
+spec. Research: IDEAS.md round 14.
 
 ## Next step
 
-Research round 14: score at least 5 candidates (rules in AUTOPILOT.md), skip
-everything in IDEAS.md, verify the top pick's numbers and upstream PRs
-yourself, record the round in IDEAS.md, then start project #13 with its
-SPEC.md. Round 13's runners-up (zfsunlock 20, shelfsort 18) stay candidates.
+Before writing projects/wgresolve/SPEC.md, check:
+1. what NetworkManager does with DNS endpoints today;
+2. how Debian and Ubuntu ship wireguard-tools' `reresolve-dns.sh`;
+3. that kernel WireGuard (or wireguard-go) and network namespaces work here
+   and on GitHub's runners (`ip link add wg0 type wireguard`).
+Then write the spec with milestones and build. If item 3 fails in both
+places, switch to round 13's runner-up zfsunlock, or to round 14's runners-up.
 
 Facts checked for packparity (2026-10-22), useful for any restic tool:
 - restic 0.18.1 and rest-server 0.14.0 write every file under a temporary

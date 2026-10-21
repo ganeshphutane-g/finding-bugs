@@ -3,6 +3,90 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 14 — 2026-10-22 IST
+
+One research pass over about 30 projects' issue trackers (sorted by 👍), plus
+repository, PR and web searches; the pick's numbers re-checked. "seen" means
+in a GitHub search result on 2026-10-21/22; "web" means a web-search summary
+only. Issue threads could not be read.
+
+### Chosen: wgresolve, keep WireGuard peers with dynamic-DNS endpoints connected (project #13)
+
+A small daemon (wgctrl): when a peer's handshake goes stale or the DNS TTL
+runs out, it resolves the endpoint's name again and sets the new address.
+Names come from wg-quick confs, systemd-networkd `.netdev` files or its own
+config. It also keeps full-tunnel host routes right, resolves outside the
+tunnel, prefers A or AAAA as configured, and has /metrics.
+
+**Demand:**
+- systemd#9911 "networkd WireGuard netdev: re-resolve DNS peer names every
+  now and then (based on DNS TTL)": 51 👍, open since 2018-08, updated
+  2025-12-16 (seen);
+- a 2022 WireGuard mailing-list request "Configurable Re-Resolving of DNS
+  Endpoints" (web);
+- forum threads on Netgate, OpenWrt (stale host routes in full-tunnel
+  setups), MikroTik, Keenetic, GL.iNet and Teltonika (web);
+- six small home-made attempts, 0–1★, the newest from 2026-10-21 (seen).
+
+**Upstream:** systemd PR #21562 "network: wireguard: re-resolve endpoints
+periodically" is an open draft since 2021-11, last updated 2026-04-28 (seen).
+If it merges, the networkd part loses its point. NetworkManager only waits
+for resolution at activation (to verify).
+
+**Gap:** wireguard-tools' contrib `reresolve-dns.sh` covers wg-quick confs
+only. It needs bash and cron, and ignores TTLs, routes and DNS through the
+tunnel. OpenWrt's watchdog restarts whole interfaces. No maintained daemon
+was found.
+
+**Scores:** 3/3/5/5/4 = **20**. Ties round 13's zfsunlock. Chosen because a
+bug cannot lock anyone out of their data, and CI is straightforward: two
+network namespaces with WireGuard and a DNS server whose record the test
+changes.
+
+**Check before the spec:**
+- what NetworkManager does today;
+- how Debian and Ubuntu ship `reresolve-dns.sh`;
+- that the WireGuard module (or wireguard-go) works in the CI container.
+
+**The other side:**
+- the contrib script is good enough for simple setups;
+- appliances (pfSense, MikroTik), a large part of the forum demand, cannot
+  run it;
+- the networkd PR could merge.
+
+### Runners-up
+
+- **DNS answers into nftables sets:** AdGuardHome#1191 64 👍, #5136 31 👍,
+  unbound#43 15 👍; dnsmasq's `--nftset` and small dnstap tools cover part
+  of it, and why #1191 is open despite AdGuard's ipset option is unclear.
+  Scores 18.
+- **CalDAV calendar published as a secret ICS feed, busy-only:**
+  stalwart#1644 32 👍, #2176 15 👍; Radicale added secret links (2026-04).
+  Scores 18.
+- **Email-to-issue service desk for Gitea/Forgejo:** gitea#6219 50 👍, #6226
+  35 👍; spam and privacy risks. Scores 17.
+- **Rename a Nextcloud user:** nextcloud#5488 73 👍; high data-loss risk and
+  heavy maintenance. Scores 16.
+
+### Rejected in round 14
+
+- AdGuard Home clients by MAC without its DHCP: upstream PR #8248 (NDP) is
+  open.
+- A shell in a service's systemd sandbox: one source (systemd#28163, 37 👍).
+- Already covered:
+  - VPN-container restarts (`depends_on: restart`);
+  - macvlan DHCP (docker-net-dhcp, 239★);
+  - host-to-host image transfer (unregistry, 4,880★);
+  - Tailscale Wake-on-LAN (built in);
+  - GitHub-to-Gitea mirroring (gitea-mirror, 1,495★);
+  - DNS records from labels (dnsweaver);
+  - PhotoPrism-to-Immich migration;
+  - Portainer on Docker 29.
+- Too large or poor fit: rclone Cryptomator, Stalwart webmail, Proxmox
+  service discovery (needs Proxmox in CI), Vault-to-OpenBao (no demand).
+- kumarest re-checked: PR #3854 is still a draft in the 3.1.0 milestone, so
+  it stays set aside.
+
 ## Research round 13 — 2026-10-22 IST
 
 One research pass (GitHub search plus web search), then the pick re-checked.
