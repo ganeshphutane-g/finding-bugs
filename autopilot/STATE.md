@@ -6,13 +6,13 @@ projects/pullwhy/SPEC.md (verified daemon behaviour is in it).
 
 ## Next step
 
-Milestone 1 is done (internal/ref, internal/engine, internal/plan, with tests;
-/info parsing checked against the real daemon). Next: milestone 2,
-internal/probe (DNS, TCP, proxy CONNECT, TLS with system roots plus certs.d
-ca.crt, GET /v2/, the token from WWW-Authenticate, HEAD of the manifest with
-Hub's rate-limit headers; each timed, each against an endpoint of the plan)
-and internal/creds (config.json auths, credsStore, credHelpers via
-docker-credential-<name> get). Then milestones 3-5 as in the spec.
+Milestones 1-2 are done (ref, engine, plan, creds, probe; probe checked live
+against Docker Hub: ping 401, token from auth.docker.io, HEAD with digest and
+rate limit). Next: milestone 3, internal/pull (the --pull timeline from the
+daemon's progress stream: time to first layer, per-layer throughput, stalls
+of 10 s, and the daemon's error classified) and --deep (GET of the manifest
+and index, platform check, a ranged GET of the largest layer following the
+CDN redirect, through the daemon's proxy). Then milestones 4-5.
 
 Test bed facts (2026-10-21):
 - `docker run -d --privileged -e DOCKER_TLS_CERTDIR= docker:dind
