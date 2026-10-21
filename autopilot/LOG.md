@@ -2,6 +2,49 @@
 
 Newest first.
 
+## 2026-10-22 (IST) — run 11
+
+- **Project #11 pullwhy, finished.**
+  - The second review's 18 findings are fixed:
+    - unreadable credentials are now a note;
+    - mirror failures are problems only when they stop the pull;
+    - a working `--pull` turns probe failures into notes;
+    - exit 5 means "could not check";
+    - `--deep` uses per-endpoint credentials;
+    - an unreadable certs.d is reported;
+    - the expected HTTPS failure before a plain-HTTP retry is marked.
+  - The side-by-side e2e suite passed locally on both image stores (678 s),
+    and CI is green at bee622b. Tag commit: 90c49bd.
+- **Research round 13:**
+  - Six candidates scored. **packparity** chosen (21): restic#256 (44 👍),
+    restic#804 (18 👍), borg#225 (43 👍), restic forum par2 threads; no
+    tool exists (0★ attempts only), no upstream PR.
+  - Runners-up: zfsunlock (20), shelfsort (18).
+- **Project #12 packparity, from spec to v1.0.0 in this run.**
+  - **Verified first:** restic 0.18.1 and rest-server 0.14.0 write files
+    under temporary names and rename them; files are named by their SHA-256.
+  - **Built:**
+    - the parity format (interleaved block groups, per-block hashes);
+    - sync, check, repair and status;
+    - systemd units;
+    - a README with a real run.
+  - **Tests:** end to end with real restic and rest-server. Damage in packs,
+    index, snapshots and config is found and repaired, then `restic check
+    --read-data` passes.
+  - **Two full reviews in parallel**, about 30 distinct findings, all
+    addressed. The worst:
+    - `repair config` with another repository's parity overwrote its config
+      (now refused by every command);
+    - damaged parity could not be fixed from the CLI;
+    - a routine `forget --prune` tripped the mass-removal guard and stopped
+      coverage;
+    - crafted parity files crashed every command (a fuzz test now covers
+      this);
+    - an unmounted parity disk was silently started over (now `--init`).
+- **Research round 14** started (agent running).
+- The sandbox disk filled up once; it was cleared by removing scratch copies
+  and stopped containers.
+
 ## 2026-10-21 (IST) — run 10
 
 - Project #10 **xffdns**, from spec to v1.0.0 in one run.

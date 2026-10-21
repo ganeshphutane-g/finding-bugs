@@ -1,30 +1,28 @@
 # State
 
-Current project: #12, packparity (Reed-Solomon repair data for restic
-repositories; the name is free on GitHub, checked 2026-10-22). Phase: review.
-Spec: projects/packparity/SPEC.md.
+Current project: none; research round 14 is under way (an agent was started
+at 21:45 UTC on 2026-10-21; its report was not recorded yet).
 
 ## Next step
 
-packparity is built: parity format, sync, check, repair, status, CLI, systemd
-units, README with a real run, CHANGELOG. End-to-end tests with real restic
-0.18.1 and rest-server 0.14.0 pass locally (damage in packs, index,
-snapshots and config found and repaired, then `restic check --read-data`
-passes; beyond reach; prune; guards; rest-server; sync during a backup).
-Two full reviews were started at 21:10 UTC (correctness and data safety;
-security, operations and usability). Then: fix every finding, CI green, mark
-done (owner tag packparity/v1.0.0), research round 14.
+Research round 14: score at least 5 candidates (rules in AUTOPILOT.md), skip
+everything in IDEAS.md, verify the top pick's numbers and upstream PRs
+yourself, record the round in IDEAS.md, then start project #13 with its
+SPEC.md. Round 13's runners-up (zfsunlock 20, shelfsort 18) stay candidates.
 
-Facts checked for packparity (2026-10-22):
+Facts checked for packparity (2026-10-22), useful for any restic tool:
 - restic 0.18.1 and rest-server 0.14.0 write every file under a temporary
   name (`<id>-tmp-…`) and rename; files are named by the SHA-256 of their
   contents (config is not); restic makes them read-only (0400).
 - Install for tests: `GOBIN=/tmp/restic-bin go install
   github.com/restic/restic/cmd/restic@v0.18.1` and
   `.../rest-server/cmd/rest-server@v0.14.0` (the Go proxy works here).
-- Windows does not build (flock, Stat_t): unix only, documented.
+- A routine `restic forget --prune` rewrites every index file and repacks
+  small packs: guards must not count removals.
 
-pullwhy (#11) is finished: see Finished projects.
+Disk: this sandbox's disk filled up once (scratch copies from reviews plus
+Docker leftovers). `docker container prune -f; docker volume prune -f` and
+clearing the scratchpad freed enough.
 
 Local Hub access from dind: this sandbox intercepts TLS, so mount the CA
 bundle: PULLWHY_DIND_CA=/tmp/claude-0/ca-bundle.crt (a 0644 copy of
@@ -275,6 +273,27 @@ Actions as codeberg.org/forgejo/forgejo:16.
     - **Owner checks before going public:** README; run it against your own
       daemon and a registry you know is slow or broken.
 
+12. **packparity** (projects/packparity, v1.0.0 at commit 89cf92f). Reed-Solomon
+    repair data for restic repositories (restic#256, 44 👍, open since 2015;
+    restic#804; borg#225).
+    - **How:** parity for every repository file in a separate directory,
+      in interleaved 4 KiB block groups (10% by default: any 10 bad blocks
+      per group, or a 410-block run in a 16 MiB pack). `sync` covers new
+      files after checking them against their SHA-256 names and retires
+      parity for pruned ones; `check` reads each file once a month, spread;
+      `repair` rebuilds, proves the result by its name, keeps the damaged
+      copy and puts the file back through the folder's handle; `status`.
+    - **Guards:** not a repository, a parity directory not set up (`--init`),
+      another repository's parity, an emptied data/, index/ or keys/, a
+      changed config, crafted parity files (fuzzed), a waiting lock.
+    - **Reviews:** two full reviews (correctness and data safety; security
+      and operations), about 30 distinct findings, all fixed or documented
+      as limits (memory, NFS locks, repair during a prune), with tests.
+    - **Tests:** end to end with real restic 0.18.1 and rest-server 0.14.0,
+      locally and in CI.
+    - **Owner checks before going public:** README; run `sync --init` on a
+      copy of a real repository, damage a pack copy, and repair it.
+
 ## Blockers for the owner
 
 - The finding-bugs repo itself is PUBLIC (seen 2026-10-15). Everything in it
@@ -296,3 +315,10 @@ Actions as codeberg.org/forgejo/forgejo:16.
   To mark the release, create tag `docker-mop/v1.0.0` on commit 50c1a1e from the
   GitHub web UI (Releases > Draft a new release), or let the run tag it in the new
   repo once it exists.
+- Release tags still to create (GitHub web UI), at the commits in Finished
+  projects: `bucketmove/v1.0.0`, `pushdir/v1.0.0` (9d521f9), `pgcarry/v1.0.0`
+  (df3dbb4), `issuemove/v1.0.0` (e7c8051), `kumafile/v1.0.0` (aa90445),
+  `docker-edit/v1.0.0` (cdc7019), `pushprobe/v1.0.0` (0e881d2),
+  `alertlines/v1.0.0` (5e2f87c), `xffdns/v1.0.0` (e52932e), `pullwhy/v1.0.0`
+  (90c49bd) and `packparity/v1.0.0` (89cf92f), plus `docker-mop/v1.0.0`
+  (50c1a1e) if not yet done.
