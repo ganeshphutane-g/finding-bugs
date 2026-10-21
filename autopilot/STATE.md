@@ -6,13 +6,18 @@ projects/pullwhy/SPEC.md (verified daemon behaviour is in it).
 
 ## Next step
 
-Milestones 1-4 are done (diagnose, report, cli, main.go). `pullwhy --pull
-alpine:3` against the real daemon with a dead mirror named the mirror, the
-containerd cost and the fix (exit 4). Next: tests for internal/cli and
-internal/report (a fake daemon on a unix socket plus fake registries), then
-milestone 5: side-by-side tests in docker:dind scratch daemons
-(PULLWHY_INTEGRATION=1) for the spec's scenarios on both stores, CI workflow,
-Dockerfile, README, CHANGELOG, LICENSE, two full reviews.
+Milestones 1-5 are built; pullwhy is in review. Side-by-side tests pass
+locally on both image stores (working, plain HTTP, private CA, basic auth,
+missing tag, missing platform, proxy up/down, stale mirror, dead mirror: the
+real pull took 3 min 32 s on containerd, 16 s on classic). CI run 1 of
+.github/workflows/pullwhy.yml was running at 19:56 UTC. README/CHANGELOG are
+written (README waits for the real dead-mirror output, captured with the
+fixed timeline). Then: fix review findings, a second review, mark done (owner
+tag pullwhy/v1.0.0), start research round 13.
+
+Local Hub access from dind: this sandbox intercepts TLS, so mount the CA
+bundle: PULLWHY_DIND_CA=/tmp/claude-0/ca-bundle.crt (a 0644 copy of
+/root/.ccr/ca-bundle.crt). Never publish its issuer name.
 
 Test bed facts (2026-10-21):
 - `docker run -d --privileged -e DOCKER_TLS_CERTDIR= docker:dind

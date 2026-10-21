@@ -173,8 +173,10 @@ func (r *Report) Text(w io.Writer) {
 					fmt.Fprintf(w, " (longest wait %s)", ms(l.Longest))
 				}
 				fmt.Fprintln(w)
-			default:
+			case l.Done > 0:
 				fmt.Fprintf(w, "   layer     %s done at %s\n", l.ID, ms(l.Done))
+			default:
+				fmt.Fprintf(w, "   layer     %s (no progress reported)\n", l.ID)
 			}
 		}
 		if t.Error != "" {

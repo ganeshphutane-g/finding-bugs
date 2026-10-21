@@ -131,6 +131,7 @@ func Run(ctx context.Context, p Puller, name, reference, platform, auth string, 
 		if !seenLayer {
 			seenLayer = true
 			t.FirstLayer = at.Sub(start)
+			phase = "before the downloads began"
 		}
 		switch e.Status {
 		case "Already exists":
@@ -156,6 +157,7 @@ func Run(ctx context.Context, p Puller, name, reference, platform, auth string, 
 			phase = "extracting"
 		case "Pull complete":
 			l.Done = at.Sub(start)
+			phase = "after the layers were extracted"
 		}
 	})
 	t.Took = now().Sub(start)

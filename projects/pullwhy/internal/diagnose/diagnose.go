@@ -155,7 +155,7 @@ func mirrorFinding(in Input, res *probe.Result, fallbackWorks bool) Finding {
 		f.Title = "The mirror " + res.Base + " does not answer, and the daemon waits for it on every pull"
 		if in.Plan.Containerd {
 			f.Evidence = append(f.Evidence, "with the containerd image store, the daemon waits about 30 s for it on each request of a pull "+
-				"before it tries the next endpoint (manifest, index, each layer...); a pull of alpine:3 took 2 min instead of 1 s in a test")
+				"before it tries the next endpoint (manifest, index, each layer...); in tests a pull of alpine:3 took 2 to 3.5 min instead of 1 s")
 		} else {
 			f.Evidence = append(f.Evidence, "with the classic image store, the daemon waits about 15 s for it once per pull before it tries the next endpoint")
 		}
@@ -293,9 +293,11 @@ func pullFindings(in Input, t *pull.Timeline, used *probe.Result) []Finding {
 		if ph == "before the first layer" {
 			f.Kind = "slow-start"
 			f.Title = fmt.Sprintf("The daemon spent %s resolving the image before any layer", took.Round(time.Second))
+		}
+		if ph != "downloading" {
 			for _, res := range in.Results {
 				if res.Endpoint.Mirror && res.Kind == probe.KindTimeout {
-					f.Evidence = append(f.Evidence, "that is the time spent waiting for the mirror "+res.Base)
+					f.Evidence = append(f.Evidence, "likely time spent waiting for the mirror "+res.Base)
 				}
 			}
 		}
