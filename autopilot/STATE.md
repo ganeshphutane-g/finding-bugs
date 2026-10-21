@@ -6,15 +6,13 @@ projects/pullwhy/SPEC.md (verified daemon behaviour is in it).
 
 ## Next step
 
-Milestones 1-3 are done: ref, engine, plan, creds, probe (+ deep), pull
-timeline. Live checks against Docker Hub passed (probe, deep with the
-307 to production.cloudfront.docker.com, a real busybox pull through the
-daemon's stream). Next: milestone 4, internal/diagnose (rules from the plan,
-probe results, deep and the pull timeline to causes with evidence and fixes,
-store-aware: 30 s per request for a dead mirror on containerd, one 15 s wait
-on classic), internal/report (text and --json), internal/cli and main.go
-(flags --pull, --deep, --platform, --timeout, --json; exit codes 0/1/2/3/4).
-Then milestone 5 (dind side-by-side tests, CI, docs, two reviews).
+Milestones 1-4 are done (diagnose, report, cli, main.go). `pullwhy --pull
+alpine:3` against the real daemon with a dead mirror named the mirror, the
+containerd cost and the fix (exit 4). Next: tests for internal/cli and
+internal/report (a fake daemon on a unix socket plus fake registries), then
+milestone 5: side-by-side tests in docker:dind scratch daemons
+(PULLWHY_INTEGRATION=1) for the spec's scenarios on both stores, CI workflow,
+Dockerfile, README, CHANGELOG, LICENSE, two full reviews.
 
 Test bed facts (2026-10-21):
 - `docker run -d --privileged -e DOCKER_TLS_CERTDIR= docker:dind

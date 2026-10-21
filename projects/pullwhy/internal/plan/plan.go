@@ -60,8 +60,7 @@ type Resolver func(ctx context.Context, host string) ([]netip.Addr, error)
 // Make builds the plan for r from the daemon's /info.
 func Make(ctx context.Context, r *ref.Ref, info *engine.Info, lookup Resolver, local bool) (*Plan, error) {
 	p := &Plan{Ref: r, Containerd: info.ContainerdStore()}
-	pc := &httpproxy.Config{HTTPProxy: info.HTTPProxy, HTTPSProxy: info.HTTPSProxy, NoProxy: info.NoProxy}
-	proxy := pc.ProxyFunc()
+	proxy := ProxyFunc(info)
 	var cidrs []netip.Prefix
 	for _, c := range info.RegistryConfig.InsecureRegistryCIDRs {
 		if pfx, err := netip.ParsePrefix(c); err == nil {
@@ -142,6 +141,13 @@ func inCIDRs(ctx context.Context, host string, cidrs []netip.Prefix, lookup Reso
 		}
 	}
 	return ""
+}
+
+// ProxyFunc picks the daemon's proxy for a URL, by the same rules as the
+// daemon (Go's proxy environment: never for localhost and loopback).
+func ProxyFunc(info *engine.Info) func(*url.URL) (*url.URL, error) {
+	pc := &httpproxy.Config{HTTPProxy: info.HTTPProxy, HTTPSProxy: info.HTTPSProxy, NoProxy: info.NoProxy}
+	return pc.ProxyFunc()
 }
 
 // DefaultResolver is the system's.
