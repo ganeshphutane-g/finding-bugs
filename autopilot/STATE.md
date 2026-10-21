@@ -1,33 +1,30 @@
 # State
 
 Current project: #11, pullwhy ("why is my docker pull slow or failing?";
-the name is free on GitHub, checked 2026-10-21; "pulltrace" is taken). Phase:
-spec. Research round 12 is in IDEAS.md.
+the name is free on GitHub, checked 2026-10-21). Phase: build. Spec:
+projects/pullwhy/SPEC.md (verified daemon behaviour is in it).
 
 ## Next step
 
-Write projects/pullwhy/SPEC.md. Verified 2026-10-21: an anonymous HEAD of
-registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest (token from
-auth.docker.io, scope repository:...:pull) returns `ratelimit-limit:
-100;w=3600`, `ratelimit-remaining: 8;w=3600` (this sandbox shares its egress
-IP), the same as `x-ratelimit-*`, and `docker-ratelimit-source: <IP>`. So it is
-100 an hour per IP without login, not 10 as a search summary said. Still to
-verify:
-- the limit and headers with a logged-in free account (no account here: say
-  so in the spec);
-- how dockerd resolves a pull on both image stores: registry-mirrors (docker.io
-  only, tried in order, fallback to the registry), insecure-registries, the
-  daemon's proxy settings (daemon.json "proxies" and the service environment),
-  and whether the containerd store also reads /etc/containerd/certs.d
-  (hosts.toml) or /etc/docker/certs.d;
-- where the CLI's credentials come from (config.json auths, credsStore,
-  credHelpers) and how they reach the daemon (X-Registry-Auth);
-- a test bed: registry:2 with htpasswd auth and TLS, registry:2 as a
-  pull-through mirror of a local upstream, a proxy (tinyproxy or squid) in
-  front, with `docker pull` side by side.
+Milestone 1: internal/engine (Engine API over the socket: /info, /version, the
+/images/create stream), the daemon context and internal/plan (mirrors for
+docker.io, insecure registries and CIDRs, proxies and NoProxy, the image
+store). Then milestones 2-5 as in the spec.
 
-Then scope v1 (a read-only CLI: `pullwhy IMAGE` replays the resolution and
-timings and names the likely cause; `--json`; never changes daemon config).
+Test bed facts (2026-10-21):
+- `docker run -d --privileged -e DOCKER_TLS_CERTDIR= docker:dind
+  --registry-mirror=...` works here (29.9.2, containerd store). Run pullwhy
+  inside it (`docker cp` the static binary) so it shares the daemon's network
+  and socket. The host's own address is 192.0.2.2 here; registry:2 is cached.
+- An unreachable mirror (10.255.255.1) costs 30 s per fetch on the containerd
+  store (alpine:3 took 2 min 1 s) and one 15 s /v2/ timeout on the classic
+  store (16 s). A refused mirror falls back at once.
+- The containerd store reads /etc/docker/certs.d/<host:port>/ca.crt.
+- With daemon.json proxies, dockerd CONNECTs auth.docker.io,
+  registry-1.docker.io and production.cloudfront.docker.com (blobs).
+- This sandbox has several egress IPs, so Hub's remaining count jumps; avoid
+  spending Hub pulls (each docker:dind / image pull costs one).
+- Restore /etc/docker/daemon.json (none by default) after experiments.
 
 Tags: every Makefile takes its version from `<project>/vX.Y.Z` tags only, so the
 owner's v1.0.0 tags should be named that way (docker-mop/v1.0.0 already is).
