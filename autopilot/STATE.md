@@ -6,10 +6,13 @@ projects/pullwhy/SPEC.md (verified daemon behaviour is in it).
 
 ## Next step
 
-Milestone 1: internal/engine (Engine API over the socket: /info, /version, the
-/images/create stream), the daemon context and internal/plan (mirrors for
-docker.io, insecure registries and CIDRs, proxies and NoProxy, the image
-store). Then milestones 2-5 as in the spec.
+Milestone 1 is done (internal/ref, internal/engine, internal/plan, with tests;
+/info parsing checked against the real daemon). Next: milestone 2,
+internal/probe (DNS, TCP, proxy CONNECT, TLS with system roots plus certs.d
+ca.crt, GET /v2/, the token from WWW-Authenticate, HEAD of the manifest with
+Hub's rate-limit headers; each timed, each against an endpoint of the plan)
+and internal/creds (config.json auths, credsStore, credHelpers via
+docker-credential-<name> get). Then milestones 3-5 as in the spec.
 
 Test bed facts (2026-10-21):
 - `docker run -d --privileged -e DOCKER_TLS_CERTDIR= docker:dind
