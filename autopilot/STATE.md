@@ -6,13 +6,15 @@ projects/pullwhy/SPEC.md (verified daemon behaviour is in it).
 
 ## Next step
 
-Milestones 1-2 are done (ref, engine, plan, creds, probe; probe checked live
-against Docker Hub: ping 401, token from auth.docker.io, HEAD with digest and
-rate limit). Next: milestone 3, internal/pull (the --pull timeline from the
-daemon's progress stream: time to first layer, per-layer throughput, stalls
-of 10 s, and the daemon's error classified) and --deep (GET of the manifest
-and index, platform check, a ranged GET of the largest layer following the
-CDN redirect, through the daemon's proxy). Then milestones 4-5.
+Milestones 1-3 are done: ref, engine, plan, creds, probe (+ deep), pull
+timeline. Live checks against Docker Hub passed (probe, deep with the
+307 to production.cloudfront.docker.com, a real busybox pull through the
+daemon's stream). Next: milestone 4, internal/diagnose (rules from the plan,
+probe results, deep and the pull timeline to causes with evidence and fixes,
+store-aware: 30 s per request for a dead mirror on containerd, one 15 s wait
+on classic), internal/report (text and --json), internal/cli and main.go
+(flags --pull, --deep, --platform, --timeout, --json; exit codes 0/1/2/3/4).
+Then milestone 5 (dind side-by-side tests, CI, docs, two reviews).
 
 Test bed facts (2026-10-21):
 - `docker run -d --privileged -e DOCKER_TLS_CERTDIR= docker:dind
