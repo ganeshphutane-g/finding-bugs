@@ -34,7 +34,7 @@ func pp(args ...string) (string, int) {
 func TestExitCodes(t *testing.T) {
 	repo, pack := repoDir(t)
 	par := filepath.Join(t.TempDir(), "p")
-	if out, code := pp("sync", repo, par); code != 0 || !strings.Contains(out, "2 new files covered") {
+	if out, code := pp("sync", "--init", repo, par); code != 0 || !strings.Contains(out, "2 new files covered") {
 		t.Fatalf("%d %s", code, out)
 	}
 	// Flags after the positional arguments work too.

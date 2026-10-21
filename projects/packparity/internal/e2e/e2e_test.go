@@ -109,7 +109,8 @@ func (e *env) write(name string, n int) {
 // files lists the repository's files in a directory, largest first.
 func (e *env) files(dir string) []string {
 	var out []string
-	filepath.Walk(filepath.Join(e.repo, dir), func(p string, info os.FileInfo, err error) error {
+	root, _ := filepath.EvalSymlinks(filepath.Join(e.repo, dir))
+	filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err == nil && !info.IsDir() {
 			out = append(out, p)
 		}
@@ -165,7 +166,7 @@ func setup(t *testing.T, e *env) {
 	e.write("a.bin", 40<<20)
 	e.write("b.bin", 3<<20)
 	e.mustRestic("backup", e.src)
-	out := e.mustPP(0, "sync")
+	out := e.mustPP(0, "sync", "--init")
 	if !strings.Contains(out, "new files covered") {
 		t.Fatal(out)
 	}
@@ -275,35 +276,101 @@ func TestPruneAndGuards(t *testing.T) {
 		t.Fatalf("%d %s", code, buf.String())
 	}
 
-	// Another repository: its config is not the one the parity has.
+	// Another repository: refused (they share no files).
 	other := newEnv(t)
 	other.mustRestic("init")
 	other.write("a.bin", 1<<20)
 	other.mustRestic("backup", other.src)
 	other.parity = e.parity
-	out = other.mustPP(3, "sync")
-	if !strings.Contains(out, "CONFIG CHANGED") {
-		t.Fatal(out)
+	out, code := other.pp("sync")
+	if code != 1 || !strings.Contains(out, "another repository") {
+		t.Fatalf("%d %s", code, out)
+	}
+	if out, code := other.pp("repair", "config"); code != 1 || !strings.Contains(out, "another repository") {
+		t.Fatalf("%d %s", code, out)
 	}
 	e.mustPP(0, "sync") // the right one still matches
 
-	// Many files gone at once: refused without --allow-mass-removal.
+	// A parity directory that is not there (an unmounted disk) is not
+	// started again without --init.
+	buf.Reset()
+	if code := cli.Main([]string{"sync", e.repo, filepath.Join(t.TempDir(), "mnt", "parity")}, &buf, &buf); code != 1 || !strings.Contains(buf.String(), "--init") {
+		t.Fatalf("%d %s", code, buf.String())
+	}
+
+	// Many backups, then a forget --prune that rewrites the index: retired
+	// as usual.
 	for i := 0; i < 30; i++ {
 		e.write(fmt.Sprintf("s%d.bin", i), 4<<10)
 		e.mustRestic("backup", e.src, "--tag", fmt.Sprint(i))
 	}
 	e.mustPP(0, "sync")
-	// Snapshots and index files gone: more than a quarter of the files.
-	for _, d := range []string{"snapshots", "index"} {
-		for _, s := range e.files(d)[:28] {
-			os.Remove(s)
+	e.mustRestic("forget", "--keep-last", "3", "--prune")
+	if out := e.mustPP(0, "sync"); strings.Contains(out, " 0 retired") {
+		t.Fatal(out)
+	}
+	e.mustRestic("check")
+	// index/ emptied: held back (exit 3), nothing retired.
+	idx := filepath.Join(e.repo, "index")
+	os.Rename(idx, idx+".away")
+	os.Mkdir(idx, 0o700)
+	out = e.mustPP(3, "sync")
+	if !strings.Contains(out, "HELD BACK: index/") {
+		t.Fatal(out)
+	}
+	os.Remove(idx)
+	os.Rename(idx+".away", idx)
+	if out := e.mustPP(0, "sync"); !strings.Contains(out, " 0 retired") {
+		t.Fatal(out)
+	}
+	e.mustPP(0, "check", "--read", "all")
+}
+
+func TestSymlinkedData(t *testing.T) {
+	// data/ on another disk, linked in: covered and repaired like any other.
+	e := newEnv(t)
+	e.mustRestic("init")
+	e.write("a.bin", 20<<20)
+	e.mustRestic("backup", e.src)
+	away := filepath.Join(t.TempDir(), "data")
+	os.Rename(filepath.Join(e.repo, "data"), away)
+	os.Symlink(away, filepath.Join(e.repo, "data"))
+	e.mustRestic("check")
+	e.mustPP(0, "sync", "--init")
+	st := e.mustPP(0, "status")
+	if !strings.Contains(st, "parity 2.") {
+		t.Logf("%s", st)
+	}
+	pack := e.files("data")[0]
+	damage(t, pack, 4096, make([]byte, 8192))
+	e.mustPP(3, "check", "--read", "all")
+	e.mustPP(0, "repair")
+	e.mustRestic("check", "--read-data")
+}
+
+func TestParityDamage(t *testing.T) {
+	e := newEnv(t)
+	setup(t, e)
+	// A pack's parity loses a block, and config's parity its header.
+	var par string
+	filepath.Walk(filepath.Join(e.parity, "data"), func(p string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && par == "" {
+			par = p
 		}
+		return nil
+	})
+	damage(t, par, -100, []byte("xx"))
+	damage(t, filepath.Join(e.parity, "config.par"), 12, []byte("x"))
+	out := e.mustPP(3, "check", "--read", "all")
+	if strings.Count(out, "PARITY-DAMAGED") != 2 {
+		t.Fatal(out)
 	}
-	out, code := e.pp("sync")
-	if code != 1 || !strings.Contains(out, "--allow-mass-removal") {
-		t.Fatalf("%d %s", code, out)
+	out = e.mustPP(0, "repair")
+	if strings.Count(out, "parity-remade") != 2 {
+		t.Fatal(out)
 	}
-	e.mustPP(0, "sync", "--allow-mass-removal")
+	e.mustPP(0, "check", "--read", "all")
+	e.mustPP(0, "sync")
 }
 
 func TestConfigRepair(t *testing.T) {

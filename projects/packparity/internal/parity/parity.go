@@ -55,6 +55,9 @@ func NewLayout(n int64, p Params) (Layout, error) {
 	if p.BlockSize < 64 || p.BlockSize%64 != 0 || p.BlockSize > 1<<20 {
 		return Layout{}, fmt.Errorf("block size %d: it must be a multiple of 64, up to 1 MiB", p.BlockSize)
 	}
+	if n < 0 || n > MaxFileSize {
+		return Layout{}, fmt.Errorf("a file of %d bytes is beyond packparity's limit", n)
+	}
 	l := Layout{FileSize: n, BlockSize: p.BlockSize}
 	if n == 0 {
 		return l, nil
@@ -75,6 +78,43 @@ func (l Layout) block(i int) (group, pos int) { return i % l.Groups, i / l.Group
 
 // index is the data block at a group position (>= Blocks: a zero pad block).
 func (l Layout) index(group, pos int) int { return pos*l.Groups + group }
+
+// MaxFileSize is the largest file parity is made for (restic's packs are
+// at most 128 MiB; this leaves room and keeps the size math in range).
+const MaxFileSize = 1 << 40
+
+// validate checks a parsed layout is one NewLayout could have made, so no
+// size computed from it can overflow or ask for absurd memory.
+func (l *Layout) validate() error {
+	if l.FileSize < 0 || l.FileSize > MaxFileSize {
+		return fmt.Errorf("its file size %d is impossible", l.FileSize)
+	}
+	if l.FileSize == 0 {
+		if l.Groups != 0 || l.K != 0 || l.M != 0 {
+			return errors.New("its layout does not fit an empty file")
+		}
+		return nil
+	}
+	if l.BlockSize < 64 || l.BlockSize > 1<<20 || l.BlockSize%64 != 0 {
+		return fmt.Errorf("its block size %d is impossible", l.BlockSize)
+	}
+	l.Blocks = int((l.FileSize + int64(l.BlockSize) - 1) / int64(l.BlockSize))
+	if l.Groups != (l.Blocks+GroupData-1)/GroupData || l.K != (l.Blocks+l.Groups-1)/l.Groups {
+		return errors.New("its layout does not fit the file size")
+	}
+	if l.M < 1 || l.M > l.K || l.K+l.M > 256 {
+		return fmt.Errorf("its parity count %d is impossible", l.M)
+	}
+	return nil
+}
+
+// Redundancy is the layout's parity per data, in percent.
+func (l Layout) Redundancy() int {
+	if l.K == 0 {
+		return 10
+	}
+	return max(1, min(100, l.M*100/l.K))
+}
 
 // ParitySize is the size of the parity file.
 func (l Layout) ParitySize() int64 {
@@ -225,15 +265,8 @@ func Parse(b []byte) (*File, error) {
 	f.K = int(le.Uint16(b[28:]))
 	f.M = int(le.Uint16(b[30:]))
 	copy(f.SHA256[:], b[32:64])
-	if f.FileSize > 0 {
-		if f.BlockSize < 64 || f.Groups < 1 || f.K < 1 || f.M < 1 || f.K+f.M > 256 {
-			return nil, fmt.Errorf("%w: its layout is impossible", ErrDamaged)
-		}
-		f.Blocks = int((f.FileSize + int64(f.BlockSize) - 1) / int64(f.BlockSize))
-		// K must be ceil(Blocks/Groups), as NewLayout makes it.
-		if f.Groups > f.Blocks || f.Blocks > f.Groups*f.K || f.Blocks <= f.Groups*(f.K-1) {
-			return nil, fmt.Errorf("%w: its layout does not fit the file size", ErrDamaged)
-		}
+	if err := f.validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDamaged, err)
 	}
 	if int64(len(b)) != f.ParitySize() {
 		return nil, fmt.Errorf("%w: it is %d bytes, not %d", ErrDamaged, len(b), f.ParitySize())
@@ -272,8 +305,11 @@ type Report struct {
 	BadBlocks []int
 	// Repairable: every group has enough good blocks to rebuild.
 	Repairable bool
-	// WorstGroup is the most bad blocks in one group, against M.
+	// WorstGroup is the most bad data blocks in one group, and WorstLost
+	// the most blocks lost in one group (bad data plus bad parity), against
+	// M.
 	WorstGroup int
+	WorstLost  int
 	// SizeWrong: the file is not the size it was.
 	SizeWrong bool
 }
@@ -302,9 +338,8 @@ func (f *File) Check(data []byte) Report {
 				lost++
 			}
 		}
-		if bad[g] > r.WorstGroup {
-			r.WorstGroup = bad[g]
-		}
+		r.WorstGroup = max(r.WorstGroup, bad[g])
+		r.WorstLost = max(r.WorstLost, lost)
 		if lost > f.M {
 			r.Repairable = false
 		}

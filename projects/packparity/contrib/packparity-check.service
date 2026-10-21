@@ -1,13 +1,20 @@
 [Unit]
 Description=packparity: read what is due and look for damage
 
+# Set these to your two paths, so the unit waits for their disks and never
+# runs against an unmounted one:
+# RequiresMountsFor=/srv/restic /mnt/second-disk
+
 [Service]
+# If the repository is not root's, run as its owner (repair keeps owners):
+# User=restic
 Type=oneshot
 EnvironmentFile=/etc/packparity.env
 ExecStart=/usr/local/bin/packparity check ${REPO} ${PARITY}
 Nice=10
 IOSchedulingClass=idle
 ProtectSystem=full
+# PARITY or REPO under /home? Remove this line.
 ProtectHome=read-only
 PrivateTmp=yes
 NoNewPrivileges=yes

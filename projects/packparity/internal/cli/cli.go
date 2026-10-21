@@ -3,9 +3,11 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -32,9 +34,10 @@ and proven correct by their SHA-256 names.
 
 Usage:
   packparity sync   [flags] REPO PARITY   make parity for new files, retire it for gone ones
+                                          (--init the first time)
   packparity check  [flags] REPO PARITY   read files and find damage
   packparity repair [flags] REPO PARITY [NAME|ID...]   rebuild damaged files
-  packparity status [flags] REPO PARITY   coverage and last runs
+  packparity status [flags] REPO PARITY   coverage, damage known, last runs
   packparity version
 
 REPO is the repository's directory (a local repository, rest-server's folder
@@ -42,8 +45,8 @@ for it, or a mounted share). PARITY is a directory, best on another disk.
 
 Run "packparity COMMAND -h" for a command's flags.
 
-Exit codes: 0 fine, 1 error, 2 bad usage, 3 damage that repair can fix (or a
-changed config), 4 damage that cannot be repaired.
+Exit codes: 0 fine, 1 error, 2 bad usage, 3 damage that repair can fix, or
+something to settle (a changed config, a repository folder emptied), 4 damage that cannot be repaired from parity.
 `
 
 // Main runs packparity and returns its exit code.
@@ -57,7 +60,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return exitOK
 	case "version", "--version":
-		fmt.Fprintln(stdout, "packparity", Version)
+		fmt.Fprintln(stdout, "packparity", version())
 		return exitOK
 	case "sync":
 		return cmdSync(args[1:], stdout, stderr)
@@ -90,6 +93,9 @@ func parse(fs *flag.FlagSet, args []string) ([]string, error) {
 		if err := fs.Parse(args); err != nil {
 			return nil, err
 		}
+		if len(fs.Args()) > 0 && fs.Args()[0] == "--" {
+			return append(pos, fs.Args()[1:]...), nil
+		}
 		args = fs.Args()
 		if len(args) == 0 {
 			return pos, nil
@@ -97,6 +103,26 @@ func parse(fs *flag.FlagSet, args []string) ([]string, error) {
 		pos = append(pos, args[0])
 		args = args[1:]
 	}
+}
+
+// version is the build's version: set by make, else from Go's build
+// information (go install), else "dev".
+func version() string {
+	if Version != "dev" {
+		return Version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return Version
+}
+
+// usageCode is the exit code for a flag error: 0 for -h.
+func usageCode(err error) int {
+	if errors.Is(err, flag.ErrHelp) {
+		return exitOK
+	}
+	return exitUsage
 }
 
 func fail(stderr io.Writer, err error) int {
@@ -119,16 +145,29 @@ func days(s string) (time.Duration, error) {
 	return d, nil
 }
 
+func waitFlag(fs *flag.FlagSet) *time.Duration {
+	return fs.Duration("wait", time.Hour, "how long to wait for another packparity run on the same PARITY to finish")
+}
+
+func printJSON(stdout io.Writer, v any) {
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	enc.Encode(v)
+}
+
 func cmdSync(args []string, stdout, stderr io.Writer) int {
 	fs := flags("sync", stderr, "sync [flags] REPO PARITY")
+	initDir := fs.Bool("init", false, "start a new parity directory (it must be missing or empty)")
 	red := fs.Int("redundancy", parity.Defaults.Redundancy, "parity per data for new files, in percent (1-100)")
 	keep := fs.String("keep-removed", "7d", "how long to keep parity for files that are gone")
-	mass := fs.Bool("allow-mass-removal", false, "retire parity even when more than a quarter of the files are gone")
+	mass := fs.Bool("allow-mass-removal", false, "retire parity even when data/, index/ or keys/ has none of its files left")
 	accept := fs.Bool("accept-config", false, "take a changed config as the new one (after restic migrate)")
 	quiet := fs.Bool("q", false, "print only problems")
+	asJSON := fs.Bool("json", false, "print the result as JSON")
+	wait := waitFlag(fs)
 	pos, err := parse(fs, args)
 	if err != nil {
-		return exitUsage
+		return usageCode(err)
 	}
 	if len(pos) != 2 {
 		fs.Usage()
@@ -140,11 +179,11 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if kr == 0 {
-		kr = time.Nanosecond // 0d: retire at once
+		kr = time.Nanosecond // 0d: purge at once
 	}
 	o := run.Options{Repo: pos[0], Parity: pos[1], Params: parity.Params{Redundancy: *red, BlockSize: parity.DefaultBlockSize},
-		KeepRemoved: kr, AllowMassRemoval: *mass, AcceptConfig: *accept}
-	if !*quiet {
+		Init: *initDir, Wait: *wait, KeepRemoved: kr, AllowMassRemoval: *mass, AcceptConfig: *accept}
+	if !*quiet && !*asJSON {
 		o.Out = stdout
 	}
 	if _, err := parity.NewLayout(1, o.Params); err != nil {
@@ -156,38 +195,56 @@ func cmdSync(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	code := exitOK
+	if len(res.Damaged) > 0 {
+		code = exitUnrepairable
+	} else if res.ConfigChanged || res.HeldBack > 0 {
+		code = exitRepairable
+	}
+	if *asJSON {
+		printJSON(stdout, res)
+		return code
+	}
 	if !*quiet {
 		fmt.Fprintf(stdout, "sync: %d new files covered (%s), %d retired, %d brought back, %d purged, in %s\n",
 			res.Added, run.Size(res.AddedBytes), res.Removed, res.Restored, res.Purged, time.Since(start).Round(time.Millisecond))
-	}
-	for _, n := range res.Skipped {
-		fmt.Fprintf(stdout, "skipped %s: new and not matching its name yet (still being written?); the next sync tries again\n", n)
-	}
-	code := exitOK
-	for _, n := range res.Damaged {
-		fmt.Fprintf(stdout, "DAMAGED %s: its contents do not match its name, and it has no parity to repair it from\n", n)
-		code = exitUnrepairable
-	}
-	if res.ConfigChanged {
-		fmt.Fprintln(stdout, "CONFIG CHANGED: the repository's config is not the one the parity has. If restic changed it (restic migrate), run sync --accept-config; if not, it may be damaged or this may be another repository: run packparity check")
-		if code == exitOK {
-			code = exitRepairable
+		for _, n := range res.Skipped {
+			fmt.Fprintf(stdout, "skipped %s: new and not matching its name yet (still being written?); the next sync tries again\n", n)
 		}
+		if res.SameDisk {
+			fmt.Fprintln(stdout, "note: PARITY is on the same filesystem as REPO; a second disk also survives losing the first")
+		}
+		if res.ConfigParityRemade {
+			fmt.Fprintln(stdout, "note: config's parity was damaged; it was made again from the current config")
+		}
+	}
+	for _, n := range res.Ignored {
+		fmt.Fprintf(stdout, "IGNORED %s: not a regular file (restic makes none); it has no parity\n", n)
+	}
+	for _, n := range res.Damaged {
+		fmt.Fprintf(stdout, "DAMAGED %s: it does not match its name, and it has no parity to repair it from\n", n)
 	}
 	if len(res.Damaged) > 0 {
 		fmt.Fprintln(stdout, "Run restic check --read-data, and see restic's troubleshooting guide for damaged files without parity.")
+	}
+	if res.HeldBack > 0 {
+		fmt.Fprintf(stdout, "HELD BACK: %s/ has none of its files left (%d files with parity are gone); their parity is kept. Is a disk unmounted or a link broken? If the files really are gone, run sync --allow-mass-removal\n", res.EmptyFolder, res.HeldBack)
+	}
+	if res.ConfigChanged {
+		fmt.Fprintln(stdout, "CONFIG CHANGED: the repository's config is not the one the parity has. If restic changed it (restic migrate), run sync --accept-config. If restic cannot open the repository, config may be damaged: run packparity repair REPO PARITY config")
 	}
 	return code
 }
 
 func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	fs := flags("check", stderr, "check [flags] REPO PARITY")
-	read := fs.String("read", "new", `what to read: "new" (files not verified within --every), "all", or a percentage such as "5%"`)
+	read := fs.String("read", "new", `what to read: "new" (each file once within --every), "all", or a percentage such as "5%"`)
 	every := fs.String("every", "30d", `with --read new: how often each file is read`)
 	asJSON := fs.Bool("json", false, "print JSON")
+	wait := waitFlag(fs)
 	pos, err := parse(fs, args)
 	if err != nil {
-		return exitUsage
+		return usageCode(err)
 	}
 	if len(pos) != 2 {
 		fs.Usage()
@@ -199,8 +256,8 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		co.All = true
 	case *read == "new":
 		d, err := days(*every)
-		if err != nil {
-			fmt.Fprintln(stderr, "packparity: --every:", err)
+		if err != nil || d <= 0 {
+			fmt.Fprintf(stderr, "packparity: --every %s: give a time above zero (30d, 12h); --read all reads everything\n", *every)
 			return exitUsage
 		}
 		co.Every = d
@@ -215,85 +272,101 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "packparity: --read %q: use new, all or a percentage\n", *read)
 		return exitUsage
 	}
-	o := run.Options{Repo: pos[0], Parity: pos[1]}
+	o := run.Options{Repo: pos[0], Parity: pos[1], Wait: *wait}
 	start := time.Now()
 	res, err := run.Check(o, co)
 	if err != nil {
 		return fail(stderr, err)
 	}
+	code := exitOK
+	switch res.Worst() {
+	case run.Unrepairable, run.Mismatch:
+		code = exitUnrepairable
+	case run.Repairable, run.ParityDamaged, run.ConfigChanged:
+		code = exitRepairable
+	}
 	if *asJSON {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
 		if res.Reports == nil {
 			res.Reports = []run.FileReport{}
 		}
-		enc.Encode(res)
-	} else {
-		fmt.Fprintf(stdout, "check: read %d files (%s) in %s\n", res.Read, run.Size(res.Bytes), time.Since(start).Round(time.Millisecond))
-		notes := map[string]int{}
-		for _, r := range res.Reports {
-			switch r.State {
-			case run.Missing, run.NoParity:
-				notes[r.State]++
-			default:
-				fmt.Fprintf(stdout, "%-15s %s: %s\n", strings.ToUpper(r.State), r.Name, r.Detail)
-			}
+		printJSON(stdout, res)
+		return code
+	}
+	fmt.Fprintf(stdout, "check: read %d files (%s) in %s\n", res.Read, run.Size(res.Bytes), time.Since(start).Round(time.Millisecond))
+	notes := map[string]int{}
+	repairable := false
+	for _, r := range res.Reports {
+		switch r.State {
+		case run.Missing, run.NoParity:
+			notes[r.State]++
+		default:
+			fmt.Fprintf(stdout, "%-15s %s: %s\n", strings.ToUpper(r.State), r.Name, r.Detail)
 		}
-		if n := notes[run.NoParity]; n > 0 {
-			fmt.Fprintf(stdout, "note: %d files have no parity yet; run packparity sync\n", n)
-		}
-		if n := notes[run.Missing]; n > 0 {
-			fmt.Fprintf(stdout, "note: %d files with parity are gone from the repository: pruned (sync retires their parity) or lost (restic check will say)\n", n)
+		if r.State == run.Repairable || r.State == run.ParityDamaged {
+			repairable = true
 		}
 	}
-	switch res.Worst() {
-	case run.Unrepairable, run.Mismatch:
-		if !*asJSON {
-			fmt.Fprintln(stdout, "Some damage cannot be repaired from parity: see restic's troubleshooting guide (restic repair packs, then repair index and snapshots).")
-		}
-		return exitUnrepairable
-	case run.Repairable, run.ParityDamaged:
-		if !*asJSON {
-			fmt.Fprintln(stdout, "Run packparity repair to fix it.")
-		}
-		return exitRepairable
+	if n := notes[run.NoParity]; n > 0 {
+		fmt.Fprintf(stdout, "note: %d files have no parity yet; run packparity sync\n", n)
 	}
-	return exitOK
+	if n := notes[run.Missing]; n > 0 {
+		fmt.Fprintf(stdout, "note: %d files with parity are gone from the repository: pruned (sync retires their parity) or lost (restic check will say)\n", n)
+	}
+	if code == exitUnrepairable {
+		fmt.Fprintln(stdout, "Some damage cannot be repaired from parity: see restic's troubleshooting guide (restic repair packs, then repair index and snapshots).")
+	}
+	if repairable {
+		fmt.Fprintln(stdout, "Run packparity repair REPO PARITY to fix what can be fixed.")
+	}
+	return code
 }
 
 func cmdRepair(args []string, stdout, stderr io.Writer) int {
 	fs := flags("repair", stderr, "repair [flags] REPO PARITY [NAME|ID...]")
 	dry := fs.Bool("dry-run", false, "rebuild and prove, but write nothing")
 	out := fs.String("out", "", "write rebuilt files to this directory instead of the repository")
+	asJSON := fs.Bool("json", false, "print JSON")
+	wait := waitFlag(fs)
 	pos, err := parse(fs, args)
 	if err != nil {
-		return exitUsage
+		return usageCode(err)
 	}
 	if len(pos) < 2 {
 		fs.Usage()
 		return exitUsage
 	}
-	o := run.Options{Repo: pos[0], Parity: pos[1]}
+	o := run.Options{Repo: pos[0], Parity: pos[1], Wait: *wait}
 	res, err := run.Repair(o, run.RepairOptions{Names: pos[2:], DryRun: *dry, OutDir: *out})
 	if err != nil {
 		return fail(stderr, err)
+	}
+	code := exitOK
+	for _, r := range res {
+		if r.Failed() {
+			code = exitUnrepairable
+		}
+	}
+	if *asJSON {
+		if res == nil {
+			res = []run.RepairResult{}
+		}
+		printJSON(stdout, res)
+		return code
 	}
 	if len(res) == 0 {
 		fmt.Fprintln(stdout, "repair: nothing known to be damaged (run packparity check, or name the files)")
 		return exitOK
 	}
-	code := exitOK
+	repaired := false
 	for _, r := range res {
-		fmt.Fprintf(stdout, "%-14s %s", r.Done, r.Name)
+		fmt.Fprintf(stdout, "%-19s %s", r.Done, r.Name)
 		if r.Detail != "" {
 			fmt.Fprintf(stdout, ": %s", r.Detail)
 		}
 		fmt.Fprintln(stdout)
-		if r.Done == "failed" {
-			code = exitUnrepairable
-		}
+		repaired = repaired || r.Done == run.Repaired
 	}
-	if code == exitOK && !*dry && *out == "" {
+	if repaired && !*dry && *out == "" {
 		fmt.Fprintln(stdout, "Run restic check --read-data to confirm.")
 	}
 	return code
@@ -304,7 +377,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	asJSON := fs.Bool("json", false, "print JSON")
 	pos, err := parse(fs, args)
 	if err != nil {
-		return exitUsage
+		return usageCode(err)
 	}
 	if len(pos) != 2 {
 		fs.Usage()
@@ -314,11 +387,15 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	code := exitOK
+	if len(st.DamagedNoParity) > 0 {
+		code = exitUnrepairable
+	} else if len(st.Damaged) > 0 || st.Config == "changed" || st.Config == "parity damaged" {
+		code = exitRepairable
+	}
 	if *asJSON {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		enc.Encode(st)
-		return exitOK
+		printJSON(stdout, st)
+		return code
 	}
 	pct := 0.0
 	if st.RepoBytes > 0 {
@@ -342,14 +419,14 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	if st.Quarantined > 0 {
 		fmt.Fprintf(stdout, "quarantine  %d damaged files kept after repair\n", st.Quarantined)
 	}
-	if !st.ConfigHasParity {
-		fmt.Fprintln(stdout, "config      no parity yet")
-	} else if !st.ConfigMatches {
-		fmt.Fprintln(stdout, "config      CHANGED: not the one the parity has (see packparity check)")
+	if st.Config != "matches" {
+		fmt.Fprintf(stdout, "config      %s (see packparity check)\n", strings.ToUpper(st.Config))
 	}
 	if len(st.Damaged) > 0 {
-		fmt.Fprintf(stdout, "damaged     %s\n", strings.Join(st.Damaged, ", "))
-		return exitRepairable
+		fmt.Fprintf(stdout, "damaged     %s (packparity repair can fix these)\n", strings.Join(st.Damaged, ", "))
 	}
-	return exitOK
+	if len(st.DamagedNoParity) > 0 {
+		fmt.Fprintf(stdout, "damaged     %s (no parity: see restic's troubleshooting guide)\n", strings.Join(st.DamagedNoParity, ", "))
+	}
+	return code
 }

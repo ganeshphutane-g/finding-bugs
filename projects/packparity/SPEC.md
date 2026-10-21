@@ -52,20 +52,27 @@ ideally on another disk.
 - Lists the repository. A file without parity is read, its SHA-256 checked
   against its name, and its parity written (temporary file, fsync, rename).
 - A file whose hash does not match its name gets no parity: it is reported as
-  damaged (exit 3). A mismatching file younger than 10 minutes is skipped
-  instead (it may still be being written) and retried by the next sync.
+  damaged (exit 4), as is a file that cannot be read; the rest go on. A
+  mismatching file younger than 10 minutes is skipped instead (it may still
+  be being written) and retried by the next sync.
 - `config` is not named by its hash: its hash is recorded with its parity. A
-  changed `config` is reported; `--accept-config` takes the new one (after
-  `restic migrate`, for example).
+  changed `config` is reported (exit 3) and new files are still covered;
+  `--accept-config` takes the new one (after `restic migrate`, for example).
+  A damaged `config.par` is made again from the current config.
 - Parity for a file that is gone is moved to `PARITY/removed/` and deleted
-  after `--keep-removed` (default 7 days), so a repair is still possible if
-  the file was lost rather than pruned.
+  after `--keep-removed` (default 7 days); it is brought back if the file
+  comes back (a disk that was briefly missing).
 - Guards:
   - REPO must look like a repository (`config`, `keys/`, `data/`), or sync
     refuses (an unmounted disk looks like an empty folder);
-  - if more than a quarter of the files with parity are gone at once, sync
-    refuses without `--allow-mass-removal`;
-  - a sync holds `PARITY/lock`, so two cannot run at once.
+  - PARITY must already be set up, unless `--init` (an unmounted parity disk
+    must not be started again on the root disk);
+  - PARITY must share files with REPO (two repositories never share one),
+    or every command refuses: it is another repository's;
+  - if `data/`, `index/` or `keys/` has no files left where files had
+    parity, retiring is held back (exit 3) without `--allow-mass-removal`;
+  - sync, check and repair hold `PARITY/lock`, waiting up to `--wait` for
+    another run; status takes no lock.
 - `--redundancy N` (percent, default 10) applies to new parity; each parity
   file records its own settings, so changing it later needs no rebuild.
 
@@ -109,11 +116,14 @@ waiting, last sync and the age of the oldest verification.
   data blocks and `m` Reed-Solomon parity blocks, with `m/k` the redundancy.
 - The parity file holds a header (format version, file size, block size, `k`,
   `m`, `G`, the file's SHA-256), a 16-byte SHA-256 prefix per data block and
-  per parity block (to find bad blocks), the parity blocks, and a checksum
-  of the whole parity file.
+  per parity block (to find bad blocks), checksums of the header and of the
+  block table, and the parity blocks. A layout a parity file claims is
+  checked against what packparity would make for its file size, so a
+  crafted file cannot make it allocate or index out of range.
 - With the default 10%: a 16 MiB pack has 4096 blocks in 41 groups of 100
-  plus 10 parity blocks each; any 10 bad blocks per group (up to 1.6 MiB in
-  one run) are repairable, at about 10.4% extra space.
+  plus 10 parity blocks each; any 10 bad blocks per group (a run of up to
+  410 blocks: 1.6 MiB on block boundaries) are repairable, at about 10.4%
+  extra space.
 
 ## Out of scope for v1
 
@@ -125,9 +135,10 @@ waiting, last sync and the age of the oldest verification.
 
 ## Tests
 
-- Unit: the block and group layout, encode and rebuild for every pattern of
-  bad blocks up to `m` per group, damaged parity files, tiny and empty files,
-  `config`.
+- Unit: the block and group layout; encode and rebuild for bursts, flips and
+  random scatter up to `m` per group and one past it; damaged and crafted
+  parity files, with a fuzz test; tiny and empty files; `config`; every
+  guard.
 - End to end with real restic and rest-server (both installed in CI with `go
   install`):
   - back up, sync, flip bytes and zero whole runs in packs, index and

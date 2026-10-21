@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -25,17 +27,22 @@ const (
 
 // Store is a parity directory.
 type Store struct {
-	Root string
+	Root      string
+	leftovers []string
 }
+
+// Leftovers are temporary files List found (from a killed run).
+func (s *Store) Leftovers() []string { return s.leftovers }
 
 type markerFile struct {
 	Format int    `json:"format"`
 	Tool   string `json:"tool"`
 }
 
-// Open opens the parity directory at root. With create, a missing or empty
-// directory is set up; a non-empty directory that is not a parity directory
-// is refused.
+// Open opens the parity directory at root. With create (sync --init), a
+// missing or empty directory is set up; a non-empty directory that is not a
+// parity directory is refused. Without it, a directory that is not set up
+// is refused: an unmounted disk must not be started over on the root disk.
 func Open(root string, create bool) (*Store, error) {
 	b, err := os.ReadFile(filepath.Join(root, marker))
 	if err == nil {
@@ -52,7 +59,7 @@ func Open(root string, create bool) (*Store, error) {
 		return nil, err
 	}
 	if !create {
-		return nil, fmt.Errorf("%s is not a parity directory (run packparity sync first)", root)
+		return nil, fmt.Errorf("%s is not a parity directory (start one with packparity sync --init); if it is on a disk that is not mounted, mount it", root)
 	}
 	if entries, err := os.ReadDir(root); err == nil && len(entries) > 0 {
 		return nil, fmt.Errorf("%s is not empty and is not a parity directory; use an empty or new directory", root)
@@ -75,6 +82,7 @@ func (s *Store) Path(name string) string {
 // List lists the parity files, by repository file name, with their sizes.
 func (s *Store) List() (map[string]int64, error) {
 	out := map[string]int64{}
+	s.leftovers = nil
 	if st, err := os.Stat(s.Path("config")); err == nil {
 		out["config"] = st.Size()
 	}
@@ -88,6 +96,9 @@ func (s *Store) List() (map[string]int64, error) {
 				return err
 			}
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ext) {
+				if !e.IsDir() && strings.Contains(e.Name(), ".tmp-") {
+					s.leftovers = append(s.leftovers, p)
+				}
 				return nil
 			}
 			info, err := e.Info()
@@ -105,8 +116,33 @@ func (s *Store) List() (map[string]int64, error) {
 	return out, nil
 }
 
-// Read reads the parity for name.
-func (s *Store) Read(name string) ([]byte, error) { return os.ReadFile(s.Path(name)) }
+// Read reads the parity for name, refusing anything that is not a regular
+// file or is larger than max bytes.
+func (s *Store) Read(name string, max int64) ([]byte, error) {
+	f, err := os.OpenFile(s.Path(name), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", s.Path(name))
+	}
+	if st.Size() > max {
+		return nil, fmt.Errorf("%w: %s is %d bytes, more than parity for its file can be", ErrTooBig, s.Path(name), st.Size())
+	}
+	return io.ReadAll(io.LimitReader(f, max+1))
+}
+
+// ErrTooBig means a parity file is larger than any parity for its file.
+var ErrTooBig = errors.New("parity file too big")
+
+// MaxParity is the most parity a file of size n can have (100% redundancy,
+// any block size), with room for the header and tables.
+func MaxParity(n int64) int64 { return 2*n + 1<<20 }
 
 // Write saves the parity for name.
 func (s *Store) Write(name string, b []byte) error {
@@ -220,7 +256,8 @@ func syncDir(dir string) error {
 		return err
 	}
 	defer d.Close()
-	if err := d.Sync(); err != nil && !errors.Is(err, os.ErrInvalid) {
+	// Some filesystems (FUSE, 9p, SMB) cannot sync a directory.
+	if err := d.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, errors.ErrUnsupported) {
 		return err
 	}
 	return nil

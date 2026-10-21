@@ -2,6 +2,7 @@ package parity
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"math/rand"
 	"testing"
@@ -179,4 +180,57 @@ func TestDamagedParity(t *testing.T) {
 	if _, err := Parse([]byte("nonsense")); !errors.Is(err, ErrDamaged) {
 		t.Fatal(err)
 	}
+}
+
+// crafted is a parity header with a valid checksum and the given fields,
+// padded to the length its own fields claim (when that is small).
+func crafted(blockSize uint32, fileSize uint64, groups uint32, k, m uint16, pad int) []byte {
+	le := binary.LittleEndian
+	b := []byte(magic)
+	b = le.AppendUint16(b, version)
+	b = le.AppendUint16(b, 0)
+	b = le.AppendUint32(b, blockSize)
+	b = le.AppendUint64(b, fileSize)
+	b = le.AppendUint32(b, groups)
+	b = le.AppendUint16(b, k)
+	b = le.AppendUint16(b, m)
+	b = append(b, make([]byte, 32)...)
+	h := short(b)
+	b = append(b, h[:]...)
+	return append(b, make([]byte, pad)...)
+}
+
+func TestCraftedHeaders(t *testing.T) {
+	for name, b := range map[string][]byte{
+		"negative size":           crafted(4096, 1<<63|1, 0, 0, 0, 16),
+		"empty file with groups":  crafted(4096, 0, 1<<31, 0, 0, 16),
+		"empty file, huge parity": crafted(1<<32-16, 0, 1<<17, 0, 1<<15, 16),
+		"size overflow":           crafted(1<<32-24, 4096, 1<<31, 1, 2, 16),
+		"block size not 64":       crafted(100, 4096, 1, 1, 1, 16),
+		"groups do not fit":       crafted(4096, 16<<20, 1, 100, 10, 16),
+		"more parity than data":   crafted(4096, 40<<10, 1, 10, 11, 16),
+		"too big":                 crafted(4096, 1<<41, 1, 1, 1, 16),
+	} {
+		f, err := Parse(b)
+		if !errors.Is(err, ErrDamaged) {
+			t.Errorf("%s: %v %+v", name, err, f)
+		}
+	}
+}
+
+func FuzzParse(f *testing.F) {
+	for _, n := range []int{0, 10, 5000} {
+		pb, _ := Encode(random(n, 9), Defaults)
+		f.Add(pb)
+	}
+	f.Fuzz(func(t *testing.T, b []byte) {
+		pf, err := Parse(b)
+		if err != nil {
+			return
+		}
+		// Whatever parses must be safe to use.
+		pf.Check(b)
+		pf.Repair(b)
+		pf.Repair(nil)
+	})
 }

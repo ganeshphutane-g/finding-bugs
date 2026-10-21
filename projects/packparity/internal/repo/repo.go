@@ -9,10 +9,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -69,65 +72,115 @@ func Check(root string) error {
 	return nil
 }
 
-// List lists the repository's files, sorted by name. Temporary files and
-// anything else not named like a restic file are left out.
-func List(root string) ([]File, error) {
+// Listing is a repository's files and what else was found.
+type Listing struct {
+	Files []File
+	// Ignored are entries named like repository files that are not regular
+	// files (symlinks, devices): restic never makes them.
+	Ignored []string
+	// Leftovers are packparity's own temporary files from a killed repair.
+	Leftovers []string
+}
+
+// TempPrefix starts the names of repair's temporary files.
+const TempPrefix = ".packparity-tmp-"
+
+// List lists the repository's files, sorted by name. restic's temporary
+// files and anything else not named like a repository file are left out. A
+// top-level folder or a data/xx folder may be a symlink (to another disk).
+func List(root string) (*Listing, error) {
 	if err := Check(root); err != nil {
 		return nil, err
 	}
-	var out []File
-	st, err := os.Stat(filepath.Join(root, Config))
+	l := &Listing{}
+	st, err := os.Lstat(filepath.Join(root, Config))
 	if err != nil {
 		return nil, err
 	}
-	out = append(out, File{Name: Config, Size: st.Size(), ModTime: st.ModTime()})
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: config is not a regular file", root)
+	}
+	l.Files = append(l.Files, File{Name: Config, Size: st.Size(), ModTime: st.ModTime()})
 	for _, d := range Dirs {
-		base := filepath.Join(root, d)
-		err := filepath.WalkDir(base, func(p string, e fs.DirEntry, err error) error {
-			if err != nil {
-				if p == base && errors.Is(err, fs.ErrNotExist) {
-					return fs.SkipDir
-				}
-				return err
-			}
-			if e.IsDir() {
-				// data/ has one level of two-hex-digit folders.
-				if p != base && (d != "data" || filepath.Dir(p) != base) {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if !e.Type().IsRegular() || !isID(e.Name()) {
-				return nil
-			}
-			if d == "data" && filepath.Base(filepath.Dir(p)) != e.Name()[:2] {
-				return nil
-			}
-			info, err := e.Info()
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil // pruned while listing
-			}
-			if err != nil {
-				return err
-			}
-			rel, _ := filepath.Rel(root, p)
-			out = append(out, File{Name: filepath.ToSlash(rel), Size: info.Size(), ModTime: info.ModTime()})
-			return nil
-		})
-		if err != nil {
+		if err := l.dir(filepath.Join(root, d), d, d == "data"); err != nil {
 			return nil, err
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
+	sort.Slice(l.Files, func(i, j int) bool { return l.Files[i].Name < l.Files[j].Name })
+	return l, nil
 }
 
-// Read reads a file and says whether its contents match its name (always
-// true for config, which has no name to match).
+func (l *Listing) dir(path, rel string, sub bool) error {
+	entries, err := os.ReadDir(path) // follows a symlinked folder
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		p := filepath.Join(path, name)
+		r := rel + "/" + name
+		if sub {
+			if len(name) != 2 || !isID(name+strings.Repeat("0", 62)) {
+				continue
+			}
+			if st, err := os.Stat(p); err == nil && st.IsDir() {
+				if err := l.dir(p, r, false); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(name, TempPrefix) {
+			l.Leftovers = append(l.Leftovers, p)
+			continue
+		}
+		if !isID(name) || rel != "data" && strings.HasPrefix(rel, "data/") && name[:2] != filepath.Base(rel) {
+			continue
+		}
+		if !e.Type().IsRegular() {
+			l.Ignored = append(l.Ignored, r)
+			continue
+		}
+		info, err := e.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // pruned while listing
+		}
+		if err != nil {
+			return err
+		}
+		l.Files = append(l.Files, File{Name: r, Size: info.Size(), ModTime: info.ModTime()})
+	}
+	return nil
+}
+
+// Path is a repository file's path on disk.
+func Path(root, name string) string { return filepath.Join(root, filepath.FromSlash(name)) }
+
+// Read reads a file (without following a symlink in its place) and says
+// whether its contents match its name (always true for config, which has
+// no name to match).
 func Read(root string, f File) (data []byte, matches bool, err error) {
-	data, err = os.ReadFile(filepath.Join(root, filepath.FromSlash(f.Name)))
+	fh, err := os.OpenFile(Path(root, f.Name), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, false, err
+	}
+	defer fh.Close()
+	st, err := fh.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%s is not a regular file", f.Name)
+	}
+	if st.Size() > MaxSize {
+		return nil, false, fmt.Errorf("%s is %d bytes, more than packparity handles", f.Name, st.Size())
+	}
+	data, err = io.ReadAll(io.LimitReader(fh, MaxSize+1))
+	if err != nil {
+		return data, false, err
 	}
 	if f.Name == Config {
 		return data, true, nil
@@ -135,3 +188,7 @@ func Read(root string, f File) (data []byte, matches bool, err error) {
 	sum := sha256.Sum256(data)
 	return data, hex.EncodeToString(sum[:]) == f.ID(), nil
 }
+
+// MaxSize is the largest repository file packparity reads (restic's packs
+// are at most 128 MiB).
+const MaxSize = 4 << 30

@@ -6,6 +6,9 @@ on:
   pull_request:
     paths: ["projects/packparity/**", ".github/workflows/packparity.yml"]
 
+permissions:
+  contents: read
+
 defaults:
   run:
     working-directory: projects/packparity
@@ -19,12 +22,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: projects/packparity/go.mod
+          cache-dependency-path: projects/packparity/go.sum
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
       - name: cross-builds
         run: |
-          for target in linux/amd64 linux/arm64 linux/arm/7 darwin/arm64 freebsd/amd64; do
+          for target in linux/amd64 linux/arm64 linux/arm/7 linux/386 darwin/arm64 freebsd/amd64 openbsd/amd64; do
             IFS=/ read -r os arch arm <<< "$target"
             GOOS=$os GOARCH=$arch GOARM=$arm go build -o /dev/null . || exit 1
           done
