@@ -26,7 +26,11 @@ func input(name string, containerd bool, results ...*probe.Result) Input {
 
 func ep(base string, mirror bool) plan.Endpoint {
 	u, _ := url.Parse(base)
-	return plan.Endpoint{Base: base, Host: u.Host, Mirror: mirror}
+	e := plan.Endpoint{Base: base, Host: u.Host, Mirror: mirror}
+	if u.Host != plan.HubHost {
+		e.CertsPath = "/etc/docker/certs.d/" + u.Host
+	}
+	return e
 }
 
 func failed(e plan.Endpoint, kind string) *probe.Result {
@@ -174,6 +178,75 @@ func TestDeepAndPull(t *testing.T) {
 	in = input("nginx", true, hub)
 	in.Local, in.DaemonHost = false, "tcp://box:2376"
 	if fs := Diagnose(in); fs[0].Kind != "remote-daemon" || !strings.Contains(fs[0].Title, "tcp://box:2376") {
+		t.Fatalf("%+v", fs)
+	}
+}
+
+func TestHubUnauthorizedIsMissingOrPrivate(t *testing.T) {
+	in := input("nginxx", true, failed(ep("https://registry-1.docker.io", false), probe.KindUnauthorized))
+	in.Pull = &pull.Timeline{Error: "pull access denied for nginxx, repository does not exist or may require 'docker login'", Kind: probe.KindNotFound}
+	fs := Diagnose(in)
+	if len(fs) != 1 || fs[0].Kind != probe.KindNotFound || !strings.Contains(fs[0].Title, "library/nginxx is not on Docker Hub, or it is private") {
+		t.Fatalf("%+v", fs)
+	}
+	if strings.Contains(fs[0].Fix, "login  ") {
+		t.Fatal("double space")
+	}
+}
+
+func TestMirrorLogin(t *testing.T) {
+	hub := ok(ep("https://registry-1.docker.io", false), "sha256:a")
+	m := failed(ep("http://172.17.0.1:5099", true), probe.KindUnauthorized)
+	fs := Diagnose(input("alpine:3", true, m, hub))
+	if fs[0].Severity != Problem || !strings.Contains(fs[0].Title, "stops every pull") {
+		t.Fatalf("containerd: %+v", fs)
+	}
+	fs = Diagnose(input("alpine:3", false, m, hub))
+	if Worst(fs) != Note || !strings.Contains(fs[0].Title, "refused the Docker Hub credentials") {
+		t.Fatalf("classic: %+v", fs)
+	}
+	// A quick failure of another kind is a note, not "slow".
+	quick := failed(ep("http://172.17.0.1:5099", true), probe.KindServer)
+	quick.Requests[0].Took = 5 * time.Millisecond
+	fs = Diagnose(input("alpine:3", true, quick, hub))
+	if Worst(fs) != Note {
+		t.Fatalf("%+v", fs)
+	}
+}
+
+func TestPickFailure(t *testing.T) {
+	// A TLS registry on loopback: HTTPS says not-found, the plain-HTTP retry
+	// can only say "not a registry". The first is the answer.
+	https := failed(ep("https://127.0.0.1:5443", false), probe.KindNotFound)
+	http := failed(ep("http://127.0.0.1:5443", false), probe.KindNotRegistry)
+	if fs := Diagnose(input("127.0.0.1:5443/team/app:nope", true, https, http)); fs[0].Kind != probe.KindNotFound {
+		t.Fatalf("%+v", fs)
+	}
+	// A plain-HTTP registry: HTTPS gets http-on-https, the HTTP retry's own
+	// failure is the answer.
+	https = failed(ep("https://127.0.0.1:5000", false), probe.KindHTTPOnHTTPS)
+	http = failed(ep("http://127.0.0.1:5000", false), probe.KindRefused)
+	if fs := Diagnose(input("127.0.0.1:5000/x", true, https, http)); fs[0].Kind != probe.KindRefused {
+		t.Fatalf("%+v", fs)
+	}
+}
+
+func TestSlowPhases(t *testing.T) {
+	res := ok(ep("https://reg.example", false), "sha256:a")
+	res.Requests = []probe.Request{{What: "ping", Method: "GET", URL: "https://reg.example/v2/", Status: 401,
+		Phases: []probe.Phase{{Name: "dns", Took: 3 * time.Second}, {Name: "wait", Took: 100 * time.Millisecond}}}}
+	fs := Diagnose(input("reg.example/x", true, res))
+	if len(fs) != 1 || fs[0].Kind != "slow-dns" || Worst(fs) != Slow || !strings.Contains(fs[0].Title, "the DNS lookup took 3s") {
+		t.Fatalf("%+v", fs)
+	}
+}
+
+func TestMaskedProxy(t *testing.T) {
+	e := ep("https://ghcr.io", false)
+	e.Proxy, _ = url.Parse("http://user:xxxxx@proxy:3128")
+	e.ProxyMasked = true
+	fs := Diagnose(input("ghcr.io/o/r", true, failed(e, probe.KindProxy)))
+	if Worst(fs) != Note || fs[0].Kind != "proxy-unchecked" {
 		t.Fatalf("%+v", fs)
 	}
 }

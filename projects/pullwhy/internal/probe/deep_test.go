@@ -67,6 +67,16 @@ func TestDeep(t *testing.T) {
 	if !d.Missing || d.Layer != "" {
 		t.Fatalf("%+v", d)
 	}
+	// arm64 takes arm/v7 when there is no arm64 build, as the daemon does.
+	d = DeepCheck(context.Background(), res, mustRef("example.com/x:1"), Options{}, Platform{OS: "linux", Arch: "arm64"}, 1<<10, time.Second)
+	if d.Missing {
+		t.Fatalf("arm64 should fall back to arm/v7: %+v", d)
+	}
+	// arm/v6 cannot run arm/v7.
+	d = DeepCheck(context.Background(), res, mustRef("example.com/x:1"), Options{}, Platform{OS: "linux", Arch: "arm", Variant: "v6"}, 1<<10, time.Second)
+	if !d.Missing {
+		t.Fatalf("arm/v6 took arm/v7: %+v", d)
+	}
 	// A single-platform manifest needs no index.
 	d = DeepCheck(context.Background(), res, mustRef("example.com/x:single"), Options{}, Platform{OS: "linux", Arch: "arm64"}, 1<<10, time.Second)
 	if d.Missing || d.Layer != "sha256:big" {

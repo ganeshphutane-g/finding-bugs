@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -157,7 +158,9 @@ func Client(ep plan.Endpoint, o Options, skipVerify bool) (*http.Client, error) 
 		ResponseHeaderTimeout: 0, // the request's context bounds it
 		IdleConnTimeout:       30 * time.Second,
 	}
-	return &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+	// Redirects are followed as the daemon follows them; Go drops the
+	// Authorization header when one goes to another host.
+	return &http.Client{Transport: tr}, nil
 }
 
 // Endpoint probes one endpoint for r.
@@ -340,7 +343,7 @@ func doFull(ctx context.Context, c *http.Client, o Options, what, method, u stri
 	resp, err := c.Do(req)
 	rec.Took = time.Since(start)
 	if err != nil {
-		rec.Kind, rec.Error = Classify(err), err.Error()
+		rec.Kind, rec.Error = Classify(err), RedactQueries(err.Error())
 		var ua x509.UnknownAuthorityError
 		if errors.As(err, &ua) && ua.Cert != nil {
 			rec.Message = "the certificate presented was issued by " + ua.Cert.Issuer.String()
@@ -399,10 +402,10 @@ func Classify(err error) string {
 	switch {
 	case errors.As(err, &opErr) && opErr.Op == "proxyconnect":
 		return KindProxy
+	case errors.As(err, &dnsErr):
+		return KindDNS // a lookup that timed out too
 	case errors.Is(err, context.DeadlineExceeded) || isTimeout(err):
 		return KindTimeout
-	case errors.As(err, &dnsErr):
-		return KindDNS
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return KindRefused
 	case errors.Is(err, syscall.ECONNRESET) || errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF):
@@ -422,8 +425,6 @@ func Classify(err error) string {
 		return KindTLSOther
 	case strings.Contains(err.Error(), "tls: failed to verify certificate"):
 		return KindTLSOther
-	case strings.Contains(err.Error(), "proxy"):
-		return KindProxy
 	}
 	return KindOther
 }
@@ -457,13 +458,19 @@ func parseChallenge(h string) (string, map[string]string) {
 		}
 		k = strings.ToLower(strings.TrimSpace(k))
 		if strings.HasPrefix(v, `"`) {
-			end := strings.Index(v[1:], `"`)
-			if end < 0 {
-				params[k] = v[1:]
+			var b strings.Builder
+			i := 1
+			for ; i < len(v) && v[i] != '"'; i++ {
+				if v[i] == '\\' && i+1 < len(v) {
+					i++
+				}
+				b.WriteByte(v[i])
+			}
+			params[k] = b.String()
+			if i >= len(v) {
 				break
 			}
-			params[k] = v[1 : end+1]
-			rest = v[end+2:]
+			rest = v[i+1:]
 		} else {
 			val, after, _ := strings.Cut(v, ",")
 			params[k] = strings.TrimSpace(val)
@@ -534,6 +541,12 @@ func token(ctx context.Context, c *http.Client, o Options, params map[string]str
 	}
 	return tb.Token, rec
 }
+
+var queryRe = regexp.MustCompile(`(https?://[^\s"?]+)\?[^\s"]*`)
+
+// RedactQueries drops the query of every URL in s: a CDN's signed URL or a
+// token request's parameters must not end up in a report.
+func RedactQueries(s string) string { return queryRe.ReplaceAllString(s, "$1?…") }
 
 // redact drops a query (a token request's scope is fine, but keep URLs
 // short and free of anything secret).

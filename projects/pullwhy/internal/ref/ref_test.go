@@ -18,6 +18,8 @@ func TestParse(t *testing.T) {
 		"alpine@" + d:                    "docker.io/library/alpine@" + d,
 		"alpine:3@" + d:                  "docker.io/library/alpine:3@" + d,
 		"registry.example.com:443/a/b:c": "registry.example.com:443/a/b:c",
+		"Registry/app":                   "Registry/app:latest",
+		"registry-1.docker.io/alpine":    "registry-1.docker.io/alpine:latest",
 	} {
 		r, err := Parse(in)
 		if err != nil {

@@ -47,8 +47,14 @@ step and names the likely cause, with the evidence and the fix.
     registry-1.docker.io. It tries the mirror again first for every later
     fetch (index, referrers, blobs).
   - **With an unreachable mirror (packets dropped), each of those fetches
-    waits 30 s.** Pulling alpine:3 took **2 min 1 s**, against about 1 s
-    without the mirror.
+    waits 30 s.** Pulling alpine:3 took **2 min 1 s** on Docker 29.8.2, and
+    **3 min 32 s** in a later run on 29.9.2, against about 1 s without the
+    mirror.
+  - **Credentials:** the containerd store sends a mirror no credentials, and
+    a mirror that asks for a login stops the pull there ("no basic auth
+    credentials") instead of falling back. The classic store sends the mirror
+    Docker Hub's credentials, and falls back if it refuses them. Both tested
+    (2026-10-21).
 - *classic store:*
   - The same unreachable mirror costs one 15 s `GET /v2/` timeout ("Attempting
     next endpoint for pull after error"); then Hub. That pull took 16 s.
@@ -60,6 +66,11 @@ step and names the likely cause, with the evidence and the fix.
 - Both stores read `/etc/docker/certs.d/<host:port>/ca.crt` (checked on the
   containerd store; the classic store logs `hostDir:
   /etc/docker/certs.d/<host:port>`).
+- For Docker Hub, the containerd store reads `certs.d/docker.io`, not
+  `certs.d/registry-1.docker.io`; the classic store reads neither (both
+  tested).
+- Docker Hub answers a manifest HEAD for a repository that does not exist
+  with 401, as for a private one (checked).
 - Without it, the pull fails with `tls: failed to verify certificate: x509:
   certificate signed by unknown authority`.
 
@@ -155,7 +166,7 @@ with its evidence and the fix:
 | Rate limit | Remaining 0, or under 10%, or 429 |
 | TLS | The certs.d path and file name to add |
 | An HTTP registry not in `insecure-registries` | |
-| Proxy | Unreachable or refusing; CDN host blocked; `NoProxy` missing an internal registry |
+| Proxy | Unreachable or refusing; CDN host blocked; an internal registry sent through the proxy (suggest `NoProxy`) |
 | DNS | Failure or slowness |
 | Auth | 401 with or without credentials; a missing repository, or one that is private ("pull access denied") |
 | The platform not in the index | |

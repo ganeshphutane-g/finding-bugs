@@ -34,7 +34,8 @@ outside:
 | A registry signed by a private CA, or TLS interception by a company proxy. | |
 | A plain-HTTP registry missing from `insecure-registries`. | |
 | Docker Hub's pull limit: 100 an hour per address without login, from Hub's own headers. | |
-| A login that is missing, wrong or expired. A private repository looks like a missing one. | |
+| A login that is missing, wrong or expired. A private repository looks like a missing one: Docker Hub answers both with "unauthorized". | |
+| A mirror that asks for a login. On the containerd store the daemon sends it no credentials and the pull stops there; on the classic store it falls back. | |
 | An image with no build for your platform. | |
 
 pullwhy tells these apart. It changes nothing: no daemon settings, and no
@@ -217,12 +218,13 @@ problem: Something between the daemon and registry-1.docker.io intercepts TLS
 ## Limits
 
 - **Where the probes run.** pullwhy probes from where it runs. With a local
-  daemon on Linux that is the daemon's own network. With Docker Desktop or a
-  remote `DOCKER_HOST` it is not, and pullwhy says so; `--pull` still shows
-  what the daemon itself does.
-- **Proxy credentials.** The daemon hides proxy passwords in `docker info`. A
-  proxy that needs a password may then refuse pullwhy's probes, though not the
-  daemon.
+  daemon on Linux that is the daemon's own network. With Docker Desktop, a
+  VM-based daemon on macOS (colima and the like), a rootless daemon (its own
+  network namespace) or a remote `DOCKER_HOST`, it is not, and pullwhy says
+  so; `--pull` still shows what the daemon itself does.
+- **Proxy passwords.** The daemon hides proxy passwords in `docker info`, so
+  through a proxy that needs one pullwhy says it could not check, rather than
+  guessing.
 - **Daemon addresses.** `ssh://` and Windows named pipes are not supported:
   use `unix://` or `tcp://`.
 - **Not covered:**

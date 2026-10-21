@@ -12,17 +12,22 @@ First release.
     rate-limit headers.
   - **Credentials** found as the CLI finds them.
 - Causes it tells apart:
-  - dead, refusing or stale mirrors, with the cost on each image store;
+  - dead, refusing or stale mirrors, with the cost on each image store, and
+    mirrors that ask for a login (which stop pulls on the containerd store);
   - private CAs, and TLS interception on public registries (the issuer is
     named);
   - plain HTTP without insecure-registries;
   - proxy failures, including a blocked CDN host;
   - DNS, refused connections and timeouts;
   - missing or rejected logins;
-  - missing tags;
+  - missing tags, and Docker Hub's "missing or private";
   - Docker Hub's rate limit;
   - missing platforms;
+  - slow DNS, connects, TLS handshakes and answers;
   - slow downloads and stalls.
+- Follows the daemon's own rules: Docker Hub is always verified, certs.d is
+  read where each image store reads it, mirrors get credentials only where the
+  daemon sends them, and compatible platforms (arm/v7 on arm64) count.
 - `--deep` checks the platform in the index, and the download speed from the
   layer's real host (CDN redirects followed).
 - `--pull` has the daemon really pull, and reports the time to the first

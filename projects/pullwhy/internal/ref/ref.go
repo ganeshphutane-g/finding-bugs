@@ -55,7 +55,9 @@ func Parse(s string) (*Ref, error) {
 		}
 	}
 	parts := strings.Split(name, "/")
-	if len(parts) > 1 && (strings.ContainsAny(parts[0], ".:") || parts[0] == "localhost") {
+	// As docker: a first part with a dot, a colon or capitals, or
+	// "localhost", is a registry host.
+	if len(parts) > 1 && (strings.ContainsAny(parts[0], ".:") || parts[0] == "localhost" || strings.ToLower(parts[0]) != parts[0]) {
 		r.Registry = parts[0]
 		parts = parts[1:]
 		if !hostRe.MatchString(r.Registry) {
@@ -64,7 +66,7 @@ func Parse(s string) (*Ref, error) {
 	} else {
 		r.Registry = DockerHub
 	}
-	if r.Registry == "index.docker.io" || r.Registry == "registry-1.docker.io" {
+	if r.Registry == "index.docker.io" { // the only alias docker knows
 		r.Registry = DockerHub
 	}
 	if r.Registry == DockerHub && len(parts) == 1 {

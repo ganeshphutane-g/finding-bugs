@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -46,7 +47,7 @@ Flags:
   --pull           also have the daemon really pull, and time it
   --deep           also read the manifest and the start of the largest layer
                    (counts as a pull on Docker Hub)
-  --platform P     the platform to check with --deep (default: the daemon's)
+  --platform P     the platform for --deep and --pull (default: the daemon's)
   --timeout D      the most to wait for each request (default 10s)
   --pull-timeout D the most to wait for --pull (default 10m)
   --json           print JSON
@@ -141,8 +142,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 		fmt.Fprintln(stderr, "pullwhy:", err)
 		return exitError
 	}
-	local := ep.Local() && !info.DockerDesktop()
-	p, err := plan.Make(ctx, r, info, env.Resolver, local)
+	// sameHost: pullwhy can read the daemon's files (certs.d); sameNet: its
+	// probes see the daemon's network (not a rootless daemon's namespace).
+	sameHost := ep.Local() && runtime.GOOS == "linux" && !info.DockerDesktop()
+	sameNet := sameHost && !info.Rootless()
+	p, err := plan.Make(ctx, r, info, env.Resolver, sameHost)
 	if err != nil {
 		fmt.Fprintln(stderr, "pullwhy:", err)
 		return exitError
@@ -162,7 +166,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 	opts := probe.Options{Timeout: *timeout, Auth: auth, Containerd: p.Containerd, Proxy: plan.ProxyFunc(info), UserAgent: "pullwhy/" + Version}
 	var results []*probe.Result
 	for _, e := range p.Endpoints {
-		results = append(results, probe.Endpoint(ctx, e, r, opts))
+		o := opts
+		if e.Mirror && p.Containerd {
+			// The containerd store sends mirrors no credentials (tested).
+			o.Auth = nil
+		}
+		results = append(results, probe.Endpoint(ctx, e, r, o))
 	}
 
 	var dp *probe.Deep
@@ -190,7 +199,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 		cancel()
 	}
 
-	findings := diagnose.Diagnose(diagnose.Input{Info: info, Local: local, Plan: p, Results: results, Auth: auth, CredErr: credErr,
+	findings := diagnose.Diagnose(diagnose.Input{Info: info, Local: sameNet, Plan: p, Results: results, Auth: auth, CredErr: credErr,
 		Deep: dp, Pull: t, Timeout: *timeout, DaemonHost: ep.Host})
 
 	store := "classic"
@@ -202,7 +211,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 		proxy = info.HTTPProxy
 	}
 	rep := report.New(r.String(), report.Daemon{Host: ep.Host, From: ep.From, Version: info.ServerVersion, Store: store,
-		Proxy: proxy, NoProxy: info.NoProxy, Local: local}, credText, p, results, dp, t, findings)
+		Proxy: proxy, NoProxy: info.NoProxy, Local: sameNet}, credText, p, results, dp, t, findings)
 	if *asJSON {
 		if err := rep.JSON(stdout); err != nil {
 			fmt.Fprintln(stderr, "pullwhy:", err)

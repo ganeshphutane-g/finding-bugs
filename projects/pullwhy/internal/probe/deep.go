@@ -26,6 +26,29 @@ func (p Platform) String() string {
 	return s
 }
 
+// Compatible lists what the daemon accepts for p, best first (as
+// containerd's platforms.Only).
+func (p Platform) Compatible() []Platform {
+	arm := func(vs ...string) []Platform {
+		var out []Platform
+		for _, v := range vs {
+			out = append(out, Platform{OS: p.OS, Arch: "arm", Variant: v})
+		}
+		return out
+	}
+	switch {
+	case p.Arch == "arm64":
+		return append([]Platform{{OS: p.OS, Arch: "arm64", Variant: p.Variant}}, arm("v8", "v7", "v6", "v5")...)
+	case p.Arch == "arm" && p.Variant == "v8":
+		return arm("v8", "v7", "v6", "v5")
+	case p.Arch == "arm" && p.Variant == "v7":
+		return arm("v7", "v6", "v5")
+	case p.Arch == "arm" && p.Variant == "v6":
+		return arm("v6", "v5")
+	}
+	return []Platform{p}
+}
+
 // ParsePlatform reads linux/arm64 or linux/arm/v7.
 func ParsePlatform(s string) (Platform, error) {
 	parts := strings.Split(s, "/")
@@ -110,6 +133,8 @@ func DeepCheck(ctx context.Context, res *Result, r *ref.Ref, o Options, want Pla
 		d.Kind, d.Error = KindOther, err.Error()
 		return d
 	}
+	// Blob redirects are followed by hand, one hop at a time.
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	header := http.Header{"Accept": {Accept}}
 	if res.Token != "" {
 		header.Set("Authorization", "Bearer "+res.Token)
@@ -150,7 +175,11 @@ func DeepCheck(ctx context.Context, res *Result, r *ref.Ref, o Options, want Pla
 		return d
 	}
 	if strings.Contains(mt, "index") || strings.Contains(mt, "manifest.list") {
+		// The daemon takes the best compatible entry (containerd's
+		// platforms.Only): exact first, then fallbacks such as arm/v7 on
+		// arm64.
 		var chosen string
+		rank := len(want.Compatible()) + 1
 		list, _ := m["manifests"].([]any)
 		for _, e := range list {
 			em, _ := e.(map[string]any)
@@ -160,8 +189,10 @@ func DeepCheck(ctx context.Context, res *Result, r *ref.Ref, o Options, want Pla
 				continue
 			}
 			d.Platforms = append(d.Platforms, pl.String())
-			if chosen == "" && pl.OS == want.OS && pl.Arch == want.Arch && (want.Variant == "" || pl.Variant == want.Variant) {
-				chosen = str(em["digest"])
+			for i, c := range want.Compatible() {
+				if i < rank && pl.OS == c.OS && pl.Arch == c.Arch && (c.Variant == "" || pl.Variant == "" || pl.Variant == c.Variant) {
+					chosen, rank = str(em["digest"]), i
+				}
 			}
 		}
 		if chosen == "" {
@@ -207,9 +238,9 @@ func readBlob(ctx context.Context, c *http.Client, o Options, d *Deep, u string,
 		resp, err := c.Do(req)
 		hp := Hop{Host: pu.Host, Took: time.Since(start)}
 		if err != nil {
-			hp.Kind, hp.Error = Classify(err), err.Error()
+			hp.Kind, hp.Error = Classify(err), RedactQueries(err.Error())
 			d.Hops = append(d.Hops, hp)
-			d.Kind, d.Error = hp.Kind, fmt.Sprintf("%s: %v", pu.Host, err)
+			d.Kind, d.Error = hp.Kind, pu.Host+": "+hp.Error
 			return
 		}
 		hp.Status = resp.StatusCode

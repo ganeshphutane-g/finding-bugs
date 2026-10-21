@@ -40,10 +40,18 @@ type Endpoint struct {
 	InsecureWhy string
 	// Proxy is the proxy the daemon uses for Base (nil: direct).
 	Proxy *url.URL
-	// CertsDir is /etc/docker/certs.d/<host>, and CertFiles what is in it,
-	// when it exists (only seen when the daemon is on this machine).
+	// CertsDir is the certs.d directory the daemon reads for this endpoint
+	// (CertsPath), and CertFiles what is in it, when it exists (only seen
+	// when the daemon is on this machine).
 	CertsDir  string
 	CertFiles []string
+	// CertsPath is where the daemon would read certificates for this
+	// endpoint, whether or not it exists ("" when it reads none: Docker Hub
+	// on the classic store).
+	CertsPath string
+	// ProxyMasked: the daemon hides the proxy's password (as "xxxxx"), so
+	// probes through it cannot log in to it.
+	ProxyMasked bool
 }
 
 // Plan is the whole of it.
@@ -52,6 +60,8 @@ type Plan struct {
 	Endpoints []Endpoint
 	// Containerd is the daemon's image store: containerd (true) or classic.
 	Containerd bool
+	// CertsRoot is the daemon's certs.d (rootless daemons keep their own).
+	CertsRoot string
 }
 
 // Resolver looks up host addresses (net.DefaultResolver.LookupNetIP in use).
@@ -59,7 +69,10 @@ type Resolver func(ctx context.Context, host string) ([]netip.Addr, error)
 
 // Make builds the plan for r from the daemon's /info.
 func Make(ctx context.Context, r *ref.Ref, info *engine.Info, lookup Resolver, local bool) (*Plan, error) {
-	p := &Plan{Ref: r, Containerd: info.ContainerdStore()}
+	p := &Plan{Ref: r, Containerd: info.ContainerdStore(), CertsRoot: CertsRoot}
+	if info.Rootless() {
+		p.CertsRoot = RootlessCertsRoot()
+	}
 	proxy := ProxyFunc(info)
 	var cidrs []netip.Prefix
 	for _, c := range info.RegistryConfig.InsecureRegistryCIDRs {
@@ -73,16 +86,39 @@ func Make(ctx context.Context, r *ref.Ref, info *engine.Info, lookup Resolver, l
 			return fmt.Errorf("the daemon's endpoint %q is not an http(s) URL", base)
 		}
 		e := Endpoint{Base: u.String(), Host: u.Host, Mirror: mirror}
-		if ic, ok := info.RegistryConfig.IndexConfigs[u.Host]; ok && !ic.Secure {
-			e.Insecure, e.InsecureWhy = true, "insecure-registries lists "+u.Host
-		} else if why := inCIDRs(ctx, u.Hostname(), cidrs, lookup); why != "" {
+		hub := u.Host == HubHost
+		// As the daemon decides: Docker Hub is always verified; a registry
+		// with its own entry (insecure-registries by name) uses that entry;
+		// only others are matched against the insecure ranges.
+		key := u.Host
+		if hub {
+			key = ref.DockerHub
+		}
+		if ic, ok := info.RegistryConfig.IndexConfigs[key]; ok {
+			if !ic.Secure {
+				e.Insecure, e.InsecureWhy = true, "insecure-registries lists "+u.Host
+			}
+		} else if why := inCIDRs(ctx, u.Hostname(), cidrs, lookup); why != "" && !hub {
 			e.Insecure, e.InsecureWhy = true, why
 		}
 		if pu, err := proxy(u); err == nil && pu != nil {
 			e.Proxy = pu
+			if pw, ok := pu.User.Password(); ok && pw == "xxxxx" {
+				e.ProxyMasked = true
+			}
 		}
-		if local {
-			dir := filepath.Join(CertsRoot, u.Host)
+		// Docker Hub's certificates: the containerd store reads
+		// certs.d/docker.io; the classic store reads none (both tested).
+		switch {
+		case hub && p.Containerd:
+			e.CertsPath = filepath.Join(p.CertsRoot, ref.DockerHub)
+		case hub:
+			e.CertsPath = ""
+		default:
+			e.CertsPath = filepath.Join(p.CertsRoot, u.Host)
+		}
+		if local && e.CertsPath != "" {
+			dir := e.CertsPath
 			if entries, err := os.ReadDir(dir); err == nil {
 				e.CertsDir = dir
 				for _, f := range entries {
@@ -141,6 +177,16 @@ func inCIDRs(ctx context.Context, host string, cidrs []netip.Prefix, lookup Reso
 		}
 	}
 	return ""
+}
+
+// RootlessCertsRoot is a rootless daemon's certs.d:
+// $XDG_CONFIG_HOME/docker/certs.d, or ~/.config/docker/certs.d.
+func RootlessCertsRoot() string {
+	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
+		return filepath.Join(x, "docker", "certs.d")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "docker", "certs.d")
 }
 
 // ProxyFunc picks the daemon's proxy for a URL, by the same rules as the

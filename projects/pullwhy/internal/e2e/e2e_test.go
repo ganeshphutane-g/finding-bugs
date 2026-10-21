@@ -17,6 +17,7 @@ type world struct {
 	plain, tls *testkit.Registry
 	auth       *testkit.Registry
 	mirror     *testkit.Registry // holds library/alpine:3, single-platform
+	authMirror *testkit.Registry // the same, with a password
 }
 
 func setup(t *testing.T) *world {
@@ -37,6 +38,7 @@ func setup(t *testing.T) *world {
 	w.auth = testkit.StartRegistry(t, w.gw, testkit.RegistryOptions{User: "bob", Password: "s3cret", Data: w.plain.Data()})
 	w.mirror = testkit.StartRegistry(t, w.gw, testkit.RegistryOptions{})
 	w.mirror.Push(t, "alpine:3", "library/alpine:3")
+	w.authMirror = testkit.StartRegistry(t, w.gw, testkit.RegistryOptions{User: "bob", Password: "s3cret", Data: w.mirror.Data()})
 	return w
 }
 
@@ -157,6 +159,26 @@ func TestSideBySide(t *testing.T) {
 					t.Errorf("the pull took %s; the dead mirror should have cost more", p.Took)
 				}
 				t.Logf("%s store: a pull with a dead mirror took %s", store, p.Took.Round(time.Second))
+
+				// A mirror that asks for a login: the containerd store sends it
+				// no credentials and stops there; the classic store falls back.
+				d = testkit.StartDind(t, fmt.Sprintf(`{"registry-mirrors":["http://%s"],"insecure-registries":[%q]}`, w.authMirror.Addr, w.authMirror.Addr), classic)
+				if classic {
+					expect(t, d.Pull("alpine:3"), d.Pullwhy("alpine:3"), true, 0, "")
+				} else {
+					expect(t, d.Pull("alpine:3"), d.Pullwhy("alpine:3"), false, 3, "mirror-unauthorized")
+				}
+			})
+			t.Run("docker hub", func(t *testing.T) {
+				d := testkit.StartDind(t, "", classic)
+				hubOK(t, d)
+				// A name that is not there: Docker Hub answers as for a
+				// private repository.
+				r := d.Pullwhy("--pull", "library/no-such-image-pullwhy")
+				expect(t, d.Pull("library/no-such-image-pullwhy"), r, false, 3, "not-found")
+				if len(r.Findings) > 0 && !strings.Contains(r.Findings[0].Title, "not on Docker Hub, or it is private") {
+					t.Errorf("%s", r.Findings[0].Title)
+				}
 			})
 		})
 	}

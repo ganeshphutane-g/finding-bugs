@@ -109,3 +109,14 @@ func TestClassify(t *testing.T) {
 		}
 	}
 }
+
+func TestSilentEnd(t *testing.T) {
+	clock := time.Unix(1000, 0)
+	s := &script{clock: &clock}
+	s.events = append(s.events, ev(10, "Pulling fs layer", "a", 0, 0), ev(20, "Pull complete", "a", 0, 0))
+	// The stream ends 40 s after its last line.
+	tl := Run(context.Background(), s, "n", "t", "", "", 10*time.Second, func() time.Time { return clock.Add(40 * time.Second) })
+	if len(tl.Gaps) != 1 || tl.Gaps[0].Took < 39*time.Second || tl.Gaps[0].Phase != "after the layers were extracted" {
+		t.Fatalf("%+v", tl.Gaps)
+	}
+}

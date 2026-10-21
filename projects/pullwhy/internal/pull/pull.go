@@ -160,7 +160,13 @@ func Run(ctx context.Context, p Puller, name, reference, platform, auth string, 
 			phase = "after the layers were extracted"
 		}
 	})
-	t.Took = now().Sub(start)
+	end := now()
+	t.Took = end.Sub(start)
+	// A silence at the end (the daemon still fetching, say from a dead
+	// mirror) counts too.
+	if gap := end.Sub(last); gap >= stall {
+		t.Gaps = append(t.Gaps, Gap{At: last.Sub(start), Took: gap, Phase: phase})
+	}
 	sort.SliceStable(t.Layers, func(i, j int) bool { return t.Layers[i].Total > t.Layers[j].Total })
 	if err != nil {
 		t.Error = err.Error()
@@ -209,13 +215,18 @@ func Classify(msg string) string {
 		return probe.KindTimeout
 	case strings.Contains(m, "connection reset"):
 		return probe.KindReset
+	case strings.Contains(m, "no basic auth credentials") || strings.Contains(m, "authorization failed"):
+		// A registry (or a mirror, on the containerd store) asking for a
+		// login the daemon did not send.
+		return probe.KindUnauthorized
 	case strings.Contains(m, "pull access denied") || strings.Contains(m, "repository does not exist"):
 		// Docker Hub says this both for a repository that does not exist and
 		// for a private one without credentials.
 		return probe.KindNotFound
 	case strings.Contains(m, "manifest unknown") || strings.Contains(m, ": not found"):
 		return probe.KindNotFound
-	case strings.Contains(m, "unauthorized") || strings.Contains(m, "authentication required") || strings.Contains(m, "denied"):
+	case strings.Contains(m, "unauthorized") || strings.Contains(m, "authentication required") ||
+		strings.Contains(m, "no basic auth credentials") || strings.Contains(m, "requested access to the resource is denied"):
 		return probe.KindUnauthorized
 	case strings.Contains(m, "x509") || strings.Contains(m, "tls:"):
 		return probe.KindTLSOther

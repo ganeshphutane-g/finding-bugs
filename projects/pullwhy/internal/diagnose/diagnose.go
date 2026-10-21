@@ -4,6 +4,9 @@ package diagnose
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -50,6 +53,42 @@ type Input struct {
 // DaemonJSON is where the daemon's settings usually live.
 const DaemonJSON = "/etc/docker/daemon.json"
 
+func daemonJSON(in Input) string {
+	if in.Info != nil && in.Info.Rootless() {
+		return "~/.config/docker/daemon.json"
+	}
+	return DaemonJSON
+}
+
+// registryAnswered: kinds where the registry itself answered, which say
+// more than a failure to connect.
+var registryAnswered = map[string]bool{probe.KindUnauthorized: true, probe.KindNotFound: true, probe.KindRateLimited: true,
+	probe.KindTokenUnavailable: true, probe.KindServer: true}
+
+// pickFailure chooses the registry endpoint whose failure explains most:
+// one where the registry answered; else not the plain-HTTP retry of a TLS
+// registry (which can only say "not a registry"); else the last.
+func pickFailure(results []*probe.Result) *probe.Result {
+	var regs []*probe.Result
+	for _, r := range results {
+		if !r.Endpoint.Mirror {
+			regs = append(regs, r)
+		}
+	}
+	if len(regs) == 0 {
+		return results[len(results)-1]
+	}
+	for _, r := range regs {
+		if registryAnswered[r.Kind] {
+			return r
+		}
+	}
+	if len(regs) == 2 && regs[0].Kind != probe.KindHTTPOnHTTPS {
+		return regs[0]
+	}
+	return regs[len(regs)-1]
+}
+
 // Diagnose finds the likely causes.
 func Diagnose(in Input) []Finding {
 	var out []Finding
@@ -59,14 +98,20 @@ func Diagnose(in Input) []Finding {
 	if in.CredErr != nil {
 		add(Finding{Severity: Problem, Kind: "credentials", Title: "The credentials for " + r.Registry + " cannot be read",
 			Evidence: []string{in.CredErr.Error()},
-			Fix:      "Install the credential helper named in ~/.docker/config.json, or run docker login " + loginHost(r.Registry) + " again."})
+			Fix:      "Install the credential helper named in ~/.docker/config.json, or run docker login" + loginHost(r.Registry) + " again."})
 	}
 
-	// The endpoint the daemon will end up using: the first that works.
-	var used *probe.Result
+	// The endpoint the daemon will end up using: the first that works. On
+	// the containerd store a mirror that asks for a login stops the pull
+	// there (tested: it is sent no credentials, and does not fall back).
+	var used, blocked *probe.Result
 	for _, res := range in.Results {
 		if res.OK {
 			used = res
+			break
+		}
+		if res.Endpoint.Mirror && in.Plan.Containerd && res.Kind == probe.KindUnauthorized {
+			blocked = res
 			break
 		}
 	}
@@ -74,12 +119,16 @@ func Diagnose(in Input) []Finding {
 
 	for _, res := range in.Results {
 		if res.Endpoint.Mirror && !res.OK {
-			add(mirrorFinding(in, res, used != nil))
+			add(mirrorFinding(in, res, used != nil && blocked == nil))
+		}
+		if res == blocked {
+			break
 		}
 	}
-	if used == nil {
-		add(registryFinding(in, last))
-	} else {
+	if used == nil && blocked == nil {
+		add(registryFinding(in, pickFailure(in.Results)))
+	} else if used != nil {
+		out = append(out, slowFindings(used)...)
 		if used.RateLimit != nil {
 			if f, ok := rateFinding(used.RateLimit); ok {
 				add(f)
@@ -130,8 +179,11 @@ func Diagnose(in Input) []Finding {
 
 	if !in.Local {
 		why := "the daemon is at " + in.DaemonHost
-		if in.Info.DockerDesktop() {
+		switch {
+		case in.Info.DockerDesktop():
 			why = "the daemon runs in Docker Desktop's virtual machine"
+		case in.Info.Rootless():
+			why = "the daemon runs rootless, in its own network namespace"
 		}
 		add(Finding{Severity: Note, Kind: "remote-daemon", Title: "The probes ran from this machine, but " + why,
 			Evidence: []string{"its network, proxy and certificates can differ from this machine's; --pull shows what the daemon itself does"}})
@@ -143,12 +195,52 @@ func loginHost(registry string) string {
 	if registry == "docker.io" {
 		return ""
 	}
-	return registry
+	return " " + registry
+}
+
+func loopback(hostport string) bool {
+	h := strings.Trim(strings.Split(strings.TrimPrefix(hostport, "["), "]")[0], "[]")
+	if i := strings.LastIndex(h, ":"); i > 0 && !strings.Contains(h[:i], ":") {
+		h = h[:i]
+	}
+	if h == "localhost" {
+		return true
+	}
+	a, err := netip.ParseAddr(h)
+	return err == nil && a.IsLoopback()
+}
+
+// internal reports whether a registry host looks like it is on a private
+// network (a private address, or a name without a public suffix).
+func internal(hostport string) bool {
+	h := hostport
+	if host, _, err := net.SplitHostPort(hostport); err == nil {
+		h = host
+	}
+	h = strings.Trim(h, "[]")
+	if a, err := netip.ParseAddr(h); err == nil {
+		return a.IsPrivate() || a.IsLinkLocalUnicast() || a.IsLoopback()
+	}
+	if !strings.Contains(h, ".") {
+		return true
+	}
+	for _, suf := range []string{".local", ".lan", ".internal", ".home.arpa", ".corp", ".intranet"} {
+		if strings.HasSuffix(h, suf) {
+			return true
+		}
+	}
+	return false
 }
 
 func mirrorFinding(in Input, res *probe.Result, fallbackWorks bool) Finding {
-	f := Finding{Kind: "mirror-" + res.Kind, Evidence: evidence(res)}
-	fix := "Remove it from \"registry-mirrors\" in " + DaemonJSON + " (or fix it), then restart Docker."
+	f := Finding{Kind: "mirror-" + res.Kind, Evidence: evidence(res), Severity: Note}
+	fix := "Remove it from \"registry-mirrors\" in " + daemonJSON(in) + " (or fix it), then restart Docker."
+	slowest := time.Duration(0)
+	for _, q := range res.Requests {
+		if q.Took > slowest {
+			slowest = q.Took
+		}
+	}
 	switch res.Kind {
 	case probe.KindTimeout:
 		f.Severity = Slow
@@ -159,22 +251,54 @@ func mirrorFinding(in Input, res *probe.Result, fallbackWorks bool) Finding {
 		} else {
 			f.Evidence = append(f.Evidence, "with the classic image store, the daemon waits about 15 s for it once per pull before it tries the next endpoint")
 		}
+	case probe.KindUnauthorized:
+		if in.Plan.Containerd {
+			f.Severity = Problem
+			f.Title = "The mirror " + res.Base + " asks for a login, which stops every pull from Docker Hub"
+			f.Evidence = append(f.Evidence, "with the containerd image store, the daemon sends a mirror no credentials, "+
+				"and a mirror's refusal ends the pull (\"no basic auth credentials\") instead of falling back to Docker Hub")
+			fix = "Let the mirror serve pulls without a login, or remove it from \"registry-mirrors\" in " + daemonJSON(in) + "."
+		} else {
+			f.Title = "The mirror " + res.Base + " refused the Docker Hub credentials; the daemon goes on to the next endpoint"
+			f.Evidence = append(f.Evidence, "with the classic image store, the daemon sends a mirror the Docker Hub credentials")
+		}
 	case probe.KindRefused, probe.KindDNS, probe.KindNotRegistry:
-		f.Severity = Note
 		f.Title = "The mirror " + res.Base + " is not usable; the daemon skips it at once"
 	case probe.KindNotFound:
-		f.Severity = Note
 		f.Title = "The mirror " + res.Base + " does not have " + in.Plan.Ref.String() + "; the daemon goes on to the next endpoint"
 		fix = ""
 	default:
-		f.Severity = Slow
 		f.Title = "The mirror " + res.Base + " fails (" + res.Kind + "); the daemon then tries the next endpoint"
+		if slowest >= 2*time.Second {
+			f.Severity = Slow
+		}
 	}
 	if !fallbackWorks {
 		f.Severity = Problem
 	}
 	f.Fix = fix
 	return f
+}
+
+// slowFindings looks at the timings of the endpoint in use.
+func slowFindings(res *probe.Result) []Finding {
+	limits := map[string]time.Duration{"dns": time.Second, "connect": time.Second, "tls": time.Second, "wait": 2 * time.Second}
+	names := map[string]string{"dns": "the DNS lookup", "connect": "connecting", "tls": "the TLS handshake", "wait": "waiting for the answer"}
+	var out []Finding
+	for _, q := range res.Requests {
+		u, _ := url.Parse(q.URL)
+		host := q.URL
+		if u != nil {
+			host = u.Host
+		}
+		for _, ph := range q.Phases {
+			if lim, ok := limits[ph.Name]; ok && ph.Took >= lim {
+				out = append(out, Finding{Severity: Slow, Kind: "slow-" + ph.Name,
+					Title: fmt.Sprintf("%s is slow: %s took %s (%s %s)", host, names[ph.Name], ph.Took.Round(10*time.Millisecond), q.Method, q.What)})
+			}
+		}
+	}
+	return out
 }
 
 func registryFinding(in Input, res *probe.Result) Finding {
@@ -185,23 +309,31 @@ func registryFinding(in Input, res *probe.Result) Finding {
 	switch res.Kind {
 	case probe.KindTLSAuthority:
 		f.Title = host + "'s certificate is signed by a CA the daemon does not know"
-		dir := plan.CertsRoot + "/" + host
+		dir := res.Endpoint.CertsPath
+		trust := "add the CA to the trust store of the daemon's host and restart Docker"
+		where := " (or put it in " + dir + "/ca.crt)"
+		if dir == "" {
+			where = " (for Docker Hub the classic image store reads no certs.d)"
+		}
 		if publicRegistry(res.Endpoint.Host) {
 			// Public registries use public CAs: something on the way swaps
 			// the certificate.
 			f.Title = "Something between the daemon and " + host + " intercepts TLS"
 			f.Evidence = append(f.Evidence, host+" uses a publicly trusted certificate, so an unknown CA means another certificate was put in its place "+
 				"(a company proxy, antivirus or a captive portal)")
-			f.Fix = "Add the intercepting CA to the trust store of the daemon's host and restart Docker (or put it in " + dir +
-				"/ca.crt), or have registry traffic exempted from interception."
+			f.Fix = "Add the intercepting CA to the trust store of the daemon's host and restart Docker" + where +
+				", or have registry traffic exempted from interception."
 			break
 		}
-		if res.Endpoint.CertsDir != "" && contains(res.Endpoint.CertFiles, "ca.crt") {
+		switch {
+		case dir == "":
+			f.Fix = "To trust its CA, " + trust + where + "."
+		case res.Endpoint.CertsDir != "" && contains(res.Endpoint.CertFiles, "ca.crt"):
 			f.Evidence = append(f.Evidence, dir+"/ca.crt is there, but it does not sign this certificate")
 			f.Fix = "Replace " + dir + "/ca.crt with the CA that signed the registry's certificate."
-		} else {
+		default:
 			f.Fix = "Copy the registry's CA certificate to " + dir + "/ca.crt on the daemon's host (no restart needed), " +
-				"or add the CA to the host's trust store and restart Docker."
+				"or " + trust + "."
 		}
 	case probe.KindTLSExpired:
 		f.Title = host + "'s certificate has expired (or is not valid yet)"
@@ -213,34 +345,65 @@ func registryFinding(in Input, res *probe.Result) Finding {
 		f.Title = "The TLS connection to " + host + " fails"
 	case probe.KindHTTPOnHTTPS:
 		f.Title = host + " speaks plain HTTP, and the daemon only uses HTTPS for it"
-		f.Fix = "Add \"" + host + "\" to \"insecure-registries\" in " + DaemonJSON + " and restart Docker, or give the registry TLS."
+		f.Fix = "Add \"" + host + "\" to \"insecure-registries\" in " + daemonJSON(in) + " and restart Docker, or give the registry TLS."
 	case probe.KindProxy:
+		if res.Endpoint.ProxyMasked {
+			f.Severity, f.Kind = Note, "proxy-unchecked"
+			f.Title = "pullwhy could not check " + host + " through the daemon's proxy: it needs a password, which the daemon does not show"
+			f.Fix = "Run with --pull to see what the daemon itself gets."
+			break
+		}
 		f.Title = "The daemon's proxy " + proxyHost(res) + " does not get through to " + host
-		f.Fix = "Check the proxy, and \"proxies\" in " + DaemonJSON + " (or the docker service's HTTP(S)_PROXY); add internal registries to no-proxy."
+		if internal(res.Endpoint.Host) {
+			f.Evidence = append(f.Evidence, host+" looks internal: add it to no-proxy if the proxy cannot reach it")
+		}
+		f.Fix = "Check the proxy, and \"proxies\" in " + daemonJSON(in) + " (or the docker service's HTTP(S)_PROXY); add internal registries to no-proxy."
 	case probe.KindTimeout, probe.KindRefused, probe.KindReset, probe.KindDNS:
 		what := map[string]string{probe.KindTimeout: "does not answer", probe.KindRefused: "refuses connections",
 			probe.KindReset: "drops the connection", probe.KindDNS: "cannot be found in DNS"}[res.Kind]
 		f.Title = host + " " + what
-		if proxied {
+		schemeProxy := in.Info.HTTPSProxy
+		if strings.HasPrefix(res.Base, "http://") {
+			schemeProxy = in.Info.HTTPProxy
+		}
+		switch {
+		case proxied:
 			f.Evidence = append(f.Evidence, "the daemon goes through the proxy "+proxyHost(res)+" for it")
-		} else if in.Info.HTTPSProxy != "" {
+			if internal(res.Endpoint.Host) {
+				f.Evidence = append(f.Evidence, host+" looks internal: add it to no-proxy if the proxy cannot reach it")
+			}
+		case schemeProxy != "" && !loopback(res.Endpoint.Host):
 			f.Evidence = append(f.Evidence, "the daemon has a proxy, but no-proxy excludes "+host)
 		}
 		f.Fix = "Check the address, the network path and any firewall between the daemon and " + host + "."
 	case probe.KindUnauthorized:
+		if r.Registry == "docker.io" {
+			// Docker Hub answers 401 for a repository that does not exist
+			// as for a private one (checked).
+			f.Kind = probe.KindNotFound
+			if in.Auth.Anonymous() {
+				f.Title = r.Repo + " is not on Docker Hub, or it is private"
+				f.Fix = "Check the name (and the tag); for a private repository, run docker login."
+			} else {
+				f.Title = r.Repo + " is not on Docker Hub, or the account from " + in.Auth.Source + " cannot read it"
+				f.Fix = "Check the name; run docker login again if the account should have access."
+			}
+			f.Evidence = append(f.Evidence, "Docker Hub gives the same answer for a repository that does not exist and for a private one")
+			break
+		}
 		if in.Auth.Anonymous() {
 			f.Title = host + " needs a login for " + r.Repo
-			f.Fix = "Run docker login " + loginHost(r.Registry) + " (with an account that can read " + r.Repo + ")."
+			f.Fix = "Run docker login" + loginHost(r.Registry) + " (with an account that can read " + r.Repo + ")."
 		} else {
 			f.Title = host + " refused the credentials from " + in.Auth.Source
-			f.Fix = "Run docker login " + loginHost(r.Registry) + " again; a token may have expired or lack read access to " + r.Repo + "."
+			f.Fix = "Run docker login" + loginHost(r.Registry) + " again; a token may have expired or lack read access to " + r.Repo + "."
 		}
 	case probe.KindNotFound:
 		f.Title = r.String() + " is not there"
 		if r.Registry == "docker.io" && in.Auth.Anonymous() {
 			f.Evidence = append(f.Evidence, "Docker Hub answers the same for a private repository without a login")
 		}
-		f.Fix = "Check the name and the tag; for a private repository, docker login " + loginHost(r.Registry) + "."
+		f.Fix = "Check the name and the tag; for a private repository, docker login" + loginHost(r.Registry) + "."
 	case probe.KindRateLimited:
 		f.Title = "Docker Hub's pull limit is used up"
 		if rl := res.RateLimit; rl != nil {

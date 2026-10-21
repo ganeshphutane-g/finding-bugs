@@ -103,11 +103,10 @@ func Lookup(ctx context.Context, configDir, registry string, run Runner) (*Auth,
 	if run == nil {
 		run = RunHelper
 	}
-	// credHelpers names a helper per registry.
-	for name, helper := range c.CredHelpers {
-		if name == k || host(name) == host(k) && k != HubKey {
-			return fromHelper(ctx, run, helper, k)
-		}
+	// credHelpers names a helper per registry host, exactly
+	// (index.docker.io for Docker Hub), as the CLI looks it up.
+	if helper, ok := c.CredHelpers[host(k)]; ok {
+		return fromHelper(ctx, run, helper, k)
 	}
 	if c.CredsStore != "" {
 		a, err := fromHelper(ctx, run, c.CredsStore, k)

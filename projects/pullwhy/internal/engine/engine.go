@@ -41,8 +41,11 @@ const DefaultHost = "unix:///var/run/docker.sock"
 // DOCKER_CONTEXT or the config's currentContext, then the default socket.
 func Find(getenv func(string) string, configDir string) (*Endpoint, error) {
 	if h := getenv("DOCKER_HOST"); h != "" {
-		return &Endpoint{Host: h, From: "DOCKER_HOST", TLSVerify: getenv("DOCKER_TLS_VERIFY") != "",
-			CertPath: getenv("DOCKER_CERT_PATH")}, nil
+		e := &Endpoint{Host: h, From: "DOCKER_HOST", TLSVerify: getenv("DOCKER_TLS_VERIFY") != "", CertPath: getenv("DOCKER_CERT_PATH")}
+		if e.TLSVerify && e.CertPath == "" {
+			e.CertPath = configDir // as the CLI: ~/.docker/{ca,cert,key}.pem
+		}
+		return e, nil
 	}
 	name := getenv("DOCKER_CONTEXT")
 	if name == "" {
@@ -206,6 +209,7 @@ type Info struct {
 	Name            string      `json:"Name"`
 	Driver          string      `json:"Driver"`
 	DriverStatus    [][2]string `json:"DriverStatus"`
+	SecurityOptions []string    `json:"SecurityOptions"`
 	HTTPProxy       string      `json:"HttpProxy"`
 	HTTPSProxy      string      `json:"HttpsProxy"`
 	NoProxy         string      `json:"NoProxy"`
@@ -222,6 +226,17 @@ type Info struct {
 func (i *Info) ContainerdStore() bool {
 	for _, kv := range i.DriverStatus {
 		if kv[0] == "driver-type" && strings.Contains(kv[1], "snapshotter") {
+			return true
+		}
+	}
+	return false
+}
+
+// Rootless reports whether the daemon runs rootless: its own network
+// namespace, and its settings under ~/.config/docker.
+func (i *Info) Rootless() bool {
+	for _, o := range i.SecurityOptions {
+		if strings.Contains(o, "name=rootless") {
 			return true
 		}
 	}
@@ -269,7 +284,7 @@ type Event struct {
 // error, if the pull failed.
 func (c *Client) Pull(ctx context.Context, name, reference, platform, registryAuth string, fn func(Event)) error {
 	q := url.Values{"fromImage": {name}}
-	if strings.HasPrefix(reference, "sha256:") {
+	if strings.Contains(reference, ":") { // a digest (tags have no colon)
 		q.Set("fromImage", name+"@"+reference)
 	} else {
 		q.Set("tag", reference)
