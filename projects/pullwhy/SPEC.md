@@ -50,11 +50,12 @@ step and names the likely cause, with the evidence and the fix.
     waits 30 s.** Pulling alpine:3 took **2 min 1 s** on Docker 29.8.2, and
     **3 min 32 s** in a later run on 29.9.2, against about 1 s without the
     mirror.
-  - **Credentials:** the containerd store sends a mirror no credentials, and
-    a mirror that asks for a login stops the pull there ("no basic auth
-    credentials") instead of falling back. The classic store sends the mirror
-    Docker Hub's credentials, and falls back if it refuses them. Both tested
-    (2026-10-21).
+  - **Credentials:** the containerd store sends a mirror no credentials. A
+    mirror that asks for a login is then skipped on an anonymous pull, but
+    when the pull carries Docker Hub credentials it stops the pull there
+    ("pull access denied … no basic auth credentials"). The classic store
+    sends the mirror Docker Hub's credentials, and falls back if it refuses
+    them. All tested (2026-10-21).
 - *classic store:*
   - The same unreachable mirror costs one 15 s `GET /v2/` timeout ("Attempting
     next endpoint for pull after error"); then Hub. That pull took 16 s.

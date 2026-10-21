@@ -197,9 +197,15 @@ func TestHubUnauthorizedIsMissingOrPrivate(t *testing.T) {
 func TestMirrorLogin(t *testing.T) {
 	hub := ok(ep("https://registry-1.docker.io", false), "sha256:a")
 	m := failed(ep("http://172.17.0.1:5099", true), probe.KindUnauthorized)
-	fs := Diagnose(input("alpine:3", true, m, hub))
-	if fs[0].Severity != Problem || !strings.Contains(fs[0].Title, "stops every pull") {
-		t.Fatalf("containerd: %+v", fs)
+	in := input("alpine:3", true, m, hub)
+	in.Auth = &creds.Auth{Username: "bob", Password: "x", Source: "config.json auths"}
+	fs := Diagnose(in)
+	if fs[0].Severity != Problem || !strings.Contains(fs[0].Title, "stops pulls that carry Docker Hub credentials") {
+		t.Fatalf("containerd with credentials: %+v", fs)
+	}
+	fs = Diagnose(input("alpine:3", true, m, hub))
+	if Worst(fs) != Note || !strings.Contains(fs[0].Title, "anonymous pulls go on to Docker Hub") {
+		t.Fatalf("containerd anonymous: %+v", fs)
 	}
 	fs = Diagnose(input("alpine:3", false, m, hub))
 	if Worst(fs) != Note || !strings.Contains(fs[0].Title, "refused the Docker Hub credentials") {

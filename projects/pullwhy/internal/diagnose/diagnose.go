@@ -102,15 +102,16 @@ func Diagnose(in Input) []Finding {
 	}
 
 	// The endpoint the daemon will end up using: the first that works. On
-	// the containerd store a mirror that asks for a login stops the pull
-	// there (tested: it is sent no credentials, and does not fall back).
+	// the containerd store, when the pull carries Docker Hub credentials, a
+	// mirror that asks for a login stops it there (tested: the mirror is sent
+	// none, and there is no fallback); anonymous pulls fall back.
 	var used, blocked *probe.Result
 	for _, res := range in.Results {
 		if res.OK {
 			used = res
 			break
 		}
-		if res.Endpoint.Mirror && in.Plan.Containerd && res.Kind == probe.KindUnauthorized {
+		if res.Endpoint.Mirror && in.Plan.Containerd && res.Kind == probe.KindUnauthorized && !in.Auth.Anonymous() {
 			blocked = res
 			break
 		}
@@ -252,13 +253,18 @@ func mirrorFinding(in Input, res *probe.Result, fallbackWorks bool) Finding {
 			f.Evidence = append(f.Evidence, "with the classic image store, the daemon waits about 15 s for it once per pull before it tries the next endpoint")
 		}
 	case probe.KindUnauthorized:
-		if in.Plan.Containerd {
+		switch {
+		case in.Plan.Containerd && !in.Auth.Anonymous():
 			f.Severity = Problem
-			f.Title = "The mirror " + res.Base + " asks for a login, which stops every pull from Docker Hub"
-			f.Evidence = append(f.Evidence, "with the containerd image store, the daemon sends a mirror no credentials, "+
-				"and a mirror's refusal ends the pull (\"no basic auth credentials\") instead of falling back to Docker Hub")
+			f.Title = "The mirror " + res.Base + " asks for a login, which stops pulls that carry Docker Hub credentials"
+			f.Evidence = append(f.Evidence, "with the containerd image store, the daemon sends a mirror no credentials; when the pull "+
+				"carries Docker Hub credentials, the mirror's refusal ends it instead of falling back to Docker Hub")
 			fix = "Let the mirror serve pulls without a login, or remove it from \"registry-mirrors\" in " + daemonJSON(in) + "."
-		} else {
+		case in.Plan.Containerd:
+			f.Title = "The mirror " + res.Base + " asks for a login; anonymous pulls go on to Docker Hub"
+			f.Evidence = append(f.Evidence, "with the containerd image store, the daemon sends a mirror no credentials; "+
+				"after docker login, pulls would stop at this mirror instead")
+		default:
 			f.Title = "The mirror " + res.Base + " refused the Docker Hub credentials; the daemon goes on to the next endpoint"
 			f.Evidence = append(f.Evidence, "with the classic image store, the daemon sends a mirror the Docker Hub credentials")
 		}

@@ -160,12 +160,15 @@ func TestSideBySide(t *testing.T) {
 				}
 				t.Logf("%s store: a pull with a dead mirror took %s", store, p.Took.Round(time.Second))
 
-				// A mirror that asks for a login: the containerd store sends it
-				// no credentials and stops there; the classic store falls back.
+				// A mirror that asks for a login. Anonymous pulls fall back to
+				// Docker Hub on both stores.
 				d = testkit.StartDind(t, fmt.Sprintf(`{"registry-mirrors":["http://%s"],"insecure-registries":[%q]}`, w.authMirror.Addr, w.authMirror.Addr), classic)
-				if classic {
-					expect(t, d.Pull("alpine:3"), d.Pullwhy("alpine:3"), true, 0, "")
-				} else {
+				expect(t, d.Pull("alpine:3"), d.Pullwhy("alpine:3"), true, 0, "")
+				// With Docker Hub credentials, the containerd store sends the
+				// mirror none and stops there. (The credentials are not Hub's,
+				// so on the classic store the pull fails at Hub instead.)
+				d.Write("/root/.docker/config.json", dockerConfig("https://index.docker.io/v1/", "someone", "else"))
+				if !classic {
 					expect(t, d.Pull("alpine:3"), d.Pullwhy("alpine:3"), false, 3, "mirror-unauthorized")
 				}
 			})

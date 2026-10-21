@@ -13,7 +13,8 @@ First release.
   - **Credentials** found as the CLI finds them.
 - Causes it tells apart:
   - dead, refusing or stale mirrors, with the cost on each image store, and
-    mirrors that ask for a login (which stop pulls on the containerd store);
+    mirrors that ask for a login (which stop logged-in pulls on the
+    containerd store);
   - private CAs, and TLS interception on public registries (the issuer is
     named);
   - plain HTTP without insecure-registries;

@@ -35,7 +35,7 @@ outside:
 | A plain-HTTP registry missing from `insecure-registries`. | |
 | Docker Hub's pull limit: 100 an hour per address without login, from Hub's own headers. | |
 | A login that is missing, wrong or expired. A private repository looks like a missing one: Docker Hub answers both with "unauthorized". | |
-| A mirror that asks for a login. On the containerd store the daemon sends it no credentials and the pull stops there; on the classic store it falls back. | |
+| A mirror that asks for a login. On the containerd store the daemon sends it no credentials; after `docker login` the pull stops there instead of falling back. | |
 | An image with no build for your platform. | |
 
 pullwhy tells these apart. It changes nothing: no daemon settings, and no
