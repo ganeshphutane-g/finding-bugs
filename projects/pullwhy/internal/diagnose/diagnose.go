@@ -186,6 +186,16 @@ func registryFinding(in Input, res *probe.Result) Finding {
 	case probe.KindTLSAuthority:
 		f.Title = host + "'s certificate is signed by a CA the daemon does not know"
 		dir := plan.CertsRoot + "/" + host
+		if publicRegistry(res.Endpoint.Host) {
+			// Public registries use public CAs: something on the way swaps
+			// the certificate.
+			f.Title = "Something between the daemon and " + host + " intercepts TLS"
+			f.Evidence = append(f.Evidence, host+" uses a publicly trusted certificate, so an unknown CA means another certificate was put in its place "+
+				"(a company proxy, antivirus or a captive portal)")
+			f.Fix = "Add the intercepting CA to the trust store of the daemon's host and restart Docker (or put it in " + dir +
+				"/ca.crt), or have registry traffic exempted from interception."
+			break
+		}
 		if res.Endpoint.CertsDir != "" && contains(res.Endpoint.CertFiles, "ca.crt") {
 			f.Evidence = append(f.Evidence, dir+"/ca.crt is there, but it does not sign this certificate")
 			f.Fix = "Replace " + dir + "/ca.crt with the CA that signed the registry's certificate."
@@ -309,7 +319,14 @@ func evidence(res *probe.Result) []string {
 		case q.Kind == probe.KindTimeout:
 			s += fmt.Sprintf("no answer in %s", q.Took.Round(100*time.Millisecond))
 		case q.Error != "":
-			s += q.Error
+			if strings.Contains(q.Error, q.URL) {
+				s = q.Error // Go's errors already name the request
+			} else {
+				s += q.Error
+			}
+			if q.Message != "" {
+				s += " (" + q.Message + ")"
+			}
 		default:
 			s += fmt.Sprintf("%d", q.Status)
 			if q.Message != "" {
@@ -319,6 +336,19 @@ func evidence(res *probe.Result) []string {
 		ev = append(ev, s)
 	}
 	return ev
+}
+
+// publicRegistry reports whether host is a well-known public registry, whose
+// certificates come from public CAs.
+func publicRegistry(host string) bool {
+	h := strings.Split(host, ":")[0]
+	for _, p := range []string{"registry-1.docker.io", "auth.docker.io", "docker.io", "ghcr.io", "quay.io", "gcr.io", "mcr.microsoft.com",
+		"registry.k8s.io", "public.ecr.aws", "registry.gitlab.com", "nvcr.io", "docker.elastic.co"} {
+		if h == p || strings.HasSuffix(h, ".gcr.io") || strings.HasSuffix(h, ".pkg.dev") {
+			return true
+		}
+	}
+	return false
 }
 
 func proxyHost(res *probe.Result) string {

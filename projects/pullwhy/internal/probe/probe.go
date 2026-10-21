@@ -341,6 +341,10 @@ func doFull(ctx context.Context, c *http.Client, o Options, what, method, u stri
 	rec.Took = time.Since(start)
 	if err != nil {
 		rec.Kind, rec.Error = Classify(err), err.Error()
+		var ua x509.UnknownAuthorityError
+		if errors.As(err, &ua) && ua.Cert != nil {
+			rec.Message = "the certificate presented was issued by " + ua.Cert.Issuer.String()
+		}
 		if o.Proxy != nil && rec.Kind == KindOther {
 			// A proxy refusing CONNECT surfaces as its bare status text.
 			if pu, _ := o.Proxy(req.URL); pu != nil && proxyStatus(err) != "" {

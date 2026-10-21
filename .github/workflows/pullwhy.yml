@@ -1,0 +1,41 @@
+name: pullwhy
+
+on:
+  push:
+    paths: ["projects/pullwhy/**", ".github/workflows/pullwhy.yml"]
+  pull_request:
+    paths: ["projects/pullwhy/**", ".github/workflows/pullwhy.yml"]
+
+defaults:
+  run:
+    working-directory: projects/pullwhy
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/pullwhy/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: cross-builds
+        run: |
+          for target in linux/amd64 linux/arm64 linux/arm/7 darwin/arm64 windows/amd64; do
+            IFS=/ read -r os arch arm <<< "$target"
+            GOOS=$os GOARCH=$arch GOARM=$arm go build -o /dev/null . || exit 1
+          done
+      - name: the images the side-by-side tests use
+        run: |
+          for i in alpine:3 registry:2 docker:dind; do docker pull -q "$i"; done
+      - name: tests, also side by side with real pulls in scratch daemons (both image stores)
+        run: PULLWHY_INTEGRATION=1 go test -race -count=1 -timeout 35m ./...
+      - name: the Docker image builds and runs
+        run: |
+          docker build -t pullwhy:ci --build-arg VERSION=ci .
+          docker run --rm pullwhy:ci --version
+          # 0, or 4 when Docker Hub's pulls left for the runner's address are low.
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock --network host pullwhy:ci alpine:3 || test $? -eq 4

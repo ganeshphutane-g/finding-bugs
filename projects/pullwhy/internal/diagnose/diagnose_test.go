@@ -97,10 +97,15 @@ func TestRegistryKinds(t *testing.T) {
 			t.Errorf("%s: %+v", kind, fs[0])
 		}
 	}
+	// A public registry with an unknown CA: interception.
+	fs := Diagnose(input("nginx", true, failed(ep("https://registry-1.docker.io", false), probe.KindTLSAuthority)))
+	if !strings.Contains(fs[0].Title, "intercepts TLS") || !strings.Contains(fs[0].Fix, "trust store") {
+		t.Fatal(fs[0])
+	}
 	// A ca.crt that is there but wrong.
 	bad := reg
 	bad.CertsDir, bad.CertFiles = "/etc/docker/certs.d/reg.example:5443", []string{"ca.crt"}
-	fs := Diagnose(input("reg.example:5443/app:1", true, failed(bad, probe.KindTLSAuthority)))
+	fs = Diagnose(input("reg.example:5443/app:1", true, failed(bad, probe.KindTLSAuthority)))
 	if !strings.Contains(fs[0].Fix, "Replace") {
 		t.Fatal(fs[0])
 	}
