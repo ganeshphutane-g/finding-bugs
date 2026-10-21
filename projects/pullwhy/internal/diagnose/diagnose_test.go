@@ -122,9 +122,12 @@ func TestRegistryKinds(t *testing.T) {
 	if fs := Diagnose(in); !strings.Contains(fs[0].Title, "refused the credentials from credential helper desktop") {
 		t.Fatal(fs[0])
 	}
-	in.CredErr = errors.New("docker-credential-gcloud: not found")
-	if fs := Diagnose(in); fs[0].Kind != "credentials" {
-		t.Fatal(fs[0])
+	// Unreadable credentials are a note: the pull goes anonymous, and the
+	// registry's own answer stays the cause.
+	in.Auth, in.CredErr = nil, errors.New("docker-credential-gcloud: not found")
+	fs = Diagnose(in)
+	if !strings.Contains(fs[0].Title, "needs a login") || fs[len(fs)-1].Kind != "credentials" || fs[len(fs)-1].Severity != Note {
+		t.Fatalf("%+v", fs)
 	}
 }
 
@@ -208,8 +211,13 @@ func TestMirrorLogin(t *testing.T) {
 		t.Fatalf("containerd anonymous: %+v", fs)
 	}
 	fs = Diagnose(input("alpine:3", false, m, hub))
+	if Worst(fs) != Note || !strings.Contains(fs[0].Title, "asks for a login; the daemon goes on") {
+		t.Fatalf("classic anonymous: %+v", fs)
+	}
+	in.Plan.Containerd = false
+	fs = Diagnose(in)
 	if Worst(fs) != Note || !strings.Contains(fs[0].Title, "refused the Docker Hub credentials") {
-		t.Fatalf("classic: %+v", fs)
+		t.Fatalf("classic with credentials: %+v", fs)
 	}
 	// A quick failure of another kind is a note, not "slow".
 	quick := failed(ep("http://172.17.0.1:5099", true), probe.KindServer)
@@ -242,7 +250,7 @@ func TestSlowPhases(t *testing.T) {
 	res.Requests = []probe.Request{{What: "ping", Method: "GET", URL: "https://reg.example/v2/", Status: 401,
 		Phases: []probe.Phase{{Name: "dns", Took: 3 * time.Second}, {Name: "wait", Took: 100 * time.Millisecond}}}}
 	fs := Diagnose(input("reg.example/x", true, res))
-	if len(fs) != 1 || fs[0].Kind != "slow-dns" || Worst(fs) != Slow || !strings.Contains(fs[0].Title, "the DNS lookup took 3s") {
+	if len(fs) != 1 || fs[0].Kind != "slow-dns" || Worst(fs) != Slow || !strings.Contains(fs[0].Title, "the DNS lookup took up to 3s") {
 		t.Fatalf("%+v", fs)
 	}
 }
@@ -252,7 +260,18 @@ func TestMaskedProxy(t *testing.T) {
 	e.Proxy, _ = url.Parse("http://user:xxxxx@proxy:3128")
 	e.ProxyMasked = true
 	fs := Diagnose(input("ghcr.io/o/r", true, failed(e, probe.KindProxy)))
-	if Worst(fs) != Note || fs[0].Kind != "proxy-unchecked" {
+	if Worst(fs) != Unchecked || fs[0].Kind != "proxy-unchecked" {
+		t.Fatalf("%+v", fs)
+	}
+}
+
+func TestPullOverridesProbes(t *testing.T) {
+	// The probes could not reach the registry, but the daemon pulled: the
+	// probe finding is only a note.
+	in := input("reg.example/app", true, failed(ep("https://reg.example", false), probe.KindRefused))
+	in.Pull = &pull.Timeline{Digest: "sha256:a", Status: "Downloaded newer image"}
+	fs := Diagnose(in)
+	if Worst(fs) != Note || !strings.Contains(strings.Join(fs[0].Evidence, " "), "the daemon's own pull worked") {
 		t.Fatalf("%+v", fs)
 	}
 }

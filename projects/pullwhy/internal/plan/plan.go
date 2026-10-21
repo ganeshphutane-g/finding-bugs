@@ -6,7 +6,9 @@ package plan
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/netip"
 	"net/url"
@@ -49,6 +51,9 @@ type Endpoint struct {
 	// endpoint, whether or not it exists ("" when it reads none: Docker Hub
 	// on the classic store).
 	CertsPath string
+	// CertsErr is why CertsPath could not be read, when it exists but is
+	// not readable (a permissions problem, say).
+	CertsErr string
 	// ProxyMasked: the daemon hides the proxy's password (as "xxxxx"), so
 	// probes through it cannot log in to it.
 	ProxyMasked bool
@@ -86,7 +91,9 @@ func Make(ctx context.Context, r *ref.Ref, info *engine.Info, lookup Resolver, l
 			return fmt.Errorf("the daemon's endpoint %q is not an http(s) URL", base)
 		}
 		e := Endpoint{Base: u.String(), Host: u.Host, Mirror: mirror}
-		hub := u.Host == HubHost
+		// Docker Hub only when the image is Hub's: a name that spells out
+		// registry-1.docker.io is a registry of its own to the daemon.
+		hub := u.Host == HubHost && r.Registry == ref.DockerHub
 		// As the daemon decides: Docker Hub is always verified; a registry
 		// with its own entry (insecure-registries by name) uses that entry;
 		// only others are matched against the insecure ranges.
@@ -125,6 +132,8 @@ func Make(ctx context.Context, r *ref.Ref, info *engine.Info, lookup Resolver, l
 					e.CertFiles = append(e.CertFiles, f.Name())
 				}
 				sort.Strings(e.CertFiles)
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				e.CertsErr = err.Error()
 			}
 		}
 		p.Endpoints = append(p.Endpoints, e)

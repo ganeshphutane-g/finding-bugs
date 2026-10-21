@@ -186,6 +186,11 @@ with its evidence and the fix:
 | 2 | bad usage |
 | 3 | a problem was found |
 | 4 | the pull path works, but something slow was found |
+| 5 | a step could not be checked, and nothing worse was found |
+
+Credentials that cannot be read are a note: the CLI also ignores them and
+pulls anonymously, so they matter only when the registry then wants a login.
+When `--pull` succeeds, probe failures become notes.
 
 ## Out of scope for v1
 

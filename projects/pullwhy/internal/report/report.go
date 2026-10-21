@@ -33,6 +33,9 @@ type Step struct {
 	Insecure string `json:"insecure,omitempty"`
 	Proxy    string `json:"proxy,omitempty"`
 	CertsDir string `json:"certs_dir,omitempty"`
+	// Expected explains a failure that is part of the plan (HTTPS refused
+	// by a plain-HTTP registry the daemon then tries over HTTP).
+	Expected string `json:"expected,omitempty"`
 	*probe.Result
 }
 
@@ -63,6 +66,10 @@ func New(image string, d Daemon, credentials string, p *plan.Plan, results []*pr
 		}
 		if i < len(results) {
 			s.Result = results[i]
+			if results[i].Kind == probe.KindHTTPOnHTTPS && i+1 < len(p.Endpoints) &&
+				p.Endpoints[i+1].Host == e.Host && strings.HasPrefix(p.Endpoints[i+1].Base, "http://") {
+				s.Expected = "it speaks plain HTTP; the daemon tries http:// next"
+			}
 		}
 		r.Steps = append(r.Steps, s)
 	}
@@ -128,6 +135,9 @@ func (r *Report) Text(w io.Writer) {
 			fmt.Fprintf(w, "             %s\n", outcome(q))
 		}
 		res := s.Result
+		if s.Expected != "" {
+			fmt.Fprintf(w, "   expected  %s\n", s.Expected)
+		}
 		if res.OK {
 			fmt.Fprintf(w, "   found     %s (%s)\n", res.Digest, kindOfManifest(res.MediaType))
 		}

@@ -133,8 +133,14 @@ func DeepCheck(ctx context.Context, res *Result, r *ref.Ref, o Options, want Pla
 		d.Kind, d.Error = KindOther, err.Error()
 		return d
 	}
-	// Blob redirects are followed by hand, one hop at a time.
-	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	// Manifests follow redirects as the probe does; blob redirects are
+	// followed by hand, one hop at a time, on a second client.
+	cb, err := Client(res.Endpoint, o, res.TLSSkipped != "")
+	if err != nil {
+		d.Kind, d.Error = KindOther, err.Error()
+		return d
+	}
+	cb.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	header := http.Header{"Accept": {Accept}}
 	if res.Token != "" {
 		header.Set("Authorization", "Bearer "+res.Token)
@@ -153,6 +159,9 @@ func DeepCheck(ctx context.Context, res *Result, r *ref.Ref, o Options, want Pla
 		rec, resp := doFull(ctx, c, o, "manifest", "GET", u, header, "", func(rd io.Reader) { body, _ = io.ReadAll(io.LimitReader(rd, 4<<20)) })
 		if rec.Kind == "" && rec.Status != http.StatusOK {
 			rec.Kind = statusKind(rec.Status)
+			if rec.Error == "" {
+				rec.Error = fmt.Sprintf("the registry answered %d", rec.Status)
+			}
 		}
 		d.Requests = append(d.Requests, rec)
 		if rec.Kind != "" {
@@ -188,6 +197,9 @@ func DeepCheck(ctx context.Context, res *Result, r *ref.Ref, o Options, want Pla
 			if pl.OS == "unknown" { // attestations
 				continue
 			}
+			if pl.Arch == "arm" && pl.Variant == "" {
+				pl.Variant = "v7" // as containerd normalizes it
+			}
 			d.Platforms = append(d.Platforms, pl.String())
 			for i, c := range want.Compatible() {
 				if i < rank && pl.OS == c.OS && pl.Arch == c.Arch && (c.Variant == "" || pl.Variant == "" || pl.Variant == c.Variant) {
@@ -213,7 +225,7 @@ func DeepCheck(ctx context.Context, res *Result, r *ref.Ref, o Options, want Pla
 	if d.Layer == "" {
 		return d
 	}
-	readBlob(ctx, c, o, d, base+"/blobs/"+d.Layer, header, maxBytes, readFor)
+	readBlob(ctx, cb, o, d, base+"/blobs/"+d.Layer, header, maxBytes, readFor)
 	return d
 }
 

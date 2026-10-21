@@ -214,6 +214,10 @@ problem: Something between the daemon and registry-1.docker.io intercepts TLS
 | 2 | bad usage |
 | 3 | a problem was found |
 | 4 | it works, but something is slow |
+| 5 | a step could not be checked (a proxy password the daemon hides, for example), and nothing worse was found |
+
+When `--pull` succeeds, what the probes saw as failing is reported as a note:
+the daemon's own pull is the better witness.
 
 ## Limits
 
@@ -223,8 +227,8 @@ problem: Something between the daemon and registry-1.docker.io intercepts TLS
   network namespace) or a remote `DOCKER_HOST`, it is not, and pullwhy says
   so; `--pull` still shows what the daemon itself does.
 - **Proxy passwords.** The daemon hides proxy passwords in `docker info`, so
-  through a proxy that needs one pullwhy says it could not check, rather than
-  guessing.
+  through a proxy that needs one pullwhy says it could not check (exit 5),
+  rather than guessing; `--pull` shows what the daemon gets.
 - **Daemon addresses.** `ssh://` and Windows named pipes are not supported:
   use `unix://` or `tcp://`.
 - **Not covered:**

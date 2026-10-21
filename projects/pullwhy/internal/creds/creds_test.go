@@ -101,3 +101,14 @@ func TestHeader(t *testing.T) {
 		t.Fatal("anonymous header")
 	}
 }
+
+func TestHubHelperKey(t *testing.T) {
+	run := func(_ context.Context, helper, server string) ([]byte, error) {
+		return []byte(`{"Username":"u","Secret":"from-` + helper + `"}`), nil
+	}
+	dir := writeConfig(t, `{"credHelpers":{"https://index.docker.io/v1/":"pass","index.docker.io":"wrong"}}`)
+	a, err := Lookup(context.Background(), dir, "docker.io", run)
+	if err != nil || a == nil || a.Password != "from-pass" {
+		t.Fatalf("%+v %v", a, err)
+	}
+}

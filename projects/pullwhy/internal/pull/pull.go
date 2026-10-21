@@ -174,6 +174,8 @@ func Run(ctx context.Context, p Puller, name, reference, platform, auth string, 
 		if errors.As(err, &de) {
 			t.Error = de.Message
 		}
+		// The daemon's errors can carry signed CDN URLs.
+		t.Error = probe.RedactQueries(t.Error)
 		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 			t.Unfinished = true
 			t.Kind = probe.KindTimeout

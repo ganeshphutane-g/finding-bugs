@@ -20,9 +20,10 @@ import (
 
 // Severities, most serious first.
 const (
-	Problem = "problem" // the pull fails, or would
-	Slow    = "slow"    // it works, slowly
-	Note    = "note"    // worth knowing
+	Problem   = "problem"   // the pull fails, or would
+	Unchecked = "unchecked" // pullwhy could not find out
+	Slow      = "slow"      // it works, slowly
+	Note      = "note"      // worth knowing
 )
 
 // Finding is one likely cause.
@@ -48,6 +49,8 @@ type Input struct {
 	Timeout time.Duration
 	// DaemonHost is the daemon's address, for the remote-daemon note.
 	DaemonHost string
+	// ConfigDir is the docker CLI's configuration directory.
+	ConfigDir string
 }
 
 // DaemonJSON is where the daemon's settings usually live.
@@ -55,7 +58,7 @@ const DaemonJSON = "/etc/docker/daemon.json"
 
 func daemonJSON(in Input) string {
 	if in.Info != nil && in.Info.Rootless() {
-		return "~/.config/docker/daemon.json"
+		return strings.TrimSuffix(in.Plan.CertsRoot, "certs.d") + "daemon.json"
 	}
 	return DaemonJSON
 }
@@ -96,9 +99,12 @@ func Diagnose(in Input) []Finding {
 	r := in.Plan.Ref
 
 	if in.CredErr != nil {
-		add(Finding{Severity: Problem, Kind: "credentials", Title: "The credentials for " + r.Registry + " cannot be read",
+		// The CLI ignores this too and pulls anonymously: it matters only if
+		// the registry then wants a login.
+		conf := in.ConfigDir + "/config.json"
+		add(Finding{Severity: Note, Kind: "credentials", Title: "The credentials for " + r.Registry + " cannot be read; the pull goes anonymous",
 			Evidence: []string{in.CredErr.Error()},
-			Fix:      "Install the credential helper named in ~/.docker/config.json, or run docker login" + loginHost(r.Registry) + " again."})
+			Fix:      "Fix " + conf + " (install the credential helper it names, or remove the entry), or run docker login" + loginHost(r.Registry) + " again."})
 	}
 
 	// The endpoint the daemon will end up using: the first that works. On
@@ -118,17 +124,26 @@ func Diagnose(in Input) []Finding {
 	}
 	last := in.Results[len(in.Results)-1]
 
+	if used == nil && blocked == nil {
+		f := registryFinding(in, pickFailure(in.Results))
+		if strings.Contains(f.Fix, "docker login") && in.Plan.Containerd {
+			for _, res := range in.Results {
+				if res.Endpoint.Mirror && res.Kind == probe.KindUnauthorized {
+					f.Fix += " Note: after docker login, the mirror " + res.Base + " (which asks for a login) will stop pulls on the containerd image store."
+				}
+			}
+		}
+		add(f)
+	}
 	for _, res := range in.Results {
 		if res.Endpoint.Mirror && !res.OK {
-			add(mirrorFinding(in, res, used != nil && blocked == nil))
+			add(mirrorFinding(in, res, res == blocked))
 		}
 		if res == blocked {
 			break
 		}
 	}
-	if used == nil && blocked == nil {
-		add(registryFinding(in, pickFailure(in.Results)))
-	} else if used != nil {
+	if used != nil {
 		out = append(out, slowFindings(used)...)
 		if used.RateLimit != nil {
 			if f, ok := rateFinding(used.RateLimit); ok {
@@ -175,6 +190,16 @@ func Diagnose(in Input) []Finding {
 	}
 
 	if t := in.Pull; t != nil {
+		if t.Error == "" && !t.Unfinished {
+			// The daemon itself pulled the image: what the probes saw as
+			// failing did not stop it (its network or settings differ).
+			for i := range out {
+				if out[i].Severity == Problem || out[i].Severity == Unchecked {
+					out[i].Severity = Note
+					out[i].Evidence = append(out[i].Evidence, "the daemon's own pull worked, so this did not stop it")
+				}
+			}
+		}
 		out = append(out, pullFindings(in, t, used)...)
 	}
 
@@ -197,6 +222,14 @@ func loginHost(registry string) string {
 		return ""
 	}
 	return " " + registry
+}
+
+// lastWhat is what the endpoint's last request was (ping, token, manifest).
+func lastWhat(res *probe.Result) string {
+	if len(res.Requests) == 0 {
+		return ""
+	}
+	return res.Requests[len(res.Requests)-1].What
 }
 
 func loopback(hostport string) bool {
@@ -233,7 +266,7 @@ func internal(hostport string) bool {
 	return false
 }
 
-func mirrorFinding(in Input, res *probe.Result, fallbackWorks bool) Finding {
+func mirrorFinding(in Input, res *probe.Result, isCause bool) Finding {
 	f := Finding{Kind: "mirror-" + res.Kind, Evidence: evidence(res), Severity: Note}
 	fix := "Remove it from \"registry-mirrors\" in " + daemonJSON(in) + " (or fix it), then restart Docker."
 	slowest := time.Duration(0)
@@ -264,12 +297,25 @@ func mirrorFinding(in Input, res *probe.Result, fallbackWorks bool) Finding {
 			f.Title = "The mirror " + res.Base + " asks for a login; anonymous pulls go on to Docker Hub"
 			f.Evidence = append(f.Evidence, "with the containerd image store, the daemon sends a mirror no credentials; "+
 				"after docker login, pulls would stop at this mirror instead")
+		case in.Auth.Anonymous():
+			f.Title = "The mirror " + res.Base + " asks for a login; the daemon goes on to the next endpoint"
 		default:
 			f.Title = "The mirror " + res.Base + " refused the Docker Hub credentials; the daemon goes on to the next endpoint"
 			f.Evidence = append(f.Evidence, "with the classic image store, the daemon sends a mirror the Docker Hub credentials")
 		}
 	case probe.KindRefused, probe.KindDNS, probe.KindNotRegistry:
 		f.Title = "The mirror " + res.Base + " is not usable; the daemon skips it at once"
+	case probe.KindProxy:
+		f.Title = "The mirror " + res.Base + " cannot be reached through the daemon's proxy"
+		if res.Endpoint.ProxyMasked {
+			f.Title = "pullwhy could not check the mirror " + res.Base + " through the daemon's proxy: it needs a password, which the daemon does not show"
+			fix = "Run with --pull to see what the daemon itself gets."
+		}
+	case probe.KindTLSAuthority, probe.KindTLSExpired, probe.KindTLSName, probe.KindTLSOther:
+		f.Title = "The mirror " + res.Base + "'s certificate does not verify; the daemon skips it"
+		if res.Endpoint.CertsPath != "" {
+			fix = "Put the mirror's CA in " + res.Endpoint.CertsPath + "/ca.crt, fix its certificate, or remove it from \"registry-mirrors\" in " + daemonJSON(in) + "."
+		}
 	case probe.KindNotFound:
 		f.Title = "The mirror " + res.Base + " does not have " + in.Plan.Ref.String() + "; the daemon goes on to the next endpoint"
 		fix = ""
@@ -279,30 +325,53 @@ func mirrorFinding(in Input, res *probe.Result, fallbackWorks bool) Finding {
 			f.Severity = Slow
 		}
 	}
-	if !fallbackWorks {
+	if isCause {
 		f.Severity = Problem
 	}
 	f.Fix = fix
 	return f
 }
 
-// slowFindings looks at the timings of the endpoint in use.
+// slowFindings looks at the timings of the endpoint in use: one finding per
+// host and phase, with the slowest time.
 func slowFindings(res *probe.Result) []Finding {
 	limits := map[string]time.Duration{"dns": time.Second, "connect": time.Second, "tls": time.Second, "wait": 2 * time.Second}
 	names := map[string]string{"dns": "the DNS lookup", "connect": "connecting", "tls": "the TLS handshake", "wait": "waiting for the answer"}
-	var out []Finding
+	fixes := map[string]string{
+		"dns":     "Check the DNS servers the daemon's host uses (/etc/resolv.conf, or \"dns\" in daemon.json for containers).",
+		"connect": "Check the network path and any firewall or proxy between the daemon and the registry.",
+		"tls":     "A TLS-inspecting proxy or an overloaded server is the usual cause.",
+		"wait":    "The registry (or a proxy in front of it) is slow to answer; check its load, or use a mirror closer to you.",
+	}
+	type key struct{ host, phase string }
+	worst := map[key]time.Duration{}
+	seen := map[key][]string{}
+	var order []key
 	for _, q := range res.Requests {
-		u, _ := url.Parse(q.URL)
 		host := q.URL
-		if u != nil {
+		if u, err := url.Parse(q.URL); err == nil {
 			host = u.Host
 		}
 		for _, ph := range q.Phases {
-			if lim, ok := limits[ph.Name]; ok && ph.Took >= lim {
-				out = append(out, Finding{Severity: Slow, Kind: "slow-" + ph.Name,
-					Title: fmt.Sprintf("%s is slow: %s took %s (%s %s)", host, names[ph.Name], ph.Took.Round(10*time.Millisecond), q.Method, q.What)})
+			lim, ok := limits[ph.Name]
+			if !ok || ph.Took < lim {
+				continue
 			}
+			k := key{host, ph.Name}
+			if _, ok := worst[k]; !ok {
+				order = append(order, k)
+			}
+			if ph.Took > worst[k] {
+				worst[k] = ph.Took
+			}
+			seen[k] = append(seen[k], fmt.Sprintf("%s %s: %s", q.Method, q.What, ph.Took.Round(10*time.Millisecond)))
 		}
+	}
+	var out []Finding
+	for _, k := range order {
+		out = append(out, Finding{Severity: Slow, Kind: "slow-" + k.phase,
+			Title:    fmt.Sprintf("%s is slow: %s took up to %s", k.host, names[k.phase], worst[k].Round(10*time.Millisecond)),
+			Evidence: seen[k], Fix: fixes[k.phase]})
 	}
 	return out
 }
@@ -332,6 +401,9 @@ func registryFinding(in Input, res *probe.Result) Finding {
 			break
 		}
 		switch {
+		case res.Endpoint.CertsErr != "":
+			f.Evidence = append(f.Evidence, "pullwhy cannot read "+dir+": "+res.Endpoint.CertsErr)
+			f.Fix = "Run pullwhy as a user who can read " + dir + " (such as root), to check with its certificates."
 		case dir == "":
 			f.Fix = "To trust its CA, " + trust + where + "."
 		case res.Endpoint.CertsDir != "" && contains(res.Endpoint.CertFiles, "ca.crt"):
@@ -349,12 +421,13 @@ func registryFinding(in Input, res *probe.Result) Finding {
 		f.Fix = "Use the name the certificate is for, or issue one that includes " + res.Endpoint.Host + "."
 	case probe.KindTLSOther:
 		f.Title = "The TLS connection to " + host + " fails"
+		f.Fix = "Check the registry's certificate and TLS settings (and any TLS-inspecting proxy on the way)."
 	case probe.KindHTTPOnHTTPS:
 		f.Title = host + " speaks plain HTTP, and the daemon only uses HTTPS for it"
 		f.Fix = "Add \"" + host + "\" to \"insecure-registries\" in " + daemonJSON(in) + " and restart Docker, or give the registry TLS."
 	case probe.KindProxy:
 		if res.Endpoint.ProxyMasked {
-			f.Severity, f.Kind = Note, "proxy-unchecked"
+			f.Severity, f.Kind = Unchecked, "proxy-unchecked"
 			f.Title = "pullwhy could not check " + host + " through the daemon's proxy: it needs a password, which the daemon does not show"
 			f.Fix = "Run with --pull to see what the daemon itself gets."
 			break
@@ -383,6 +456,11 @@ func registryFinding(in Input, res *probe.Result) Finding {
 		}
 		f.Fix = "Check the address, the network path and any firewall between the daemon and " + host + "."
 	case probe.KindUnauthorized:
+		if lastWhat(res) == "token" && !in.Auth.Anonymous() {
+			f.Title = host + " refused the credentials from " + in.Auth.Source
+			f.Fix = "Run docker login" + loginHost(r.Registry) + " again; the password or token may be wrong or expired."
+			break
+		}
 		if r.Registry == "docker.io" {
 			// Docker Hub answers 401 for a repository that does not exist
 			// as for a private one (checked).
@@ -396,6 +474,9 @@ func registryFinding(in Input, res *probe.Result) Finding {
 			}
 			f.Evidence = append(f.Evidence, "Docker Hub gives the same answer for a repository that does not exist and for a private one")
 			break
+		}
+		if r.Registry == plan.HubHost && !strings.Contains(r.Repo, "/") {
+			f.Evidence = append(f.Evidence, "official Docker Hub images are under library/: use docker.io/library/"+r.Repo+" (or just "+r.Repo+")")
 		}
 		if in.Auth.Anonymous() {
 			f.Title = host + " needs a login for " + r.Repo
@@ -419,6 +500,12 @@ func registryFinding(in Input, res *probe.Result) Finding {
 	case probe.KindNotRegistry:
 		f.Title = res.Base + " does not look like a registry"
 		f.Fix = "Check the registry's address and port."
+	case probe.KindServer:
+		f.Title = host + " answers with a server error"
+		f.Fix = "The registry is failing; check its logs or status page, and try again later."
+	case probe.KindTokenUnavailable:
+		f.Title = host + "'s token service does not give a token"
+		f.Fix = "Check the token service the registry names (its realm), and that it is reachable from the daemon."
 	default:
 		f.Title = res.Base + " fails (" + res.Kind + ")"
 	}
@@ -441,7 +528,8 @@ func rateFinding(rl *probe.RateLimit) (Finding, bool) {
 func pullFindings(in Input, t *pull.Timeline, used *probe.Result) []Finding {
 	var out []Finding
 	if t.Error != "" {
-		f := Finding{Severity: Problem, Kind: t.Kind, Title: "The daemon's pull failed", Evidence: []string{t.Error}}
+		f := Finding{Severity: Problem, Kind: t.Kind, Title: "The daemon's pull failed", Evidence: []string{t.Error},
+			Fix: "The daemon's own error is above; the probes' findings, if any, say where it comes from."}
 		if t.Unfinished {
 			f.Title = fmt.Sprintf("The daemon was still pulling after %s", t.Took.Round(time.Second))
 		}
@@ -458,7 +546,8 @@ func pullFindings(in Input, t *pull.Timeline, used *probe.Result) []Finding {
 	}
 	for _, ph := range phases {
 		took := byPhase[ph]
-		f := Finding{Severity: Slow, Kind: "stall", Title: fmt.Sprintf("The pull made no progress for %s (%s)", took.Round(time.Second), ph)}
+		f := Finding{Severity: Slow, Kind: "stall", Title: fmt.Sprintf("The pull made no progress for %s (%s)", took.Round(time.Second), ph),
+			Fix: "Run again with --deep to measure the download from the layer's host, and check the network path to it."}
 		if ph == "before the first layer" {
 			f.Kind = "slow-start"
 			f.Title = fmt.Sprintf("The daemon spent %s resolving the image before any layer", took.Round(time.Second))
@@ -490,7 +579,7 @@ func evidence(res *probe.Result) []string {
 		case q.Kind == probe.KindTimeout:
 			s += fmt.Sprintf("no answer in %s", q.Took.Round(100*time.Millisecond))
 		case q.Error != "":
-			if strings.Contains(q.Error, q.URL) {
+			if strings.Contains(q.Error, q.URL) || strings.Contains(q.Error, probe.RedactQueries(q.URL)) {
 				s = q.Error // Go's errors already name the request
 			} else {
 				s += q.Error
@@ -557,7 +646,7 @@ func dedupe(fs []Finding) []Finding {
 }
 
 func order(fs []Finding) []Finding {
-	rank := map[string]int{Problem: 0, Slow: 1, Note: 2}
+	rank := map[string]int{Problem: 0, Unchecked: 1, Slow: 2, Note: 3}
 	sort.SliceStable(fs, func(i, j int) bool { return rank[fs[i].Severity] < rank[fs[j].Severity] })
 	return fs
 }

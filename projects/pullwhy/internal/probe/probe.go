@@ -158,9 +158,18 @@ func Client(ep plan.Endpoint, o Options, skipVerify bool) (*http.Client, error) 
 		ResponseHeaderTimeout: 0, // the request's context bounds it
 		IdleConnTimeout:       30 * time.Second,
 	}
-	// Redirects are followed as the daemon follows them; Go drops the
-	// Authorization header when one goes to another host.
-	return &http.Client{Transport: tr}, nil
+	// Redirects are followed as the daemon follows them, without the
+	// Authorization header once scheme, host or port change (Go itself only
+	// drops it for another host name).
+	return &http.Client{Transport: tr, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if first := via[0].URL; req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
+			req.Header.Del("Authorization")
+		}
+		return nil
+	}}, nil
 }
 
 // Endpoint probes one endpoint for r.
@@ -182,6 +191,12 @@ func Endpoint(ctx context.Context, ep plan.Endpoint, r *ref.Ref, o Options) *Res
 		if c, err = Client(ep, o, true); err == nil {
 			ping, resp = do(ctx, c, o, "ping", "GET", ep.Base+"/v2/", nil)
 		}
+	}
+	if ping.Kind == "" && resp != nil && viaProxy(o, ep.Base) && proxyAnswered(resp) {
+		// Plain HTTP through a proxy: the proxy's own refusal comes back as
+		// an answer.
+		ping.Kind = KindProxy
+		ping.Error = "the proxy answered " + resp.Status
 	}
 	if ping.Kind != "" {
 		res.fail(ping)
@@ -429,6 +444,32 @@ func Classify(err error) string {
 	return KindOther
 }
 
+// viaProxy reports whether a request to base goes through a proxy.
+func viaProxy(o Options, base string) bool {
+	if o.Proxy == nil {
+		return false
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	pu, _ := o.Proxy(u)
+	return pu != nil
+}
+
+// proxyAnswered reports whether an answer came from a proxy rather than the
+// registry: 407, or a refusal carrying a proxy's headers.
+func proxyAnswered(resp *http.Response) bool {
+	if resp.StatusCode == http.StatusProxyAuthRequired {
+		return true
+	}
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode >= 500 {
+		return resp.Header.Get("Proxy-Authenticate") != "" || resp.Header.Get("X-Squid-Error") != "" ||
+			resp.Header.Get("Via") != "" && resp.Header.Get("Docker-Distribution-Api-Version") == ""
+	}
+	return false
+}
+
 // proxyStatus finds an HTTP status text at the end of err, as Go reports a
 // proxy's refusal of CONNECT.
 func proxyStatus(err error) string {
@@ -542,7 +583,7 @@ func token(ctx context.Context, c *http.Client, o Options, params map[string]str
 	return tb.Token, rec
 }
 
-var queryRe = regexp.MustCompile(`(https?://[^\s"?]+)\?[^\s"]*`)
+var queryRe = regexp.MustCompile(`(https?://[^\s"?]+)\?[^\s",)]*`)
 
 // RedactQueries drops the query of every URL in s: a CDN's signed URL or a
 // token request's parameters must not end up in a report.

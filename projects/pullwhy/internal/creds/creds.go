@@ -69,7 +69,7 @@ type config struct {
 
 // key is how registry is looked up: Hub's URL, or host[:port].
 func key(registry string) string {
-	if registry == "docker.io" || registry == "index.docker.io" || registry == "registry-1.docker.io" {
+	if registry == "docker.io" || registry == "index.docker.io" { // the CLI's aliases
 		return HubKey
 	}
 	return registry
@@ -103,9 +103,9 @@ func Lookup(ctx context.Context, configDir, registry string, run Runner) (*Auth,
 	if run == nil {
 		run = RunHelper
 	}
-	// credHelpers names a helper per registry host, exactly
-	// (index.docker.io for Docker Hub), as the CLI looks it up.
-	if helper, ok := c.CredHelpers[host(k)]; ok {
+	// credHelpers names a helper per registry, looked up exactly as the
+	// CLI does: Docker Hub by its full key, others by host[:port].
+	if helper, ok := c.CredHelpers[k]; ok {
 		return fromHelper(ctx, run, helper, k)
 	}
 	if c.CredsStore != "" {

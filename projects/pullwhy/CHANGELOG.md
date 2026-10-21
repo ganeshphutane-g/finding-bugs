@@ -33,7 +33,8 @@ First release.
   layer's real host (CDN redirects followed).
 - `--pull` has the daemon really pull, and reports the time to the first
   layer, the speed of each layer, stalls and the daemon's error.
-- `--json`, and exit codes for scripts (0 fine, 3 problem, 4 slow).
+- `--json`, and exit codes for scripts (0 fine, 3 problem, 4 slow, 5 could
+  not check).
 - Tested side by side with real `docker pull`s in throwaway daemons, on both
   the containerd and the classic image stores. A dead mirror measured 3 min
   32 s against 1 s on containerd, and 16 s on classic.

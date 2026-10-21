@@ -34,6 +34,7 @@ const (
 	exitUsage   = 2
 	exitProblem = 3
 	exitSlow    = 4
+	exitUnknown = 5
 )
 
 const usage = `pullwhy shows why a docker pull is slow or fails: it walks the pull the way
@@ -54,7 +55,7 @@ Flags:
   --version
 
 Exit codes: 0 fine, 1 error, 2 bad usage, 3 a problem was found, 4 it works but
-something is slow.
+something is slow, 5 a step could not be checked (and nothing else was found).
 `
 
 // Env is what the command reads from outside: overridden in tests.
@@ -164,21 +165,24 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 	}
 
 	opts := probe.Options{Timeout: *timeout, Auth: auth, Containerd: p.Containerd, Proxy: plan.ProxyFunc(info), UserAgent: "pullwhy/" + Version}
-	var results []*probe.Result
-	for _, e := range p.Endpoints {
+	optsFor := func(e plan.Endpoint) probe.Options {
 		o := opts
 		if e.Mirror && p.Containerd {
 			// The containerd store sends mirrors no credentials (tested).
 			o.Auth = nil
 		}
-		results = append(results, probe.Endpoint(ctx, e, r, o))
+		return o
+	}
+	var results []*probe.Result
+	for _, e := range p.Endpoints {
+		results = append(results, probe.Endpoint(ctx, e, r, optsFor(e)))
 	}
 
 	var dp *probe.Deep
 	if *deep {
-		for _, res := range results {
+		for i, res := range results {
 			if res.OK {
-				dp = probe.DeepCheck(ctx, res, r, opts, want, 8<<20, 5*time.Second)
+				dp = probe.DeepCheck(ctx, res, r, optsFor(p.Endpoints[i]), want, 8<<20, 5*time.Second)
 				break
 			}
 		}
@@ -200,7 +204,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 	}
 
 	findings := diagnose.Diagnose(diagnose.Input{Info: info, Local: sameNet, Plan: p, Results: results, Auth: auth, CredErr: credErr,
-		Deep: dp, Pull: t, Timeout: *timeout, DaemonHost: ep.Host})
+		ConfigDir: env.ConfigDir, Deep: dp, Pull: t, Timeout: *timeout, DaemonHost: ep.Host})
 
 	store := "classic"
 	if p.Containerd {
@@ -223,6 +227,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, env Env) 
 	switch diagnose.Worst(findings) {
 	case diagnose.Problem:
 		return exitProblem
+	case diagnose.Unchecked:
+		return exitUnknown
 	case diagnose.Slow:
 		return exitSlow
 	}
