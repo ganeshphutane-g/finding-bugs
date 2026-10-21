@@ -6,14 +6,19 @@ projects/pullwhy/SPEC.md (verified daemon behaviour is in it).
 
 ## Next step
 
-Milestones 1-5 are built; pullwhy is in review. Side-by-side tests pass
-locally on both image stores (working, plain HTTP, private CA, basic auth,
-missing tag, missing platform, proxy up/down, stale mirror, dead mirror: the
-real pull took 3 min 32 s on containerd, 16 s on classic). CI run 1 of
-.github/workflows/pullwhy.yml was running at 19:56 UTC. README/CHANGELOG are
-written (README waits for the real dead-mirror output, captured with the
-fixed timeline). Then: fix review findings, a second review, mark done (owner
-tag pullwhy/v1.0.0), start research round 13.
+pullwhy is built and in its second review. The first review (16 findings) is
+fixed; four of its points were checked on real daemons first:
+- Docker Hub answers 401 for a repo that does not exist;
+- for Hub, the containerd store reads certs.d/docker.io, and the classic store
+  reads no certs.d;
+- the containerd store sends mirrors no credentials: a login mirror stops a
+  pull only when it carries Hub credentials, and anonymous pulls fall back;
+- the classic store sends mirrors the Hub credentials.
+
+Side-by-side tests pass on both stores locally, including Docker Hub cases
+(with PULLWHY_DIND_CA). CI is green on its runs so far. Then: fix the second
+review's findings, mark done (owner tag pullwhy/v1.0.0), and record research
+round 13 (an agent was started at 20:40 UTC).
 
 Local Hub access from dind: this sandbox intercepts TLS, so mount the CA
 bundle: PULLWHY_DIND_CA=/tmp/claude-0/ca-bundle.crt (a 0644 copy of
