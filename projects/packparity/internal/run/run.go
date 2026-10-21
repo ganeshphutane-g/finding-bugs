@@ -326,9 +326,9 @@ type CheckOptions struct {
 
 // CheckResult is what a check found.
 type CheckResult struct {
-	Read    int
-	Bytes   int64
-	Reports []FileReport // everything not OK
+	Read    int          `json:"read"`
+	Bytes   int64        `json:"bytes"`
+	Reports []FileReport `json:"reports"` // everything not OK
 }
 
 // Worst is the most serious state found ("" when all is well; missing and
@@ -735,19 +735,20 @@ func putBack(s *store.Store, path, name string, damaged, fixed []byte, now time.
 
 // Status is the state of the parity.
 type Status struct {
-	Files, Covered  int
-	RepoBytes       int64
-	ParityBytes     int64
-	RemovedFiles    int
-	RemovedBytes    int64
-	Quarantined     int
-	LastSync        time.Time
-	LastCheck       time.Time
-	OldestVerified  time.Time
-	NeverVerified   int
-	Damaged         []string
-	ConfigMatches   bool
-	ConfigHasParity bool
+	Files           int       `json:"files"`
+	Covered         int       `json:"covered"`
+	RepoBytes       int64     `json:"repo_bytes"`
+	ParityBytes     int64     `json:"parity_bytes"`
+	RemovedFiles    int       `json:"removed_files"`
+	RemovedBytes    int64     `json:"removed_bytes"`
+	Quarantined     int       `json:"quarantined"`
+	LastSync        time.Time `json:"last_sync,omitzero"`
+	LastCheck       time.Time `json:"last_check,omitzero"`
+	OldestVerified  time.Time `json:"oldest_verified,omitzero"`
+	NeverVerified   int       `json:"never_verified"`
+	Damaged         []string  `json:"damaged"`
+	ConfigMatches   bool      `json:"config_matches"`
+	ConfigHasParity bool      `json:"config_has_parity"`
 }
 
 // GetStatus reads the state without reading the repository's contents
