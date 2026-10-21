@@ -3,6 +3,77 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 13 — 2026-10-22 IST
+
+One research pass (GitHub search plus web search), then the pick re-checked.
+"checked" means seen in a GitHub search result or web result on 2026-10-22.
+Issue threads could not be read (search only).
+
+### Chosen: packparity, repair data for restic repositories (project #12)
+
+Builds Reed-Solomon parity in a separate folder for a restic repository's pack
+files (written once, named by their SHA-256, so damage is found exactly). It
+repairs damaged packs from the parity, never writes into the repository except
+to put back a repaired pack on request, and drops parity for packs that a prune
+removed. It runs next to rest-server, or on a local or SFTP-mounted repository.
+
+**Demand:**
+- restic#256 "Add redundancy for data stored in the repository": 44 👍, open
+  since 2015-08 (checked);
+- restic#804 "Implement error correcting code (reed-solomon)?": 18 👍, open
+  (checked);
+- restic forum "How to create par2 parity files for a Restic repository"
+  (thread 5149): users run hand-written par2create loops over data/ after each
+  backup; and "Snapshot copy and corrupted data recovery" asks for erasure
+  coding (checked, web);
+- borg#225 "evaluate redundancy / error correction options": 43 👍, open since
+  2015-09 (checked): the same need in the neighbouring tool.
+- Kopia ships error correction (experimental) and rustic added a hook "to
+  generate par2 files": both show the approach is wanted, neither helps restic.
+
+**Upstream:** no parity PR in restic (checked); `restic repair packs` only
+salvages the intact blobs and drops the rest. rustic#445 (par2) closed in two
+days in 2023, answered with backend hooks.
+
+**Gap:** baharsah/respar2 (0★, empty since 2022) and shell snippets; no tool
+does incremental parity, prune cleanup, verification and repair for restic.
+
+**Scores:** 3/4/5/5/4 = **21**.
+
+**Risks and the other side:**
+- The maintainers' answer is a second repository (3-2-1, `restic copy`);
+  parity is for the single-copy or slow-to-recopy case, and the README must
+  say so.
+- Pointless on ZFS or btrfs with redundancy; no help if the whole disk is lost.
+- v1 is restic and rustic only (borg segments differ).
+
+### Runners-up
+
+- **zfsunlock**, key slots and unattended unlock (passphrase, keyfile, Tang,
+  TPM2) for ZFS native encryption: openzfs#6824 84 👍 (search, not re-checked),
+  #12649 17 👍, #15186 10 👍. 4/4/4/3/5 = 20. Second because a bug can lock
+  people out of their data, and ZFS on CI runners is unproven.
+- **shelfsort**, Audiobookshelf library organizer: audiobookshelf#312 51 👍,
+  #5054 13 👍, #5009 12 👍; no tool found. 18. Must check that listening
+  progress survives a move.
+- **bootproof**, Proxmox restore drills: forum demand and paid services, but
+  CI needs nested Proxmox and 2026 attempts are appearing. 16.
+- **sealkeeper**, TPM/Tang auto-unseal for OpenBao/Vault: vault#10622 82 👍,
+  openbao#1200 22 👍; OpenBao's PKCS#11 seal plus tpm2-pkcs11 already covers
+  it, painfully. 16.
+- **Komodo Compose adoption**: komodo#377 40 👍, one source only. 16.
+
+### Rejected in round 13
+
+- Upstream PRs open: Ollama /metrics (PRs #18508, #16998), Ollama download
+  rate limit (#15219), ntfy OIDC (#1971, #1579), Dokploy import/export
+  (#5690), Beszel Proxmox stats (#539).
+- Already covered: Mastodon backfill (FediFetcher), Outline local auth (OIDC
+  providers), Navidrome LDAP (header auth), DMARC report viewers, self-hosted
+  mail testers (happyDeliver).
+- Too large: Synapse to tuwunel migration.
+- Weak or low fit: Harbor regex retention, Backrest multi-repo, Nebula DNS.
+
 ## Research round 12 — 2026-10-21 IST
 
 One research pass (GitHub search plus web search), then the top candidates
