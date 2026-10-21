@@ -1,0 +1,9 @@
+[Unit]
+Description=packparity sync, after the night's backups
+
+[Timer]
+OnCalendar=*-*-* 05:15
+Persistent=true
+
+[Install]
+WantedBy=timers.target

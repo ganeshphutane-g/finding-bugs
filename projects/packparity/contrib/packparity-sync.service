@@ -1,0 +1,15 @@
+[Unit]
+Description=packparity: parity for new restic files
+# Order after your backup and prune units, for example:
+# After=restic-backup.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/packparity.env
+ExecStart=/usr/local/bin/packparity sync -q ${REPO} ${PARITY}
+Nice=10
+IOSchedulingClass=idle
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes

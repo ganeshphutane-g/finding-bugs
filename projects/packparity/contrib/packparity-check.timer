@@ -1,0 +1,10 @@
+[Unit]
+Description=packparity check, weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 06:00
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

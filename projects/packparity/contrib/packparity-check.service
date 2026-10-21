@@ -1,0 +1,13 @@
+[Unit]
+Description=packparity: read what is due and look for damage
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/packparity.env
+ExecStart=/usr/local/bin/packparity check ${REPO} ${PARITY}
+Nice=10
+IOSchedulingClass=idle
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes
