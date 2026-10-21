@@ -1,24 +1,30 @@
 # State
 
-Current project: #11, pullwhy ("why is my docker pull slow or failing?";
-the name is free on GitHub, checked 2026-10-21). Phase: build. Spec:
-projects/pullwhy/SPEC.md (verified daemon behaviour is in it).
+Current project: #12, packparity (Reed-Solomon repair data for restic
+repositories; the name is free on GitHub, checked 2026-10-22). Phase: review.
+Spec: projects/packparity/SPEC.md.
 
 ## Next step
 
-pullwhy is built and in its second review. The first review (16 findings) is
-fixed; four of its points were checked on real daemons first:
-- Docker Hub answers 401 for a repo that does not exist;
-- for Hub, the containerd store reads certs.d/docker.io, and the classic store
-  reads no certs.d;
-- the containerd store sends mirrors no credentials: a login mirror stops a
-  pull only when it carries Hub credentials, and anonymous pulls fall back;
-- the classic store sends mirrors the Hub credentials.
+packparity is built: parity format, sync, check, repair, status, CLI, systemd
+units, README with a real run, CHANGELOG. End-to-end tests with real restic
+0.18.1 and rest-server 0.14.0 pass locally (damage in packs, index,
+snapshots and config found and repaired, then `restic check --read-data`
+passes; beyond reach; prune; guards; rest-server; sync during a backup).
+Two full reviews were started at 21:10 UTC (correctness and data safety;
+security, operations and usability). Then: fix every finding, CI green, mark
+done (owner tag packparity/v1.0.0), research round 14.
 
-Side-by-side tests pass on both stores locally, including Docker Hub cases
-(with PULLWHY_DIND_CA). CI is green on its runs so far. Then: fix the second
-review's findings, mark done (owner tag pullwhy/v1.0.0), and record research
-round 13 (an agent was started at 20:40 UTC).
+Facts checked for packparity (2026-10-22):
+- restic 0.18.1 and rest-server 0.14.0 write every file under a temporary
+  name (`<id>-tmp-…`) and rename; files are named by the SHA-256 of their
+  contents (config is not); restic makes them read-only (0400).
+- Install for tests: `GOBIN=/tmp/restic-bin go install
+  github.com/restic/restic/cmd/restic@v0.18.1` and
+  `.../rest-server/cmd/rest-server@v0.14.0` (the Go proxy works here).
+- Windows does not build (flock, Stat_t): unix only, documented.
+
+pullwhy (#11) is finished: see Finished projects.
 
 Local Hub access from dind: this sandbox intercepts TLS, so mount the CA
 bundle: PULLWHY_DIND_CA=/tmp/claude-0/ca-bundle.crt (a 0644 copy of
@@ -247,6 +253,27 @@ Actions as codeberg.org/forgejo/forgejo:16.
       redirects, UDP source address on wildcard listeners, docs).
     - **Owner checks before going public:** README; try it behind your own
       proxy with an Android phone's Private DNS; GitHub Actions green.
+
+11. **pullwhy** (projects/pullwhy, v1.0.0 at commit 90c49bd). Shows why a docker
+    pull is slow or fails (docker/cli#336, 244 👍).
+    - **How:** reads the daemon's own settings (image store, mirrors,
+      insecure registries, proxy, certs.d) and walks each endpoint the
+      daemon will try: a timed ping, token and manifest HEAD, with Docker
+      Hub's rate-limit headers and credentials found as the CLI finds them.
+      `--deep` checks the platform and the download speed from the layer's
+      real host; `--pull` has the daemon pull and times each layer.
+    - **Verified on real daemons first** (both image stores): dead-mirror
+      costs (30 s per request on containerd, one 15 s wait on classic),
+      which certs.d each store reads for Hub, and how each store sends
+      mirrors credentials (a login mirror stops only logged-in pulls on
+      containerd).
+    - **Reviews:** two full reviews, 16 and 18 findings, all addressed with
+      tests (including exit 5 for "could not check", a working `--pull`
+      overriding probe failures, and unreadable credentials as a note).
+    - **Tests:** side by side with real `docker pull`s in throwaway daemons
+      on both stores, locally and in CI.
+    - **Owner checks before going public:** README; run it against your own
+      daemon and a registry you know is slow or broken.
 
 ## Blockers for the owner
 
