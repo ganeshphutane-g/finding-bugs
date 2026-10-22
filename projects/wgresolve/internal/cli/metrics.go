@@ -14,9 +14,11 @@ import (
 func handler(w *watch.Watcher, interval time.Duration) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(rw http.ResponseWriter, r *http.Request) {
-		last := w.LastRun()
-		if last.IsZero() || time.Since(last) > 3*interval+10*time.Second {
-			http.Error(rw, "no round finished recently", http.StatusServiceUnavailable)
+		// The loop makes progress at least once per peer and round; a slow
+		// DNS server makes rounds long, not the daemon dead.
+		alive := w.Alive()
+		if alive.IsZero() || time.Since(alive) > 3*interval+30*time.Second {
+			http.Error(rw, "the loop has not made progress recently", http.StatusServiceUnavailable)
 			return
 		}
 		fmt.Fprintln(rw, "ok")
@@ -55,8 +57,24 @@ func handler(w *watch.Watcher, interval time.Duration) http.Handler {
 		for _, s := range st {
 			fmt.Fprintf(&b, "wgresolve_resolve_errors_total{%s} %d\n", labels(s), s.DNSErrors)
 		}
-		help("wgresolve_last_round_timestamp_seconds", "gauge", "When the last round finished.")
-		fmt.Fprintf(&b, "wgresolve_last_round_timestamp_seconds %d\n", w.LastRun().Unix())
+		help("wgresolve_peer_endpoint_info", "gauge", "The peer's current endpoint, as a label.")
+		for _, s := range st {
+			ep := "none"
+			if s.Endpoint.IsValid() {
+				ep = s.Endpoint.String()
+			}
+			fmt.Fprintf(&b, "wgresolve_peer_endpoint_info{%s,endpoint=%q} 1\n", labels(s), ep)
+		}
+		help("wgresolve_answer_ttl_seconds", "gauge", "Seconds until the name is looked up again (when it was looked up).")
+		for _, s := range st {
+			if len(s.Addrs) > 0 {
+				fmt.Fprintf(&b, "wgresolve_answer_ttl_seconds{%s} %.0f\n", labels(s), s.TTLLeft.Seconds())
+			}
+		}
+		if last := w.LastRun(); !last.IsZero() {
+			help("wgresolve_last_round_timestamp_seconds", "gauge", "When the last round finished.")
+			fmt.Fprintf(&b, "wgresolve_last_round_timestamp_seconds %d\n", last.Unix())
+		}
 		rw.Write([]byte(b.String()))
 	})
 	return mux

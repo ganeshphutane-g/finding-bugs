@@ -152,6 +152,12 @@ func command(name string, args []string, stdout, stderr io.Writer, deps Deps) in
 			return exitUsage
 		}
 	}
+	// Signals first: a reload (SIGHUP) while starting must not kill it.
+	var sig chan os.Signal
+	if name == "run" {
+		sig = make(chan os.Signal, 4)
+		deps.Signals(sig)
+	}
 	res, err := o.resolver()
 	if err != nil {
 		fmt.Fprintln(stderr, "wgresolve:", err)
@@ -171,7 +177,7 @@ func command(name string, args []string, stdout, stderr io.Writer, deps Deps) in
 	if name == "check" {
 		return check(w, stdout)
 	}
-	return run(w, o, stdout, stderr, deps)
+	return run(w, o, stdout, stderr, sig)
 }
 
 func (o *options) validate() error {
@@ -265,6 +271,9 @@ func check(w *watch.Watcher, stdout io.Writer) int {
 	st := w.Statuses()
 	if len(st) == 0 {
 		fmt.Fprintln(stdout, "No WireGuard peers with a DNS name for their endpoint were found.")
+		if len(w.Problems()) > 0 {
+			return exitError // some configuration could not be read
+		}
 		return exitOK
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
@@ -280,8 +289,15 @@ func check(w *watch.Watcher, stdout io.Writer) int {
 			hs = time.Since(s.Handshake).Round(time.Second).String() + " ago"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Peer.Interface, s.Peer.PublicKey.String()[:8]+"…", s.Peer.Endpoint(), ep, hs, s.State)
-		if s.State == "would change" || s.State == "dns error" {
-			code = exitAttention
+		switch s.State {
+		case "would change", "dns error", "down", "no peer", "error":
+			code = max(code, exitAttention)
+		case "no device":
+			// An interface that is not up (a wg-quick profile not in use) is
+			// a note; one that cannot be read is an error.
+			if !strings.Contains(s.Reason, "not up") {
+				code = exitError
+			}
 		}
 	}
 	tw.Flush()
@@ -312,7 +328,7 @@ func (s stampWriter) Write(b []byte) (int, error) {
 	return len(b), err
 }
 
-func run(w *watch.Watcher, o options, stdout, stderr io.Writer, deps Deps) int {
+func run(w *watch.Watcher, o options, stdout, stderr io.Writer, sig chan os.Signal) int {
 	if os.Getenv("JOURNAL_STREAM") == "" {
 		stdout = stampWriter{stdout, time.Now}
 	}
@@ -337,8 +353,6 @@ func run(w *watch.Watcher, o options, stdout, stderr io.Writer, deps Deps) int {
 		go srv.Serve(ln)
 		defer srv.Close()
 	}
-	sig := make(chan os.Signal, 4)
-	deps.Signals(sig)
 	reload := make(chan struct{}, 1)
 	go func() {
 		for s := range sig {

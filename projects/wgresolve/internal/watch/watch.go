@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/netip"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,8 @@ type Watcher struct {
 	status   map[key]*Status
 	lastLoad error
 	lastRun  time.Time
+	alive    time.Time
+	confErr  bool
 	logged   map[key]string
 }
 
@@ -125,11 +128,24 @@ func (w *Watcher) Round(ctx context.Context) {
 	if w.peers != nil {
 		peers = w.peers.Peers
 	}
+	w.alive = w.now()
 	w.mu.Unlock()
 
-	live := map[string]map[wgtypes.Key]device.Peer{}
+	// resolv.conf may have changed (another network, a VPN's DNS).
+	changed, err := w.Resolver.Refresh()
+	switch {
+	case changed && w.Log != nil:
+		srv, _ := w.Resolver.ServerList()
+		fmt.Fprintf(w.Log, "%s changed: asking %s now\n", w.Resolver.ConfPath, strings.Join(srv, ", "))
+	case err != nil && !w.confErr && w.Log != nil:
+		fmt.Fprintf(w.Log, "cannot read %s, keeping the DNS servers known so far: %v\n", w.Resolver.ConfPath, err)
+	}
+	w.confErr = err != nil
+
+	live := map[string]*device.Device{}
 	liveErr := map[string]error{}
 	seen := map[key]bool{}
+	next := map[key]*Status{}
 	for _, p := range peers {
 		if ctx.Err() != nil {
 			return
@@ -137,19 +153,21 @@ func (w *Watcher) Round(ctx context.Context) {
 		k := key{p.Interface, p.PublicKey}
 		seen[k] = true
 		if _, ok := live[p.Interface]; !ok && liveErr[p.Interface] == nil {
-			m, err := w.Devices.Peers(p.Interface)
-			live[p.Interface], liveErr[p.Interface] = m, err
+			d, err := w.Devices.Device(p.Interface)
+			live[p.Interface], liveErr[p.Interface] = d, err
 		}
 		st := w.statusFor(k, p)
 		w.checkPeer(ctx, k, p, st, live[p.Interface], liveErr[p.Interface])
+		next[k] = st
 		w.mu.Lock()
-		w.status[k] = st
+		w.alive = w.now()
 		w.mu.Unlock()
 	}
+	// Published together, so /metrics never shows half a round.
 	w.mu.Lock()
-	for k := range w.status {
+	w.status = next
+	for k := range w.memory {
 		if !seen[k] {
-			delete(w.status, k)
 			delete(w.memory, k)
 			delete(w.logged, k)
 		}
@@ -158,8 +176,16 @@ func (w *Watcher) Round(ctx context.Context) {
 	w.mu.Unlock()
 }
 
+// Alive is when the loop last made progress (a peer checked, or a round
+// begun): a slow DNS server makes rounds long, not the daemon dead.
+func (w *Watcher) Alive() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.alive
+}
+
 // checkPeer checks one peer and acts; st is this round's copy of its status.
-func (w *Watcher) checkPeer(ctx context.Context, k key, p source.Peer, st *Status, live map[wgtypes.Key]device.Peer, liveErr error) {
+func (w *Watcher) checkPeer(ctx context.Context, k key, p source.Peer, st *Status, live *device.Device, liveErr error) {
 	{
 		if err := liveErr; err != nil {
 			st.State, st.Reason = "no device", err.Error()
@@ -169,7 +195,7 @@ func (w *Watcher) checkPeer(ctx context.Context, k key, p source.Peer, st *Statu
 			w.logOnce(k, "no device", fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, st.Reason))
 			return
 		}
-		lp, ok := live[p.PublicKey]
+		lp, ok := live.Peers[p.PublicKey]
 		if !ok {
 			st.State, st.Reason = "no peer", "the interface has no such peer (configured in "+p.Source+")"
 			w.logOnce(k, "no peer", fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, st.Reason))
@@ -183,11 +209,11 @@ func (w *Watcher) checkPeer(ctx context.Context, k key, p source.Peer, st *Statu
 			w.logOnce(k, "ok", "")
 			return
 		}
-		a := w.Resolver.Lookup(ctx, p.Host)
+		a := w.Resolver.Lookup(ctx, p.Host, live.Mark)
 		if a.Err != nil {
 			st.State, st.Reason, st.LastErr = "dns error", a.Err.Error(), a.Err.Error()
 			st.DNSErrors++
-			w.logOnce(k, "dns error "+a.Err.Error(), fmt.Sprintf("peer %s: cannot resolve %s: %v", short(p.PublicKey), p.Host, a.Err))
+			w.logOnce(k, "dns error "+resolve.Class(a.Err), fmt.Sprintf("peer %s: cannot resolve %s: %v", short(p.PublicKey), p.Host, a.Err))
 			return
 		}
 		st.Addrs, st.TTLLeft = a.Addrs, a.Expires.Sub(now)

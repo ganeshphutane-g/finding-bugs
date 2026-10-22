@@ -176,6 +176,22 @@ func readINI(r io.Reader, inlineComments bool) ([]section, error) {
 // parseFile reads an INI-like file; a missing file is nothing, an
 // unreadable one a problem.
 func parseFile(path string, inline bool, r *Result) ([]section, bool, error) {
+	// Only regular files (through symlinks): a FIFO would block the loop.
+	st, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		if _, lerr := os.Lstat(path); lerr == nil {
+			r.problem(path, "is a symlink to nothing")
+		}
+		return nil, false, nil
+	}
+	if err == nil && !st.Mode().IsRegular() {
+		r.problem(path, "is not a regular file")
+		return nil, false, nil
+	}
+	if err == nil && st.Size() > 1<<20 {
+		r.problem(path, "is larger than 1 MiB; not read")
+		return nil, false, nil
+	}
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, false, nil

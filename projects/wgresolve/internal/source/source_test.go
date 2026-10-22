@@ -165,3 +165,18 @@ func TestUnreadable(t *testing.T) {
 		t.Fatal(err, r.Problems)
 	}
 }
+
+func TestBadFilesDoNotHideOthers(t *testing.T) {
+	d := t.TempDir()
+	os.Symlink(filepath.Join(d, "gone"), filepath.Join(d, "a0.conf"))
+	os.Mkdir(filepath.Join(d, "b0.conf"), 0o755)
+	write(t, filepath.Join(d, "c0.conf"), "[Peer]\nPublicKey = "+k1+"\n"+strings.Repeat("#", 2<<20)+"\n")
+	write(t, filepath.Join(d, "wg0.conf"), "[Peer]\nPublicKey = "+k2+"\nEndpoint = ok.example:51820\n")
+	var r Result
+	if err := WGQuick(d, &r); err != nil {
+		t.Fatal(err)
+	}
+	if got := endpoints(&r); got != "wg0 TrMv ok.example:51820" || len(r.Problems) != 3 {
+		t.Fatalf("%s %v", got, r.Problems)
+	}
+}

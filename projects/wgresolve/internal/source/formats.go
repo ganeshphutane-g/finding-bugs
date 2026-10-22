@@ -16,9 +16,22 @@ var ifaceName = regexp.MustCompile(`^[a-zA-Z0-9_=+.-]{1,15}$`)
 // WGQuick reads wg-quick confs in dir (*.conf; the interface is named after
 // the file, as wg-quick names it).
 func WGQuick(dir string, r *Result) error {
-	files, err := filepath.Glob(filepath.Join(dir, "*.conf"))
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		r.problem(dir, "cannot be read (wgresolve needs to run as root)")
+		return nil
+	}
 	if err != nil {
 		return err
+	}
+	var files []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".conf") {
+			files = append(files, filepath.Join(dir, e.Name()))
+		}
 	}
 	sort.Strings(files)
 	for _, f := range files {
@@ -27,8 +40,11 @@ func WGQuick(dir string, r *Result) error {
 			continue
 		}
 		secs, ok, err := parseFile(f, true, r)
-		if err != nil || !ok {
+		if err != nil {
 			return err
+		}
+		if !ok {
+			continue // reported; the other files still count
 		}
 		for _, s := range secs {
 			if strings.EqualFold(s.name, "Peer") {

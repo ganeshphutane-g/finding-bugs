@@ -21,10 +21,18 @@ type Peer struct {
 	LastHandshake time.Time
 }
 
+// Device is an interface's live state.
+type Device struct {
+	// Mark is the interface's firewall mark (wg-quick sets one for full
+	// tunnels): DNS queries carry it, so they bypass the tunnel too.
+	Mark  int
+	Peers map[wgtypes.Key]Peer
+}
+
 // Devices is what wgresolve needs from WireGuard.
 type Devices interface {
-	// Peers reads an interface's peers; ErrNoDevice when it is not up.
-	Peers(iface string) (map[wgtypes.Key]Peer, error)
+	// Device reads an interface; ErrNoDevice when it is not up.
+	Device(iface string) (*Device, error)
 	// SetEndpoint changes one existing peer's endpoint and nothing else.
 	SetEndpoint(iface string, key wgtypes.Key, ep netip.AddrPort) error
 	Close() error
@@ -48,15 +56,15 @@ func Open() (*WG, error) {
 // Close closes it.
 func (w *WG) Close() error { return w.c.Close() }
 
-// Peers reads an interface's peers.
-func (w *WG) Peers(iface string) (map[wgtypes.Key]Peer, error) {
+// Device reads an interface.
+func (w *WG) Device(iface string) (*Device, error) {
 	d, err := w.c.Device(iface)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNoDevice
 	}
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			return nil, fmt.Errorf("%s: %w (wgresolve needs root or CAP_NET_ADMIN)", iface, err)
+			return nil, fmt.Errorf("%s: %w (wgresolve needs root: CAP_NET_ADMIN for kernel WireGuard, and access to wireguard-go's root-owned socket in /var/run/wireguard)", iface, err)
 		}
 		return nil, fmt.Errorf("%s: %w", iface, err)
 	}
@@ -70,7 +78,7 @@ func (w *WG) Peers(iface string) (map[wgtypes.Key]Peer, error) {
 		}
 		out[p.PublicKey] = Peer{Endpoint: ep, LastHandshake: p.LastHandshakeTime}
 	}
-	return out, nil
+	return &Device{Mark: d.FirewallMark, Peers: out}, nil
 }
 
 // SetEndpoint changes one peer's endpoint. UpdateOnly: a peer that was

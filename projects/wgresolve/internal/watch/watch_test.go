@@ -24,7 +24,7 @@ type fakeDevices struct {
 	sets  []string
 }
 
-func (f *fakeDevices) Peers(iface string) (map[wgtypes.Key]device.Peer, error) {
+func (f *fakeDevices) Device(iface string) (*device.Device, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	m, ok := f.peers[iface]
@@ -35,7 +35,7 @@ func (f *fakeDevices) Peers(iface string) (map[wgtypes.Key]device.Peer, error) {
 	for k, v := range m {
 		out[k] = v
 	}
-	return out, nil
+	return &device.Device{Peers: out}, nil
 }
 
 func (f *fakeDevices) SetEndpoint(iface string, k wgtypes.Key, ep netip.AddrPort) error {

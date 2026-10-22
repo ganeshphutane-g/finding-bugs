@@ -65,8 +65,12 @@ NetworkManager, or tunnels set up by hand. It does not run on appliances
    its TTL runs out (at least 30 s, at most 1 h). It queries the system's
    resolvers from `/etc/resolv.conf`, or `--resolver` servers. When the
    system's DNS is only reachable through the tunnel, `--resolver` can name
-   servers outside it, so the deadlock cannot happen. `--prefer ipv4|ipv6`
-   orders the answers (default: as the resolver gives them).
+   servers outside it. Queries carry the interface's firewall mark, so they
+   bypass a full tunnel's policy routing as WireGuard's own packets do.
+   `--prefer ipv4|ipv6` orders the answers (default ipv4). Answers that
+   cannot be an endpoint (0.0.0.0, loopback, multicast, link-local) are
+   ignored; failures are retried with growing back-off; resolv.conf is read
+   again when it changes.
 4. **It changes an endpoint only when the peer is not working:**
    - the peer has no endpoint (the name could not be resolved at boot): it is
      set as soon as the name resolves;
@@ -81,21 +85,22 @@ NetworkManager, or tunnels set up by hand. It does not run on appliances
    uses.
 5. **It reports what it does:**
    - a log line for each change, saying why;
-   - `/metrics` (`--listen`, off by default): per peer, the handshake age, the
-     endpoint, changes, resolution errors and the TTL left;
+   - `/metrics` (`--listen`, off by default): per peer, whether it is up, the
+     handshake age, the endpoint, changes, resolution errors and the TTL
+     left;
    - `/healthz`.
 6. **Config changes are picked up** on SIGHUP and every 5 minutes.
 
 `wgresolve check` lists every peer found, where it came from, its name, the
 answers, the current endpoint, the handshake age and what `run` would do. It
-exits 0 when all is well and 3 when a peer needs a change (it would fix it)
-or its name does not resolve.
+exits 0 when all is well (an interface that is not up is a note), 3 when a
+peer needs a change, is down or missing, or its name does not resolve, and 1
+when an interface or the config cannot be read.
 
 ## Non-goals (v1)
 
 - Changing routes. wg-quick's full-tunnel mode uses policy routing (fwmark),
-  so new endpoints need no host route. `check` warns when an endpoint's
-  address would itself be routed into the tunnel.
+  so new endpoints need no host route.
 - Appliances, Windows, macOS.
 - Re-resolving for wg-quick's `DNS=` or anything other than peer endpoints.
 - Being a DNS-update client: it follows the name; something else keeps the

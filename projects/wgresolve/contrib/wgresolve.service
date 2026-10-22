@@ -5,15 +5,15 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/wgresolve run
+# Flags go in /etc/default/wgresolve, e.g. WGRESOLVE_OPTS="--resolver 192.168.1.1"
+EnvironmentFile=-/etc/default/wgresolve
+ExecStart=/usr/local/bin/wgresolve run $WGRESOLVE_OPTS
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 # Root, but only able to change WireGuard peers (netlink), read their
 # config files (0600) and reach wireguard-go's root-owned UAPI sockets.
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
-# wireguard-go's UAPI sockets are under /run/wireguard.
-ReadWritePaths=-/run/wireguard
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
