@@ -210,6 +210,16 @@ func (w *Watcher) checkPeer(ctx context.Context, k key, p source.Peer, st *Statu
 	// A working peer needs no lookup at all.
 	if lp.Endpoint.IsValid() && engine.Working(now, mem, w.stale()) {
 		st.State, st.Reason = "ok", fmt.Sprintf("working (last heard from %s ago)", now.Sub(mem.Active).Round(time.Second))
+		if w.DryRun {
+			// check shows the answers too, and flags a name that no longer
+			// resolves before the peer needs it.
+			if a := w.Resolver.Lookup(ctx, p.Host, live.Mark); a.Err != nil {
+				st.State, st.Reason = "dns error", "working, but its name does not resolve: "+a.Err.Error()
+			} else {
+				st.Addrs, st.TTLLeft = a.Addrs, a.Expires.Sub(now)
+			}
+			return
+		}
 		if prev := w.logged[k]; prev != "" && prev != "ok" {
 			w.logf(k, fmt.Sprintf("peer %s (%s): working again", short(p.PublicKey), p.Host))
 		}

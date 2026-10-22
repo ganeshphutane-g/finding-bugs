@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"errors"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -19,6 +20,9 @@ func markControl(mark int) func(network, address string, c syscall.RawConn) erro
 		})
 		if err != nil {
 			return err
+		}
+		if errors.Is(serr, unix.EPERM) {
+			return nil // without CAP_NET_ADMIN (check as a user): unmarked
 		}
 		return serr
 	}
