@@ -47,6 +47,8 @@ type Resolver struct {
 	// only "ipv4" or "ipv6" addresses ("" keeps both).
 	Prefer string
 	Family string
+	// MinTTL overrides the shortest time an answer is kept (default MinTTL).
+	MinTTL time.Duration
 	Now    func() time.Time
 
 	mu    sync.Mutex
@@ -130,7 +132,7 @@ func (r *Resolver) lookupName(ctx context.Context, name string) Answer {
 		// A failure is retried at the next round, a missing name after MinTTL.
 		exp := now
 		if errors.Is(err, ErrNoSuchName) {
-			exp = now.Add(MinTTL)
+			exp = now.Add(r.minTTL())
 		}
 		return Answer{Err: err, Expires: exp}
 	}
@@ -168,13 +170,20 @@ func (r *Resolver) lookupName(ctx context.Context, name string) Answer {
 		if r.Prefer == "ipv6" {
 			addrs = append(v6, v4...)
 		}
-		d := min(max(time.Duration(ttl)*time.Second, MinTTL), MaxTTL)
+		d := min(max(time.Duration(ttl)*time.Second, r.minTTL()), MaxTTL)
 		return Answer{Addrs: addrs, Expires: now.Add(d), Server: srv}
 	}
 	if len(r.Servers) == 0 {
 		return fail(errors.New("no DNS servers to ask"))
 	}
 	return fail(fmt.Errorf("%s: no DNS server answered: %s", strings.TrimSuffix(name, "."), strings.Join(errs, "; ")))
+}
+
+func (r *Resolver) minTTL() time.Duration {
+	if r.MinTTL > 0 {
+		return r.MinTTL
+	}
+	return MinTTL
 }
 
 func (r *Resolver) types() []uint16 {
