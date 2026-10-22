@@ -300,7 +300,22 @@ func check(w *watch.Watcher, stdout io.Writer) int {
 	return code
 }
 
+// stampWriter starts each line with the time, for logs that are not
+// journald's (which stamps them itself).
+type stampWriter struct {
+	w   io.Writer
+	now func() time.Time
+}
+
+func (s stampWriter) Write(b []byte) (int, error) {
+	_, err := fmt.Fprintf(s.w, "%s %s", s.now().Format("2006-01-02T15:04:05Z07:00"), b)
+	return len(b), err
+}
+
 func run(w *watch.Watcher, o options, stdout, stderr io.Writer, deps Deps) int {
+	if os.Getenv("JOURNAL_STREAM") == "" {
+		stdout = stampWriter{stdout, time.Now}
+	}
 	w.Log = stdout
 	for _, p := range w.Problems() {
 		fmt.Fprintf(stdout, "note: %s\n", p)

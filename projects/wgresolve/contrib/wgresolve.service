@@ -1,0 +1,33 @@
+[Unit]
+Description=wgresolve: keep WireGuard peers with DNS-name endpoints connected
+Documentation=https://github.com/ganeshphutane-g/finding-bugs/tree/main/projects/wgresolve
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/wgresolve run
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+# Root, but only able to change WireGuard peers (netlink), read their
+# config files (0600) and reach wireguard-go's root-owned UAPI sockets.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
+# wireguard-go's UAPI sockets are under /run/wireguard.
+ReadWritePaths=-/run/wireguard
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

@@ -47,6 +47,9 @@ var (
 
 // wgresolve builds the binary once.
 func wgresolve(t *testing.T) string {
+	if b := os.Getenv("WGRESOLVE_BIN"); b != "" {
+		return b
+	}
 	binOnce.Do(func() {
 		dir, _ := os.MkdirTemp("", "wgresolve-e2e")
 		binPath = filepath.Join(dir, "wgresolve")
