@@ -154,3 +154,21 @@ func TestFallback(t *testing.T) {
 		t.Fatal("a failure was cached")
 	}
 }
+
+func TestOneTypeFails(t *testing.T) {
+	// A resolver that answers A but refuses AAAA.
+	srv := server(t, func(w dns.ResponseWriter, q *dns.Msg) {
+		m := new(dns.Msg)
+		if q.Question[0].Qtype == dns.TypeAAAA {
+			m.SetRcode(q, dns.RcodeRefused)
+		} else {
+			m.SetReply(q)
+			m.Answer = append(m.Answer, rr(q.Question[0].Name+" 60 IN A 198.51.100.4"))
+		}
+		w.WriteMsg(m)
+	})
+	r := &Resolver{Servers: []string{srv}}
+	if a := r.Lookup(context.Background(), "x.example"); a.Err != nil || len(a.Addrs) != 1 {
+		t.Fatalf("%+v", a)
+	}
+}

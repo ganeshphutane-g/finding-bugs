@@ -78,14 +78,17 @@ func (w *Watcher) logf(k key, msg string) {
 	fmt.Fprintf(w.Log, "%s %s\n", k.iface, msg)
 }
 
-// logOnce logs a peer's message only when it differs from the last one, so
-// a peer that stays down does not fill the log.
-func (w *Watcher) logOnce(k key, msg string) {
-	if w.logged[k] == msg {
+// logOnce logs a peer's message only when its state (what, not the
+// message, which carries changing ages) differs from the last one logged,
+// so a peer that stays down does not fill the log.
+func (w *Watcher) logOnce(k key, what, msg string) {
+	if w.logged[k] == what {
 		return
 	}
-	w.logged[k] = msg
-	w.logf(k, msg)
+	w.logged[k] = what
+	if msg != "" {
+		w.logf(k, msg)
+	}
 }
 
 // Reload reads the configuration again. A failure keeps the peers known so
@@ -163,13 +166,13 @@ func (w *Watcher) checkPeer(ctx context.Context, k key, p source.Peer, st *Statu
 			if errors.Is(err, device.ErrNoDevice) {
 				st.Reason = "the interface is not up"
 			}
-			w.logOnce(k, fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, st.Reason))
+			w.logOnce(k, "no device", fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, st.Reason))
 			return
 		}
 		lp, ok := live[p.PublicKey]
 		if !ok {
 			st.State, st.Reason = "no peer", "the interface has no such peer (configured in "+p.Source+")"
-			w.logOnce(k, fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, st.Reason))
+			w.logOnce(k, "no peer", fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, st.Reason))
 			return
 		}
 		st.Endpoint, st.Handshake = lp.Endpoint, lp.LastHandshake
@@ -177,14 +180,14 @@ func (w *Watcher) checkPeer(ctx context.Context, k key, p source.Peer, st *Statu
 		// A working peer needs no lookup at all.
 		if !lp.LastHandshake.IsZero() && lp.Endpoint.IsValid() && now.Sub(lp.LastHandshake) < w.stale() {
 			st.State, st.Reason = "ok", fmt.Sprintf("working (handshake %s ago)", now.Sub(lp.LastHandshake).Round(time.Second))
-			w.logOnce(k, "")
+			w.logOnce(k, "ok", "")
 			return
 		}
 		a := w.Resolver.Lookup(ctx, p.Host)
 		if a.Err != nil {
 			st.State, st.Reason, st.LastErr = "dns error", a.Err.Error(), a.Err.Error()
 			st.DNSErrors++
-			w.logOnce(k, fmt.Sprintf("peer %s: cannot resolve %s: %v", short(p.PublicKey), p.Host, a.Err))
+			w.logOnce(k, "dns error "+a.Err.Error(), fmt.Sprintf("peer %s: cannot resolve %s: %v", short(p.PublicKey), p.Host, a.Err))
 			return
 		}
 		st.Addrs, st.TTLLeft = a.Addrs, a.Expires.Sub(now)
@@ -201,7 +204,7 @@ func (w *Watcher) checkPeer(ctx context.Context, k key, p source.Peer, st *Statu
 			if mem.Set == lp.Endpoint && now.Sub(mem.SetAt) < w.stale() {
 				st.State = "waiting"
 			}
-			w.logOnce(k, fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, d.Reason))
+			w.logOnce(k, st.State+" "+lp.Endpoint.String(), fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, d.Reason))
 			return
 		}
 		if w.DryRun {
@@ -211,7 +214,7 @@ func (w *Watcher) checkPeer(ctx context.Context, k key, p source.Peer, st *Statu
 		}
 		if err := w.Devices.SetEndpoint(p.Interface, p.PublicKey, d.Set); err != nil {
 			st.State, st.LastErr = "error", err.Error()
-			w.logOnce(k, fmt.Sprintf("peer %s: setting %s failed: %v", short(p.PublicKey), d.Set, err))
+			w.logOnce(k, "error "+err.Error(), fmt.Sprintf("peer %s: setting %s failed: %v", short(p.PublicKey), d.Set, err))
 			return
 		}
 		st.State, st.Endpoint = "changed", d.Set

@@ -140,18 +140,18 @@ func (r *Resolver) lookupName(ctx context.Context, name string) Answer {
 	for _, srv := range r.Servers {
 		var v4, v6 []netip.Addr
 		ttl := uint32(MaxTTL / time.Second)
-		nx := 0
-		ok := true
+		failed := 0
 		for _, qt := range r.types() {
 			addrs, t, err := r.query(ctx, srv, name, qt)
 			if errors.Is(err, ErrNoSuchName) {
-				nx++
 				continue
 			}
 			if err != nil {
+				// Some resolvers fail AAAA queries (or A): what the other
+				// type gave is still good.
 				errs = append(errs, err.Error())
-				ok = false
-				break
+				failed++
+				continue
 			}
 			ttl = min(ttl, t)
 			if qt == dns.TypeA {
@@ -160,10 +160,10 @@ func (r *Resolver) lookupName(ctx context.Context, name string) Answer {
 				v6 = addrs
 			}
 		}
-		if !ok {
-			continue // ask the next server
-		}
-		if nx == len(r.types()) || len(v4)+len(v6) == 0 {
+		if len(v4)+len(v6) == 0 {
+			if failed > 0 {
+				continue // ask the next server
+			}
 			return fail(fmt.Errorf("%s: %w (asked %s)", strings.TrimSuffix(name, "."), ErrNoSuchName, srv))
 		}
 		addrs := append(v4, v6...)
