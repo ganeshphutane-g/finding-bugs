@@ -1,29 +1,17 @@
 # State
 
-Current project: #13, wgresolve (keep WireGuard peers with dynamic-DNS
-endpoints connected; the name is free on GitHub, checked 2026-10-22). Phase:
-build. Spec: projects/wgresolve/SPEC.md.
+Current project: none; research round 15 is under way (an agent was started
+at 20:40 UTC on 2026-10-22; its report was not recorded yet).
 
 ## Next step
 
-Milestones 1–4 are done and pushed (sources, resolver and engine, run/check/
-metrics/units, end-to-end tests and CI). Milestone 5: README (with a real
-run), CHANGELOG and LICENSE are written. Two full reviews were started at
-20:10 UTC on 2026-10-22 (correctness; security and operations). Then: fix
-every finding, CI green, mark done (owner tag wgresolve/v1.0.0), research
-round 15.
+Research round 15: score at least 5 candidates (rules in AUTOPILOT.md), skip
+everything in IDEAS.md, verify the top pick's numbers and upstream PRs
+yourself, record the round in IDEAS.md, then start project #14 with its
+SPEC.md. Round 13's zfsunlock (20) and round 14's runners-up stay candidates.
 
-End-to-end lab (internal/e2e): client, NAT router and server namespaces. A
-"move" changes the router's public address and its DNAT rule. Earlier lab
-designs failed for reasons worth remembering:
-- deleting the server's own address: wireguard-go keeps replying from it;
-- two addresses on the server: replies come from the primary one, and the
-  client roams back to it;
-- an `ip rule ... prohibit` cannot drop packets for a local address (the
-  local table is looked up first).
-After an endpoint change, traffic flows on the old session's keys and the
-next handshake comes at the next rekey, so short-`--stale` tests wait for
-ping, not for a handshake.
+wgresolve (#13) is finished (see Finished projects). If its CI (runs 5–8,
+started 20:33–20:38 UTC) is not green, fix that first.
 
 Facts checked for wgresolve (2026-10-22):
 - No kernel WireGuard in this sandbox (CONFIG_WIREGUARD unset), but TUN,
@@ -325,6 +313,31 @@ Actions as codeberg.org/forgejo/forgejo:16.
     - **Owner checks before going public:** README; run `sync --init` on a
       copy of a real repository, damage a pack copy, and repair it.
 
+13. **wgresolve** (projects/wgresolve, v1.0.0 at commit 27e1655). Keeps
+    WireGuard peers whose endpoint is a DNS name connected when the address
+    behind the name changes (systemd#9911, 51 👍; NetworkManager and
+    mailing-list requests).
+    - **How:** reads peers from wg-quick confs, systemd-networkd `.netdev`
+      files (drop-ins, precedence) and NetworkManager keyfiles. A peer
+      counts as working while anything arrives from it (receive counter or
+      handshake) within 190 s. A quiet peer is pointed at what its name
+      resolves to now; a peer with no endpoint gets one when its name
+      resolves; several addresses are tried once through. DNS queries
+      respect TTLs and carry the interface's firewall mark (so a full
+      tunnel cannot swallow them). Also `check` (exit codes for
+      monitoring), /metrics, a hardened systemd unit and a Docker image.
+    - **Reviews:** two full reviews (correctness; security and operations),
+      about 25 distinct findings, all fixed. The worst: handshake age
+      alone made a healthy tunnel renewed by the other side look quiet;
+      DNS through a dead full tunnel; the wireguard-go socket path in
+      Docker; IPv4-mapped answers looping.
+    - **Tests:** end to end with real WireGuard (kernel in CI, wireguard-go
+      here) in three namespaces with a NAT router whose public address
+      changes. With the defaults, the tunnel came back 3 m 10 s after the
+      last packet.
+    - **Owner checks before going public:** README; run `wgresolve check`
+      on a machine with a dynamic-DNS peer; then the service for a day.
+
 ## Blockers for the owner
 
 - The finding-bugs repo itself is PUBLIC (seen 2026-10-15). Everything in it
@@ -351,5 +364,6 @@ Actions as codeberg.org/forgejo/forgejo:16.
   (df3dbb4), `issuemove/v1.0.0` (e7c8051), `kumafile/v1.0.0` (aa90445),
   `docker-edit/v1.0.0` (cdc7019), `pushprobe/v1.0.0` (0e881d2),
   `alertlines/v1.0.0` (5e2f87c), `xffdns/v1.0.0` (e52932e), `pullwhy/v1.0.0`
-  (90c49bd) and `packparity/v1.0.0` (89cf92f), plus `docker-mop/v1.0.0`
+  (90c49bd), `packparity/v1.0.0` (89cf92f) and `wgresolve/v1.0.0` (27e1655),
+  plus `docker-mop/v1.0.0`
   (50c1a1e) if not yet done.

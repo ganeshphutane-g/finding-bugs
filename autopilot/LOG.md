@@ -2,6 +2,42 @@
 
 Newest first.
 
+## 2026-10-23 (IST) — run 12
+
+- **READMEs:** roadmap sections were added to packparity, bucketmove,
+  docker-mop, pgcarry and pushdir (the playbook's "done" list asks for one).
+- **Project #13 wgresolve, from spec to v1.0.0 in this run.**
+  - **Checked first:**
+    - Ubuntu ships `reresolve-dns.sh` only as a doc example;
+    - NetworkManager resolves names only at activation;
+    - there is no kernel WireGuard here, but wireguard-go in network
+      namespaces works.
+  - **Built:**
+    - config sources (wg-quick, networkd, NetworkManager, `--peer`);
+    - a DNS resolver with TTLs;
+    - the decision rules and watch loop;
+    - `run`, `check` and /metrics;
+    - a systemd unit, a Docker image and CI.
+  - **End-to-end lab:** client, NAT router and server namespaces. Three
+    earlier lab designs failed, and the reasons are recorded in STATE: the
+    server replying from a deleted address, a second address, and routing
+    rules that cannot drop local traffic.
+  - **Two full reviews in parallel**, about 25 distinct findings, all fixed.
+    The most important:
+    - liveness now uses the receive counter, not handshake age, which wrongly
+      flagged a healthy tunnel renewed every 165 s;
+    - DNS queries carry the firewall mark, tested with wg-quick's full-tunnel
+      rules; a mutation check showed the test fails without the mark;
+    - the wireguard-go socket path in Docker;
+    - IPv4-mapped AAAA answers looping;
+    - a bad conf file hiding the others;
+    - resolv.conf now re-read when it changes;
+    - `check` exit codes.
+  - CI found a race in the test harness, now fixed; IPv6 and kernel WireGuard
+    pass in CI.
+  - With the defaults, the tunnel came back 3 m 10 s after the last packet.
+- **Research round 15** started (agent running).
+
 ## 2026-10-22 (IST) — run 11
 
 - **Project #11 pullwhy, finished.**
