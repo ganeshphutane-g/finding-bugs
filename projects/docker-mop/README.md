@@ -160,6 +160,14 @@ endpoints are supported. `ssh://` and Windows named pipes are not yet.
   POSIX ACLs and extended attributes other than file capabilities are not carried
   by Docker's archive API, so they are not copied.
 
+## Roadmap
+
+- A build-cache preview, if Docker gains a way to list what
+  `docker builder prune` would remove.
+- Swarm networks in `plan`.
+- Volume copy for volumes with driver options, where the data can be reached.
+- Release binaries.
+
 ## Development
 
 ```sh

@@ -225,6 +225,16 @@ repository, each with its own PARITY.
   restic ignores it (it is in no index) and the next prune removes it.
 - **Platforms:** Linux, macOS and the BSDs. Not Windows, Solaris or AIX.
 
+## Roadmap
+
+- Lower memory use: stream large packs block group by block group instead of
+  holding the whole file.
+- A templated systemd unit for rest-server with `--private-repos` (one parity
+  directory per repository).
+- Optional cross-file parity, so a whole lost pack can come back.
+- rustic-specific notes, and Kopia or borg if their formats allow it.
+- Release binaries.
+
 ## Tests
 
 `make test` runs the unit tests:

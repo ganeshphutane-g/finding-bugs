@@ -228,6 +228,13 @@ Exit codes: 0 done, 1 error, 2 usage, 3 blocked by the plan, 130 interrupted
 - **Tested with** PostgreSQL 13–18, Debian and Alpine images, and pgvector, on Docker
   29 and Compose v5. Kubernetes and non-Docker installs are out of scope.
 
+## Roadmap
+
+- An optional `pg_upgrade --link` path for very large databases.
+- Content checks (hashes per table) on top of counts, as an opt-in.
+- Tablespaces and a separate WAL folder.
+- Release binaries.
+
 ## Development
 
 ```sh

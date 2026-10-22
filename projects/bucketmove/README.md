@@ -158,6 +158,15 @@ make build        # ./bucketmove
   and `verify` on servers that list keys out of order looks each key up separately,
   which is slower.
 
+## Roadmap
+
+- Copy default encryption, notifications and replication settings where the
+  target supports them.
+- Lower memory use for buckets with many millions of versions (a journal on
+  disk instead of in memory).
+- More S3-compatible servers in the test matrix.
+- Release binaries.
+
 ## Development
 
 ```sh

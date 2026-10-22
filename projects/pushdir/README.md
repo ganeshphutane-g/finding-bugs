@@ -219,6 +219,13 @@ The service user needs to read rclone's config. The default is that user's
 - **Large first copies:** the first copy of a huge tree takes as long as `rclone copy`
   does. Changes made meanwhile are queued and sent afterwards.
 
+## Roadmap
+
+- Watching symlinked folders.
+- macOS support (FSEvents).
+- A `--checksum` default for remotes without modification times.
+- Release binaries and a container image.
+
 ## Development
 
 ```sh
