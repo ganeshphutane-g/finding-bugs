@@ -6,9 +6,24 @@ build. Spec: projects/wgresolve/SPEC.md.
 
 ## Next step
 
-Build milestone by milestone (SPEC.md): 1 config sources, 2 resolver and
-decision engine, 3 run/check/metrics/units, 4 netns end-to-end tests and CI,
-5 docs and two reviews.
+Milestones 1–4 are done and pushed (sources, resolver and engine, run/check/
+metrics/units, end-to-end tests and CI). Milestone 5: README (with a real
+run), CHANGELOG and LICENSE are written. Two full reviews were started at
+20:10 UTC on 2026-10-22 (correctness; security and operations). Then: fix
+every finding, CI green, mark done (owner tag wgresolve/v1.0.0), research
+round 15.
+
+End-to-end lab (internal/e2e): client, NAT router and server namespaces. A
+"move" changes the router's public address and its DNAT rule. Earlier lab
+designs failed for reasons worth remembering:
+- deleting the server's own address: wireguard-go keeps replying from it;
+- two addresses on the server: replies come from the primary one, and the
+  client roams back to it;
+- an `ip rule ... prohibit` cannot drop packets for a local address (the
+  local table is looked up first).
+After an endpoint change, traffic flows on the old session's keys and the
+next handshake comes at the next rekey, so short-`--stale` tests wait for
+ping, not for a handshake.
 
 Facts checked for wgresolve (2026-10-22):
 - No kernel WireGuard in this sandbox (CONFIG_WIREGUARD unset), but TUN,
