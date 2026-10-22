@@ -10,8 +10,7 @@ everything in IDEAS.md, verify the top pick's numbers and upstream PRs
 yourself, record the round in IDEAS.md, then start project #14 with its
 SPEC.md. Round 13's zfsunlock (20) and round 14's runners-up stay candidates.
 
-wgresolve (#13) is finished (see Finished projects). If its CI (runs 5–8,
-started 20:33–20:38 UTC) is not green, fix that first.
+wgresolve (#13) is finished (see Finished projects); CI is green at 27e1655.
 
 Facts checked for wgresolve (2026-10-22):
 - No kernel WireGuard in this sandbox (CONFIG_WIREGUARD unset), but TUN,
