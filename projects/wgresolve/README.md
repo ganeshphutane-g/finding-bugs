@@ -16,7 +16,7 @@ confs. wgresolve is the maintained version of that idea:
 - it respects DNS TTLs;
 - it can resolve outside a tunnel whose own DNS is down;
 - it logs every change and why, and has metrics;
-- it never touches a peer that is working.
+- it never touches a peer that is working, judged by what arrives from it.
 
 ```
 $ wgresolve check
@@ -41,28 +41,37 @@ shortened, and the first line of `run` is shown as the release prints it.)
 
 ## How it decides
 
-Every 30 seconds wgresolve reads each peer's endpoint and last handshake.
+Every 30 seconds wgresolve reads each peer's endpoint, last handshake and
+byte counters.
 
-- **A working peer is left alone.** "Working" means a handshake in the last
-  135 seconds, the window wireguard-tools' script uses too: WireGuard
-  re-handshakes every 2 minutes while traffic flows. It is not touched even if
-  DNS says something else, because WireGuard may have roamed to the address
-  the peer really uses.
+- **A working peer is left alone.** "Working" means something arrived from
+  it within the last 190 seconds: its receive counter grew, or it
+  handshook. 190 s is past WireGuard's 3-minute session lifetime, after
+  which no traffic can flow without a new handshake. A working peer is not
+  touched even if DNS says something else, because WireGuard may have
+  roamed to the address the peer really uses.
+
+  Handshake age alone would not do. A session the other side started is
+  renewed only every 165 s when this side just sends keepalives, and an idle
+  tunnel has no handshakes at all.
 - **A peer with no endpoint** (its name did not resolve when the interface
   came up) gets one as soon as the name resolves.
 - **A quiet peer whose endpoint is not what its name resolves to now** is
-  pointed at the name's first address. If it is still quiet after another
-  135 seconds, wgresolve tries the name's next address, if it has one.
-- **A quiet peer at the name's current address** is down for some other
-  reason; wgresolve says so and changes nothing.
+  pointed at the name's first address.
+- **A quiet peer at one of the name's addresses** that keeps sending without
+  an answer is tried at the name's other addresses, once through the list.
+  Otherwise it is down for some other reason; wgresolve says so and changes
+  nothing.
+- Just before a change it looks at the peer once more, and leaves it if
+  anything arrived meanwhile.
 
-So a dead tunnel comes back about 2½ minutes after its last handshake. That
-is measured: in the end-to-end test the handshake came back 2 m 20 s after
-the last good one, and in the run above 2 m 39 s after.
+So a dead tunnel comes back a little over 3 minutes after the last packet
+from it.
 
 Lookups go straight to DNS servers, with TTLs: an answer is reused until its
 TTL runs out (at least `--min-ttl`, default 30 s; at most an hour). A working
-peer needs no lookup at all.
+peer needs no lookup at all. Failed lookups are retried after 10 s, then
+20 s, and so on, up to 5 minutes.
 
 ## Install
 
@@ -124,12 +133,12 @@ up.
 | `--nm-dir` | NetworkManager's own | keyfile directories (repeat) |
 | `--resolv-conf` | `/etc/resolv.conf` | where the system's DNS servers are listed; read again when it changes |
 | `--interval` | `30s` | how often to look at the peers |
-| `--stale` | `135s` | how old a handshake may be before the peer counts as not working |
+| `--stale` | `190s` | how long nothing may arrive from a peer before it counts as not working (below 3 minutes, a working peer that sends nothing may count as quiet) |
 | `--resolver` | servers in `/etc/resolv.conf` | DNS servers to ask (repeat) |
 | `--prefer` | `ipv4` | try `ipv4` or `ipv6` addresses first |
 | `--family` | both | only `ipv4` or only `ipv6` addresses |
 | `--min-ttl` | `30s` | keep an answer at least this long |
-| `--dns-timeout` | `3s` | per DNS server |
+| `--dns-timeout` | `3s` | per query (A and AAAA are asked at once, then the next server) |
 | `--listen` | off | serve `/metrics` and `/healthz` (run only) |
 | `--no-files` | | read no config files; only `--peer` |
 
@@ -228,7 +237,8 @@ name, and nftables for the NAT. The tests cover:
 - a peer with a fixed address never being touched;
 - IPv6 with `--prefer ipv6`, where the kernel has IPv6;
 - `check`;
-- one full run with the default 135 s.
+- one full run with the default `--stale`;
+- DNS through a full tunnel (wg-quick's policy routing), which fails without the firewall mark.
 
 ## License
 

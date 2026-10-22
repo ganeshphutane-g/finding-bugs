@@ -180,3 +180,34 @@ func TestBadFilesDoNotHideOthers(t *testing.T) {
 		t.Fatalf("%s %v", got, r.Problems)
 	}
 }
+
+func TestSourceDetails(t *testing.T) {
+	// networkd: a drop-in configuring the same peer again wins.
+	etc := t.TempDir()
+	write(t, filepath.Join(etc, "wg.netdev"), "[NetDev]\nName=wg2\nKind=wireguard\n[WireGuardPeer]\nPublicKey="+k1+"\nEndpoint=old.example:1\n")
+	write(t, filepath.Join(etc, "wg.netdev.d", "x.conf"), "[WireGuardPeer]\nPublicKey="+k1+"\nEndpoint=new.example:1\n")
+	var r Result
+	Networkd([]string{etc}, &r)
+	if got := endpoints(&r); got != "wg2 xTIB new.example:1" {
+		t.Fatal(got)
+	}
+	// NetworkManager: a keyfile without the suffix counts, a backup does
+	// not, and one without interface-name is reported.
+	nm := t.TempDir()
+	kf := "[connection]\ntype=wireguard\ninterface-name=wg3\n[wireguard-peer." + k2 + "]\nendpoint=legacy.example:51820\n"
+	write(t, filepath.Join(nm, "Legacy VPN"), kf)
+	write(t, filepath.Join(nm, "Legacy VPN~"), kf)
+	write(t, filepath.Join(nm, "noiface.nmconnection"), "[connection]\ntype=wireguard\n[wireguard-peer."+k3+"]\nendpoint=x.example:1\n")
+	r = Result{}
+	NetworkManager([]string{nm}, &r)
+	if got := endpoints(&r); got != "wg3 TrMv legacy.example:51820" || len(r.Problems) != 1 {
+		t.Fatal(got, r.Problems)
+	}
+	// Keys are case-sensitive there.
+	write(t, filepath.Join(etc, "case.netdev"), "[NetDev]\nname=wg4\nKind=wireguard\n[WireGuardPeer]\nPublicKey="+k3+"\nEndpoint=c.example:1\n")
+	r = Result{}
+	Networkd([]string{etc}, &r)
+	if strings.Contains(endpoints(&r), "wg4") {
+		t.Fatal("name= read as Name=")
+	}
+}

@@ -144,6 +144,9 @@ func command(name string, args []string, stdout, stderr io.Writer, deps Deps) in
 		fmt.Fprintln(stderr, "wgresolve:", err)
 		return exitUsage
 	}
+	if o.stale < 180*time.Second {
+		fmt.Fprintf(stderr, "wgresolve: warning: --stale %s is shorter than WireGuard's 3-minute session: a working peer that sends nothing for that long counts as quiet\n", o.stale)
+	}
 	// Flags are checked before anything else, so a typo is a usage error.
 	var flagPeers source.Result
 	for _, p := range o.peers {
@@ -191,7 +194,7 @@ func (o *options) validate() error {
 		return fmt.Errorf("--interval %s: at least 1s", o.interval)
 	}
 	if o.stale < 10*time.Second {
-		return fmt.Errorf("--stale %s: at least 10s (WireGuard retries a handshake every 5 s)", o.stale)
+		return fmt.Errorf("--stale %s: at least 10s", o.stale)
 	}
 	if o.minTTL < time.Second || o.minTTL > resolve.MaxTTL {
 		return fmt.Errorf("--min-ttl %s: between 1s and 1h", o.minTTL)
@@ -333,9 +336,7 @@ func run(w *watch.Watcher, o options, stdout, stderr io.Writer, sig chan os.Sign
 		stdout = stampWriter{stdout, time.Now}
 	}
 	w.Log = stdout
-	for _, p := range w.Problems() {
-		fmt.Fprintf(stdout, "note: %s\n", p)
-	}
+	w.LogProblems()
 	n := len(w.Peers())
 	fmt.Fprintf(stdout, "wgresolve %s: watching %d %s whose endpoint is a DNS name, every %s\n", version(), n, plural(n, "peer", "peers"), o.interval)
 	if n == 0 {

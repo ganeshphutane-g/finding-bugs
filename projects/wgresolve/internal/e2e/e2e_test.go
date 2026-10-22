@@ -334,15 +334,20 @@ AllowedIPs = 10.78.0.9/32
 `, l.ckey, l.skey.PublicKey(), l.sport, other.PublicKey())), 0o600)
 	out := l.start("--wg-quick-dir", conf)
 
-	// A working peer is left alone even when DNS says something else for a
-	// moment.
+	// A working peer is left alone even when DNS says something else, for
+	// longer than --stale: what arrives from it (the server's keepalives)
+	// shows it works, whatever the handshake's age.
+	l.wg(l.sns, "set", l.sif, "peer", l.ckey.PublicKey().String(), "persistent-keepalive", "1")
 	l.setDNS("10.77.0.200 server.test")
-	time.Sleep(3 * time.Second)
+	time.Sleep(15 * time.Second)
 	if ep := l.endpoint(l.cns, l.cif); !strings.Contains(ep, "10.77.0.2:") {
 		t.Fatalf("a working peer was changed: %s\n%s", ep, out)
 	}
 
-	// The server moves, and its name follows.
+	// The server moves, and its name follows. (Its keepalives stop first:
+	// the lab router's connection tracking would still deliver them from
+	// the old address, which a real change of address would not.)
+	l.wg(l.sns, "set", l.sif, "peer", l.ckey.PublicKey().String(), "persistent-keepalive", "0")
 	l.moveServer("10.77.0.2", "10.77.0.3")
 	l.setDNS("10.77.0.3 server.test")
 	// The session's keys stay valid for up to 3 minutes, so traffic flows
@@ -444,4 +449,54 @@ func TestServerMovesDefaults(t *testing.T) {
 		t.Fatalf("no traffic:\n%s", out)
 	}
 	t.Logf("handshake again %s after the last good one", l.handshake().Sub(first))
+}
+
+// TestFullTunnelDNS: everything goes through the tunnel, as wg-quick sets up
+// AllowedIPs = 0.0.0.0/0 (a firewall mark on the interface, and policy
+// routing that sends unmarked traffic into the tunnel). The DNS server is
+// off the local network. Without the mark on its queries, wgresolve would
+// ask through the dead tunnel and never find the server.
+func TestFullTunnelDNS(t *testing.T) {
+	l := newLab(t)
+	// A DNS server in the router's namespace, at an address the client
+	// reaches only through its default route.
+	sh(t, "ip", "-n", l.rns, "addr", "add", "10.99.0.53/32", "dev", "lo")
+	hosts := filepath.Join(t.TempDir(), "hosts")
+	os.WriteFile(hosts, []byte("10.77.0.2 server.test\n"), 0o644)
+	dns := exec.Command("ip", "netns", "exec", l.rns, env("DNSMASQ", "dnsmasq"), "--keep-in-foreground", "--no-resolv", "--no-hosts",
+		"--listen-address=10.99.0.53", "--bind-interfaces", "--addn-hosts="+hosts, "--local=/test/", "--pid-file=", "--user=root", "--log-facility=-")
+	if err := dns.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dns.Process.Kill(); dns.Wait() })
+	time.Sleep(300 * time.Millisecond)
+	// wg-quick's full tunnel.
+	sh(t, "ip", "-n", l.cns, "route", "add", "default", "via", "10.77.0.2")
+	l.wg(l.cns, "set", l.cif, "fwmark", "51820", "peer", l.skey.PublicKey().String(), "allowed-ips", "0.0.0.0/0")
+	sh(t, "ip", "-n", l.cns, "route", "add", "default", "dev", l.cif, "table", "51820")
+	sh(t, "ip", "-n", l.cns, "rule", "add", "not", "fwmark", "51820", "table", "51820")
+	sh(t, "ip", "-n", l.cns, "rule", "add", "table", "main", "suppress_prefixlength", "0")
+	// Unmarked traffic to the DNS server now goes into the tunnel.
+	if r := sh(t, "ip", "-n", l.cns, "route", "get", "10.99.0.53"); !strings.Contains(r, "dev "+l.cif) {
+		t.Fatalf("the test's routing is wrong: %s", r)
+	}
+	full := []string{"netns", "exec", l.cns, wgresolve(t), "run", "--resolver", "10.99.0.53", "--interval", "1s", "--stale", "10s",
+		"--min-ttl", "1s", "--dns-timeout", "1s", "--no-files", "--peer", l.peerFlag("server.test")}
+	cmd := exec.Command("ip", full...)
+	out := &syncBuffer{}
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cmd.Process.Signal(syscall.SIGTERM)
+		cmd.Wait()
+		if t.Failed() {
+			t.Logf("wgresolve output:\n%s", out.String())
+		}
+	})
+	waitFor(t, 30*time.Second, "the first handshake through the full tunnel", func() bool { return !l.handshake().IsZero() })
+	if !l.ping() {
+		t.Fatal("no traffic")
+	}
 }

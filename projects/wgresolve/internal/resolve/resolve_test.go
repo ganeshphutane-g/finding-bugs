@@ -248,3 +248,47 @@ func TestRefresh(t *testing.T) {
 		t.Fatal(srv)
 	}
 }
+
+func TestMappedPartialAndSearch(t *testing.T) {
+	srv := server(t, func(w dns.ResponseWriter, q *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(q)
+		n, qt := q.Question[0].Name, q.Question[0].Qtype
+		switch {
+		case n == "mapped.example." && qt == dns.TypeA:
+			m.Answer = append(m.Answer, rr(n+" 600 IN A 198.51.100.50"))
+		case n == "mapped.example.":
+			m.Answer = append(m.Answer, rr(n+" 600 IN AAAA ::ffff:198.51.100.50"), rr(n+" 600 IN AAAA ::ffff:198.51.100.51"))
+		case n == "half.example." && qt == dns.TypeA:
+			m.Rcode = dns.RcodeServerFailure
+		case n == "half.example.":
+			m.Answer = append(m.Answer, rr(n+" 3600 IN AAAA 2001:db8::5"))
+		case n == "vpn.lan.home.arpa." && qt == dns.TypeA:
+			m.Answer = append(m.Answer, rr(n+" 60 IN A 10.0.0.9"))
+		case n == "vpn.lan.home.arpa.":
+		default:
+			m.Rcode = dns.RcodeNameError
+		}
+		w.WriteMsg(m)
+	})
+	now := time.Unix(1_000_000, 0)
+	r := &Resolver{Servers: []string{srv}, Search: []string{"home.arpa"}, Now: func() time.Time { return now }}
+	ctx := context.Background()
+	// IPv4-mapped AAAA answers are IPv4 addresses, without duplicates.
+	a := r.Lookup(ctx, "mapped.example", 0)
+	if a.Err != nil || list(a.Addrs) != "198.51.100.50, 198.51.100.51" {
+		t.Fatalf("%+v", a)
+	}
+	// A partial answer (A failed) is kept briefly and says which family
+	// failed.
+	a = r.Lookup(ctx, "half.example", 0)
+	if a.Err != nil || len(a.Failed) != 1 || a.Failed[0] != "ipv4" || a.Expires != now.Add(MinTTL) {
+		t.Fatalf("%+v", a)
+	}
+	// A dotted name not found as it is goes through the search domains,
+	// as glibc does.
+	a = r.Lookup(ctx, "vpn.lan", 0)
+	if a.Err != nil || a.Addrs[0].String() != "10.0.0.9" {
+		t.Fatalf("%+v", a)
+	}
+}

@@ -132,6 +132,18 @@ type section struct {
 	entries []entry
 }
 
+// exact is get with the key's case as written (networkd, NetworkManager).
+func (s section) exact(key string) string {
+	v := ""
+	for _, e := range s.entries {
+		if e.key == key {
+			v = e.value
+		}
+	}
+	return v
+}
+
+// get looks a key up ignoring case (wg-quick).
 func (s section) get(key string) string {
 	v := ""
 	for _, e := range s.entries {

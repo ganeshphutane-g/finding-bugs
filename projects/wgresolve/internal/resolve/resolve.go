@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -41,6 +42,11 @@ type Answer struct {
 	Expires time.Time
 	// Server is the resolver that answered.
 	Server string
+	// Failed lists the families ("ipv4", "ipv6") whose query failed while
+	// the other answered: the answer is partial, and kept only briefly.
+	Failed []string
+	// Cached: the answer came from the cache, not from DNS just now.
+	Cached bool
 	Err    error
 }
 
@@ -57,6 +63,9 @@ type Resolver struct {
 	// names.
 	Servers []string
 	Search  []string
+	// Ndots: names with at least this many dots are tried as they are
+	// before the search domains (resolv.conf's ndots; default 1).
+	Ndots int
 	// ConfPath, when set, is a resolv.conf to read servers and search
 	// domains from, again whenever it changes (a laptop on another network).
 	ConfPath string
@@ -102,7 +111,7 @@ func (r *Resolver) readConf() error {
 		return fmt.Errorf("%s names no nameserver", r.ConfPath)
 	}
 	r.mu.Lock()
-	r.Servers, r.Search, r.confStat = servers, c.Search, st
+	r.Servers, r.Search, r.Ndots, r.confStat = servers, c.Search, c.Ndots, st
 	r.mu.Unlock()
 	return nil
 }
@@ -156,6 +165,7 @@ func (r *Resolver) Lookup(ctx context.Context, host string, mark int) Answer {
 	r.mu.Lock()
 	if a, ok := r.cache[host]; ok && r.now().Before(a.Expires) {
 		r.mu.Unlock()
+		a.Cached = true
 		return a
 	}
 	r.mu.Unlock()
@@ -186,13 +196,25 @@ func (r *Resolver) Forget(host string) {
 
 func (r *Resolver) lookup(ctx context.Context, host string, mark int) Answer {
 	servers, search := r.servers()
-	names := []string{dns.Fqdn(host)}
-	if !strings.Contains(host, ".") {
-		names = nil
+	// As glibc does: a name with ndots or more dots is tried as it is
+	// first, then with the search domains; one with fewer the other way.
+	r.mu.Lock()
+	ndots := r.Ndots
+	r.mu.Unlock()
+	if ndots <= 0 {
+		ndots = 1
+	}
+	var withSearch []string
+	if !strings.HasSuffix(host, ".") {
 		for _, s := range search {
-			names = append(names, dns.Fqdn(host+"."+strings.TrimSuffix(s, ".")))
+			if s = strings.Trim(s, "."); s != "" {
+				withSearch = append(withSearch, dns.Fqdn(host+"."+s))
+			}
 		}
-		names = append(names, dns.Fqdn(host))
+	}
+	names := append([]string{dns.Fqdn(host)}, withSearch...)
+	if strings.Count(strings.TrimSuffix(host, "."), ".") < ndots {
+		names = append(withSearch, dns.Fqdn(host))
 	}
 	var last Answer
 	for _, n := range names {
@@ -247,7 +269,7 @@ func (r *Resolver) lookupName(ctx context.Context, servers []string, name string
 		}
 		var v4, v6, dropped []netip.Addr
 		ttl := uint32(MaxTTL / time.Second)
-		failed := 0
+		var failedFams []string
 		for range types {
 			res := <-results
 			if errors.Is(res.err, ErrNoSuchName) {
@@ -255,23 +277,31 @@ func (r *Resolver) lookupName(ctx context.Context, servers []string, name string
 			}
 			if res.err != nil {
 				// Some resolvers fail AAAA queries (or A): what the other
-				// type gave is still good.
+				// type gave is still good, for a while.
 				errs = append(errs, res.err.Error())
-				failed++
+				failedFams = append(failedFams, map[uint16]string{dns.TypeA: "ipv4", dns.TypeAAAA: "ipv6"}[res.qt])
 				continue
 			}
 			ttl = min(ttl, res.ttl)
 			for _, a := range res.addrs {
+				// An IPv4-mapped AAAA is an IPv4 address (WireGuard reports
+				// it so).
+				a = a.Unmap()
 				switch {
 				case !usable(a):
 					dropped = append(dropped, a)
-				case res.qt == dns.TypeA:
-					v4 = append(v4, a)
-				default:
-					v6 = append(v6, a)
+				case a.Is4() && r.Family != "ipv6":
+					if !slices.Contains(v4, a) {
+						v4 = append(v4, a)
+					}
+				case a.Is6() && r.Family != "ipv4":
+					if !slices.Contains(v6, a) {
+						v6 = append(v6, a)
+					}
 				}
 			}
 		}
+		failed := len(failedFams)
 		if len(v4)+len(v6) == 0 {
 			if failed > 0 {
 				continue // ask the next server
@@ -288,7 +318,10 @@ func (r *Resolver) lookupName(ctx context.Context, servers []string, name string
 			addrs = append(v6, v4...)
 		}
 		d := min(max(time.Duration(ttl)*time.Second, r.minTTL()), MaxTTL)
-		return Answer{Addrs: addrs, Dropped: dropped, Expires: now.Add(d), Server: srv}
+		if failed > 0 {
+			d = r.minTTL() // partial: ask again soon
+		}
+		return Answer{Addrs: addrs, Dropped: dropped, Expires: now.Add(d), Server: srv, Failed: failedFams}
 	}
 	return fail(fmt.Errorf("%s: no DNS server answered: %s", short, strings.Join(errs, "; ")))
 }
@@ -398,7 +431,7 @@ func (r *Resolver) query(ctx context.Context, srv, name string, qt uint16, mark 
 				}
 			case *dns.AAAA:
 				if a, ok := netip.AddrFromSlice(v.AAAA); ok && qt == dns.TypeAAAA {
-					out = append(out, a.Unmap())
+					out = append(out, a)
 					ttl = min(ttl, h.Ttl)
 				}
 			}

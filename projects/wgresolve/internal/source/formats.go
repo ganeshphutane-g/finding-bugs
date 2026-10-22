@@ -56,7 +56,7 @@ func WGQuick(dir string, r *Result) error {
 }
 
 // NetworkdDirs are where systemd-networkd looks, highest priority first.
-var NetworkdDirs = []string{"/etc/systemd/network", "/run/systemd/network", "/usr/local/lib/systemd/network", "/usr/lib/systemd/network"}
+var NetworkdDirs = []string{"/etc/systemd/network", "/run/systemd/network", "/usr/local/lib/systemd/network", "/usr/lib/systemd/network", "/lib/systemd/network"}
 
 // Networkd reads .netdev files of Kind=wireguard, as networkd does: a file
 // in an earlier directory hides one of the same name in a later one, and
@@ -126,10 +126,10 @@ func netdev(paths []string, r *Result) error {
 	var iface, kind string
 	for _, x := range all {
 		if x.s.name == "NetDev" {
-			if v := x.s.get("Name"); v != "" {
+			if v := x.s.exact("Name"); v != "" {
 				iface = v
 			}
-			if v := x.s.get("Kind"); v != "" {
+			if v := x.s.exact("Kind"); v != "" {
 				kind = v
 			}
 		}
@@ -137,16 +137,43 @@ func netdev(paths []string, r *Result) error {
 	if kind != "wireguard" || iface == "" {
 		return nil
 	}
+	// A peer configured twice (a drop-in overriding the main file): the
+	// later section is the one networkd applies last.
+	type peer struct{ endpoint, src string }
+	var order []string
+	peers := map[string]peer{}
 	for _, x := range all {
-		if x.s.name == "WireGuardPeer" {
-			r.Add(iface, x.s.get("PublicKey"), x.s.get("Endpoint"), fmt.Sprintf("%s:%d", x.file, x.s.no))
+		if x.s.name != "WireGuardPeer" {
+			continue
 		}
+		key := x.s.exact("PublicKey")
+		if _, seen := peers[key]; !seen {
+			order = append(order, key)
+		}
+		peers[key] = peer{x.s.exact("Endpoint"), fmt.Sprintf("%s:%d", x.file, x.s.no)}
+	}
+	for _, key := range order {
+		r.Add(iface, key, peers[key].endpoint, peers[key].src)
 	}
 	return nil
 }
 
 // NMDirs are where NetworkManager keeps keyfiles.
-var NMDirs = []string{"/etc/NetworkManager/system-connections", "/run/NetworkManager/system-connections"}
+var NMDirs = []string{"/etc/NetworkManager/system-connections", "/run/NetworkManager/system-connections", "/usr/lib/NetworkManager/system-connections"}
+
+// nmIgnored are names NetworkManager's keyfile plugin skips (backups,
+// editor and package-manager leftovers).
+func nmIgnored(name string) bool {
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, "~") {
+		return true
+	}
+	for _, suf := range []string{".bak", ".orig", ".rej", ".swp", ".tmp"} {
+		if strings.HasSuffix(name, suf) {
+			return true
+		}
+	}
+	return strings.Contains(name, ".dpkg-") || strings.Contains(name, ".rpmnew") || strings.Contains(name, ".rpmsave")
+}
 
 // NetworkManager reads keyfiles of type wireguard. Peers are sections named
 // [wireguard-peer.<public key>]; the interface is interface-name, as
@@ -165,7 +192,8 @@ func NetworkManager(dirs []string, r *Result) error {
 			return err
 		}
 		for _, e := range files {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".nmconnection") {
+			// Keyfiles end in .nmconnection; older ones have no suffix.
+			if e.IsDir() || nmIgnored(e.Name()) {
 				continue
 			}
 			p := filepath.Join(d, e.Name())
@@ -179,15 +207,24 @@ func NetworkManager(dirs []string, r *Result) error {
 			var iface, typ string
 			for _, s := range secs {
 				if s.name == "connection" {
-					iface, typ = s.get("interface-name"), s.get("type")
+					if v := s.exact("interface-name"); v != "" {
+						iface = v
+					}
+					if v := s.exact("type"); v != "" {
+						typ = v
+					}
 				}
 			}
 			if typ != "wireguard" {
 				continue
 			}
+			if iface == "" {
+				r.problem(p, "a WireGuard connection without interface-name; its peers cannot be matched to an interface")
+				continue
+			}
 			for _, s := range secs {
 				if key, ok := strings.CutPrefix(s.name, "wireguard-peer."); ok {
-					r.Add(iface, key, s.get("endpoint"), fmt.Sprintf("%s:%d", p, s.no))
+					r.Add(iface, key, s.exact("endpoint"), fmt.Sprintf("%s:%d", p, s.no))
 				}
 			}
 		}

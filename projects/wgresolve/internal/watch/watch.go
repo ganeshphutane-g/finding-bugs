@@ -45,6 +45,7 @@ type Watcher struct {
 	lastRun  time.Time
 	alive    time.Time
 	confErr  bool
+	noted    map[string]bool
 	logged   map[key]string
 }
 
@@ -186,75 +187,104 @@ func (w *Watcher) Alive() time.Time {
 
 // checkPeer checks one peer and acts; st is this round's copy of its status.
 func (w *Watcher) checkPeer(ctx context.Context, k key, p source.Peer, st *Status, live *device.Device, liveErr error) {
-	{
-		if err := liveErr; err != nil {
-			st.State, st.Reason = "no device", err.Error()
-			if errors.Is(err, device.ErrNoDevice) {
-				st.Reason = "the interface is not up"
-			}
-			w.logOnce(k, "no device", fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, st.Reason))
-			return
+	if err := liveErr; err != nil {
+		st.State, st.Reason = "no device", err.Error()
+		if errors.Is(err, device.ErrNoDevice) {
+			st.Reason = "the interface is not up"
 		}
-		lp, ok := live.Peers[p.PublicKey]
-		if !ok {
-			st.State, st.Reason = "no peer", "the interface has no such peer (configured in "+p.Source+")"
-			w.logOnce(k, "no peer", fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, st.Reason))
-			return
-		}
-		st.Endpoint, st.Handshake = lp.Endpoint, lp.LastHandshake
-		now := w.now()
-		// A working peer needs no lookup at all.
-		if !lp.LastHandshake.IsZero() && lp.Endpoint.IsValid() && now.Sub(lp.LastHandshake) < w.stale() {
-			st.State, st.Reason = "ok", fmt.Sprintf("working (handshake %s ago)", now.Sub(lp.LastHandshake).Round(time.Second))
-			w.logOnce(k, "ok", "")
-			return
-		}
-		a := w.Resolver.Lookup(ctx, p.Host, live.Mark)
-		if a.Err != nil {
-			st.State, st.Reason, st.LastErr = "dns error", a.Err.Error(), a.Err.Error()
-			st.DNSErrors++
-			w.logOnce(k, "dns error "+resolve.Class(a.Err), fmt.Sprintf("peer %s: cannot resolve %s: %v", short(p.PublicKey), p.Host, a.Err))
-			return
-		}
-		st.Addrs, st.TTLLeft = a.Addrs, a.Expires.Sub(now)
-		w.mu.Lock()
-		mem := w.memory[k]
-		w.mu.Unlock()
-		d := engine.Decide(now, engine.Peer{Endpoint: lp.Endpoint, LastHandshake: lp.LastHandshake}, mem, a.Addrs, uint16(p.Port), w.stale())
-		st.Reason = d.Reason
-		if d.Retry {
-			w.Resolver.Forget(p.Host)
-		}
-		if !d.Set.IsValid() {
-			st.State = "down"
-			if mem.Set == lp.Endpoint && now.Sub(mem.SetAt) < w.stale() {
-				st.State = "waiting"
-			}
-			w.logOnce(k, st.State+" "+lp.Endpoint.String(), fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, d.Reason))
-			return
-		}
-		if w.DryRun {
-			st.State = "would change"
-			st.Reason = fmt.Sprintf("would set %s: %s", d.Set, d.Reason)
-			return
-		}
-		if err := w.Devices.SetEndpoint(p.Interface, p.PublicKey, d.Set); err != nil {
-			st.State, st.LastErr = "error", err.Error()
-			w.logOnce(k, "error "+err.Error(), fmt.Sprintf("peer %s: setting %s failed: %v", short(p.PublicKey), d.Set, err))
-			return
-		}
-		st.State, st.Endpoint = "changed", d.Set
-		st.Changes++
-		w.mu.Lock()
-		w.memory[k] = engine.Memory{SetAt: now, Set: d.Set}
-		w.mu.Unlock()
-		w.logged[k] = ""
-		was := "none"
-		if lp.Endpoint.IsValid() {
-			was = lp.Endpoint.String()
-		}
-		w.logf(k, fmt.Sprintf("peer %s (%s): endpoint %s -> %s: %s", short(p.PublicKey), p.Host, was, d.Set, d.Reason))
+		w.logOnce(k, "no device", fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, st.Reason))
+		return
 	}
+	lp, ok := live.Peers[p.PublicKey]
+	if !ok {
+		st.State, st.Reason = "no peer", "the interface has no such peer (configured in "+p.Source+")"
+		w.logOnce(k, "no peer", fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, st.Reason))
+		return
+	}
+	st.Endpoint, st.Handshake = lp.Endpoint, lp.LastHandshake
+	now := w.now()
+	w.mu.Lock()
+	mem := engine.Observe(now, enginePeer(lp), w.memory[k])
+	w.memory[k] = mem
+	w.mu.Unlock()
+	// A working peer needs no lookup at all.
+	if lp.Endpoint.IsValid() && engine.Working(now, mem, w.stale()) {
+		st.State, st.Reason = "ok", fmt.Sprintf("working (last heard from %s ago)", now.Sub(mem.Active).Round(time.Second))
+		if prev := w.logged[k]; prev != "" && prev != "ok" {
+			w.logf(k, fmt.Sprintf("peer %s (%s): working again", short(p.PublicKey), p.Host))
+		}
+		w.logOnce(k, "ok", "")
+		return
+	}
+	a := w.Resolver.Lookup(ctx, p.Host, live.Mark)
+	if a.Err != nil {
+		st.State, st.Reason, st.LastErr = "dns error", a.Err.Error(), a.Err.Error()
+		if !a.Cached {
+			st.DNSErrors++
+		}
+		w.logOnce(k, "dns error "+resolve.Class(a.Err), fmt.Sprintf("peer %s: cannot resolve %s: %v", short(p.PublicKey), p.Host, a.Err))
+		return
+	}
+	st.Addrs, st.TTLLeft = a.Addrs, a.Expires.Sub(now)
+	d := engine.Decide(now, enginePeer(lp), &mem, engine.Answer{Addrs: a.Addrs, Failed: a.Failed}, uint16(p.Port), w.stale())
+	w.mu.Lock()
+	if !w.DryRun {
+		w.memory[k] = mem // the pass through the addresses is remembered
+	}
+	w.mu.Unlock()
+	st.Reason = d.Reason
+	if !d.Set.IsValid() {
+		st.State = "down"
+		if d.Waiting {
+			st.State = "waiting"
+		} else if d.Reason == "working" {
+			st.State = "ok"
+		}
+		w.logOnce(k, st.State+" "+lp.Endpoint.String(), fmt.Sprintf("peer %s (%s): %s", short(p.PublicKey), p.Host, d.Reason))
+		return
+	}
+	if w.DryRun {
+		st.State = "would change"
+		st.Reason = fmt.Sprintf("would set %s: %s", d.Set, d.Reason)
+		return
+	}
+	// The lookup may have taken a while: look at the peer again, and leave
+	// it if anything arrived or its endpoint moved meanwhile.
+	if again, err := w.Devices.Device(p.Interface); err == nil {
+		now2 := w.now()
+		cur, ok := again.Peers[p.PublicKey]
+		if !ok {
+			st.State, st.Reason = "no peer", "the peer was removed from the interface"
+			return
+		}
+		if cur.Rx > lp.Rx || cur.Endpoint != lp.Endpoint || cur.LastHandshake.After(lp.LastHandshake) {
+			w.mu.Lock()
+			w.memory[k] = engine.Observe(now2, enginePeer(cur), w.memory[k])
+			w.mu.Unlock()
+			st.State, st.Reason, st.Endpoint = "ok", "it answered while its name was looked up; left alone", cur.Endpoint
+			return
+		}
+	}
+	if err := w.Devices.SetEndpoint(p.Interface, p.PublicKey, d.Set); err != nil {
+		st.State, st.LastErr = "error", err.Error()
+		w.logOnce(k, "error "+resolve.Class(err), fmt.Sprintf("peer %s: setting %s failed: %v", short(p.PublicKey), d.Set, err))
+		return
+	}
+	st.State, st.Endpoint = "changed", d.Set
+	st.Changes++
+	w.mu.Lock()
+	w.memory[k] = engine.Changed(now, enginePeer(lp), mem, d.Set)
+	w.mu.Unlock()
+	w.logged[k] = "changed"
+	was := "none"
+	if lp.Endpoint.IsValid() {
+		was = lp.Endpoint.String()
+	}
+	w.logf(k, fmt.Sprintf("peer %s (%s): endpoint %s -> %s: %s", short(p.PublicKey), p.Host, was, d.Set, d.Reason))
+}
+
+func enginePeer(p device.Peer) engine.Peer {
+	return engine.Peer{Endpoint: p.Endpoint, LastHandshake: p.LastHandshake, Rx: p.Rx, Tx: p.Tx}
 }
 
 func (w *Watcher) stale() time.Duration {
@@ -332,9 +362,26 @@ func (w *Watcher) reloadLogged() {
 		}
 		return
 	}
-	if n := len(w.Peers()); n != before && w.Log != nil {
-		fmt.Fprintf(w.Log, "reloaded: %d peers with a name for their endpoint (was %d)\n", n, before)
+	if w.Log == nil {
+		return
 	}
+	if n := len(w.Peers()); n != before {
+		fmt.Fprintf(w.Log, "reloaded: %d peers whose endpoint is a DNS name (was %d)\n", n, before)
+	}
+	w.LogProblems()
+}
+
+// LogProblems logs configuration problems not logged before.
+func (w *Watcher) LogProblems() {
+	seen := map[string]bool{}
+	for _, p := range w.Problems() {
+		key := p.String()
+		if !w.noted[key] && w.Log != nil {
+			fmt.Fprintf(w.Log, "note: %s\n", key)
+		}
+		seen[key] = true
+	}
+	w.noted = seen
 }
 
 // Peers are the peers the last load found.

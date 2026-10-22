@@ -74,15 +74,19 @@ NetworkManager, or tunnels set up by hand. It does not run on appliances
 4. **It changes an endpoint only when the peer is not working:**
    - the peer has no endpoint (the name could not be resolved at boot): it is
      set as soon as the name resolves;
-   - the handshake is older than `--stale` (default 135 s, the same as
-     WireGuard's own retry window) and the endpoint is not one of the name's
-     addresses: it is set to the first address;
-   - the handshake is still stale after a change: on the next round it tries
-     the name's next address.
+   - nothing has arrived from the peer for `--stale` (default 190 s, past
+     WireGuard's 3-minute session lifetime; judged by its receive counter
+     and handshakes), and the endpoint is not one of the name's addresses:
+     it is set to the first address;
+   - the peer sits at one of the name's addresses and keeps sending without
+     an answer: the name's other addresses are tried, once through the
+     list.
 
-   A peer with a fresh handshake is never touched, even if DNS says something
-   else, because WireGuard may have roamed to the address the peer actually
-   uses.
+   A working peer is never touched, even if DNS says something else, because
+   WireGuard may have roamed to the address the peer actually uses. Handshake
+   age alone is not the test: a session the other side started is renewed
+   only every 165 s when this side just sends keepalives. The peer is read
+   again just before a change, and left alone if anything arrived meanwhile.
 5. **It reports what it does:**
    - a log line for each change, saying why;
    - `/metrics` (`--listen`, off by default): per peer, whether it is up, the

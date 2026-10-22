@@ -19,6 +19,7 @@ import (
 type Peer struct {
 	Endpoint      netip.AddrPort
 	LastHandshake time.Time
+	Rx, Tx        int64
 }
 
 // Device is an interface's live state.
@@ -76,7 +77,7 @@ func (w *WG) Device(iface string) (*Device, error) {
 				ep = netip.AddrPortFrom(a.Unmap(), uint16(p.Endpoint.Port))
 			}
 		}
-		out[p.PublicKey] = Peer{Endpoint: ep, LastHandshake: p.LastHandshakeTime}
+		out[p.PublicKey] = Peer{Endpoint: ep, LastHandshake: p.LastHandshakeTime, Rx: p.ReceiveBytes, Tx: p.TransmitBytes}
 	}
 	return &Device{Mark: d.FirewallMark, Peers: out}, nil
 }
