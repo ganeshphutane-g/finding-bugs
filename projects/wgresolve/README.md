@@ -66,7 +66,7 @@ byte counters.
   anything arrived meanwhile.
 
 So a dead tunnel comes back a little over 3 minutes after the last packet
-from it.
+from it: 3 m 10 s in the end-to-end test with the defaults.
 
 Lookups go straight to DNS servers, with TTLs: an answer is reused until its
 TTL runs out (at least `--min-ttl`, default 30 s; at most an hour). A working
