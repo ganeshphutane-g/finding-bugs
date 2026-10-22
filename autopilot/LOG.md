@@ -36,7 +36,12 @@ Newest first.
   - CI found a race in the test harness, now fixed; IPv6 and kernel WireGuard
     pass in CI.
   - With the defaults, the tunnel came back 3 m 10 s after the last packet.
-- **Research round 15** started (agent running).
+- **Research round 15:**
+  - About 40 new trackers were scanned. **tsdirect** chosen (20):
+    tailscale#1227 (88 👍), #7947 (38), #6231 (22) and #3646 (22), all
+    checked; forum threads; no tool.
+  - Upstream PR #21591 is static filtering only.
+  - Next: the headscale and tailscaled lab, then the spec.
 
 ## 2026-10-22 (IST) — run 11
 

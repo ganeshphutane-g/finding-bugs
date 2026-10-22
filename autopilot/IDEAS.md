@@ -3,6 +3,95 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 15 — 2026-10-23 IST
+
+One research pass over about 40 trackers not scanned before (Frigate,
+OPNsense, Authentik, Headscale, Caddy, HAProxy, openzfs, Nextcloud, Synapse,
+borg, Tailscale, cloudflared, k3s, the Prometheus exporters, fail2ban,
+Duplicati and others), plus repository, PR and web searches. The pick's
+numbers were re-checked on 2026-10-23.
+
+### Chosen: tsdirect, LAN traffic off Tailscale subnet routes when on that LAN (project #14)
+
+On Linux, routes accepted with `--accept-routes` sit in table 52, behind ip
+rules (5210–5270) checked before the main table. So a machine on the LAN
+that a subnet router advertises sends its LAN traffic through the tailnet.
+That is slow, and it breaks when Tailscale is down.
+
+tsdirect would:
+- watch netlink;
+- when an accepted prefix is directly connected and the network is
+  recognised (gateway MAC, or a probe), add an `ip rule to <prefix> lookup
+  main` ahead of Tailscale's rules;
+- remove the rule when the machine leaves that network;
+- keep the rules in place across tailscaled restarts;
+- export /metrics.
+
+**Demand** (checked on 2026-10-23 unless marked web):
+- tailscale#1227 "When local route is available to a subnet, bypass tailscale
+  subnet relay": 88 👍, open since 2021-01;
+- #7947 "accept routes at lower priority on Linux": 38 👍, updated
+  2026-10-08;
+- #6231 "accepted subnet routes should not have a higher priority than main
+  table": 22 👍;
+- #3646 "exit-node-allow-lan-access for routed local subnets": 22 👍;
+- forum threads on Tailscale, OpenWrt, NixOS and GL.iNet (web), and
+  Tailscale's own docs page on overlapping subnet routes (web).
+
+**Upstream:**
+- PR #21591 "filter accepted subnet routes" has been open since 2026-09-30,
+  with no activity after that day. It adds static allow and deny lists; by
+  the reviewer's reading it has no automatic LAN detection.
+- Draft #5770 has been stalled since 2023.
+- If #21591 merges, tsdirect can drive its deny list instead of ip rules.
+
+**Gap:** no tool found. jarovkipt/lanfirst (0★, 2026-06, no description)
+could not be read. The workarounds are a static ip rule (wrong on roaming
+Wi-Fi) or a less specific prefix.
+
+**Scores:** 4/4/4/3/5 = **20**.
+
+**Check before the spec:**
+- headscale plus tailscaled with kernel TUN in network namespaces (a LAN,
+  a subnet router and a client);
+- a strict identity check that fails closed;
+- PR #21591 again;
+- the name: `tsdirect` is free (checked 2026-10-23); "lanfirst" and
+  "lanpath" are taken.
+
+**Risks:**
+- Linux only, while much of the demand is from Mac and Windows users;
+- Tailscale could change its rule priorities;
+- upstream could add LAN detection;
+- a wrong "on the home LAN" verdict sends traffic onto a foreign LAN.
+
+### Runners-up
+
+- **Exit node on untrusted networks (Linux):** tailscale#3302 126 👍, #13992
+  20 👍; 17. Best as a later phase of tsdirect (the same network-identity
+  logic).
+- **Duplicati report receiver and monitor:** duplicati#3362 22 👍,
+  #1808 12 👍; partly covered (dupReport 79★, HA integration). 18.
+- **Multi-WAN failover for plain Linux routers:** a clear gap, but weak
+  counted demand. 18.
+- **Docker macvlan host-access shim:** forum demand only, no counts. 20, but
+  fails the rule of three sources with counts.
+
+### Rejected in round 15
+
+- **Busy-only CalDAV mirror:** nextcloud#11214 83 👍, but keeper.sh
+  (1,413★) and ical-filter-proxy cover it.
+- **Already covered:**
+  - fail2ban JSON logs (CrowdSec);
+  - lldap forward auth (tinyauth, Authelia);
+  - certbot CNAME delegation (lego, acme.sh, acme-dns);
+  - mDNS for Prometheus (prometheus-mdns-sd);
+  - PBS monitoring (pbs-exporter);
+  - ZFS replication monitoring (zrepl, ZFSGuard).
+- **Low demand or too large:** container egress policy (Docker firewall
+  churn), Docker with dynamic IPv6 prefixes, cloudflared DNS cleanup, Caddy
+  metrics, an Authentik operator, Frigate retention by size.
+
 ## Research round 14 — 2026-10-22 IST
 
 One research pass over about 30 projects' issue trackers (sorted by 👍), plus

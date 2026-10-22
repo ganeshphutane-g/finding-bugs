@@ -1,14 +1,22 @@
 # State
 
-Current project: none; research round 15 is under way (an agent was started
-at 20:40 UTC on 2026-10-22; its report was not recorded yet).
+Current project: #14, tsdirect (LAN traffic off Tailscale subnet routes when
+on that LAN; the name is free on GitHub, checked 2026-10-23). Phase: spec.
+Research: IDEAS.md round 15.
 
 ## Next step
 
-Research round 15: score at least 5 candidates (rules in AUTOPILOT.md), skip
-everything in IDEAS.md, verify the top pick's numbers and upstream PRs
-yourself, record the round in IDEAS.md, then start project #14 with its
-SPEC.md. Round 13's zfsunlock (20) and round 14's runners-up stay candidates.
+Before writing projects/tsdirect/SPEC.md:
+1. Build a lab: headscale as the control server, and tailscaled with kernel
+   TUN in network namespaces (a LAN with a subnet router, and a client that
+   is on that LAN and later leaves it). Go install of headscale and
+   tailscale works through the Go proxy here. Confirm table 52 and rules
+   5210–5270 appear as described, and that an `ip rule to <prefix> lookup
+   main` ahead of them keeps LAN traffic local.
+2. Design the network-identity check (gateway MAC, a probe host, or both);
+   it must fail closed.
+3. Check tailscale PR #21591 again.
+If the lab cannot work here or in CI, fall back to round 15's runners-up.
 
 wgresolve (#13) is finished (see Finished projects); CI is green at 27e1655.
 
