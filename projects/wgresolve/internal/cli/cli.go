@@ -320,7 +320,11 @@ func run(w *watch.Watcher, o options, stdout, stderr io.Writer, deps Deps) int {
 	for _, p := range w.Problems() {
 		fmt.Fprintf(stdout, "note: %s\n", p)
 	}
-	fmt.Fprintf(stdout, "wgresolve %s: watching %d peers with a name for their endpoint, every %s\n", version(), len(w.Peers()), o.interval)
+	n := len(w.Peers())
+	fmt.Fprintf(stdout, "wgresolve %s: watching %d %s whose endpoint is a DNS name, every %s\n", version(), n, plural(n, "peer", "peers"), o.interval)
+	if n == 0 {
+		fmt.Fprintln(stdout, "note: none found yet; wgresolve reads the configuration again every 5 minutes and on SIGHUP")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if o.listen != "" {
@@ -351,4 +355,11 @@ func run(w *watch.Watcher, o options, stdout, stderr io.Writer, deps Deps) int {
 	}()
 	w.Run(ctx, o.interval, 5*time.Minute, reload)
 	return exitOK
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
