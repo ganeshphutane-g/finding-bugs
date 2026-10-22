@@ -2,17 +2,29 @@
 
 Current project: #13, wgresolve (keep WireGuard peers with dynamic-DNS
 endpoints connected; the name is free on GitHub, checked 2026-10-22). Phase:
-spec. Research: IDEAS.md round 14.
+build. Spec: projects/wgresolve/SPEC.md.
 
 ## Next step
 
-Before writing projects/wgresolve/SPEC.md, check:
-1. what NetworkManager does with DNS endpoints today;
-2. how Debian and Ubuntu ship wireguard-tools' `reresolve-dns.sh`;
-3. that kernel WireGuard (or wireguard-go) and network namespaces work here
-   and on GitHub's runners (`ip link add wg0 type wireguard`).
-Then write the spec with milestones and build. If item 3 fails in both
-places, switch to round 13's runner-up zfsunlock, or to round 14's runners-up.
+Build milestone by milestone (SPEC.md): 1 config sources, 2 resolver and
+decision engine, 3 run/check/metrics/units, 4 netns end-to-end tests and CI,
+5 docs and two reviews.
+
+Facts checked for wgresolve (2026-10-22):
+- No kernel WireGuard in this sandbox (CONFIG_WIREGUARD unset), but TUN,
+  netns and veth work. Use wireguard-go:
+  `GOBIN=/tmp/wg-bin go install golang.zx2c4.com/wireguard@latest` gives
+  /tmp/wg-bin/wireguard. Each device needs a unique name (UAPI sockets in
+  /var/run/wireguard are shared across namespaces).
+- `sudo apt-get update; sudo apt-get install -y iproute2 wireguard-tools
+  dnsmasq-base iputils-ping` works here.
+- Never `pkill -f` a pattern that appears in your own command line: it
+  kills the shell.
+- miekg/dns v1.1.68 is the last release for Go 1.24; wgctrl
+  v0.0.0-20241231184526-a9ab2273dd10.
+- Ubuntu ships reresolve-dns.sh only as a doc example, not as a service.
+  NetworkManager resolves names only at activation (its issue #739 covers
+  the DNS-through-tunnel deadlock).
 
 Facts checked for packparity (2026-10-22), useful for any restic tool:
 - restic 0.18.1 and rest-server 0.14.0 write every file under a temporary
