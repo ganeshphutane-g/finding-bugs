@@ -236,16 +236,34 @@ func (l *lab) nft(ns string, rules ...string) {
 
 // start runs wgresolve in the client namespace, with a short --stale (a
 // quiet peer is only changed when DNS disagrees, so tests can be quick).
-func (l *lab) start(args ...string) *bytes.Buffer {
+func (l *lab) start(args ...string) *syncBuffer {
 	return l.startWith(append([]string{"--stale", "10s"}, args...)...)
 }
 
-func (l *lab) startWith(args ...string) *bytes.Buffer {
+// syncBuffer is a buffer a child process writes into while the test reads.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func (l *lab) startWith(args ...string) *syncBuffer {
 	full := append([]string{"netns", "exec", l.cns, wgresolve(l.t), "run", "--resolver", "127.0.0.1:" + strconv.Itoa(l.dnsPort),
 		"--interval", "1s", "--min-ttl", "1s", "--networkd-dir", l.t.TempDir(), "--nm-dir", l.t.TempDir()}, args...)
 	cmd := exec.Command("ip", full...)
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
+	out := &syncBuffer{}
+	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Start(); err != nil {
 		l.t.Fatal(err)
 	}
@@ -256,7 +274,7 @@ func (l *lab) startWith(args ...string) *bytes.Buffer {
 			l.t.Logf("wgresolve output:\n%s", out.String())
 		}
 	})
-	return &out
+	return out
 }
 
 func (l *lab) close() {
