@@ -21,23 +21,23 @@ confs. wgresolve is the maintained version of that idea:
 ```
 $ wgresolve check
 INTERFACE  PEER       NAME                    ENDPOINT          HANDSHAKE  STATE
-wg0        Gdi16G4B…  home.example.net:51820  192.0.2.20:51820  8s ago     ok
+wg0        vCBZUzZi…  home.example.net:51820  192.0.2.20:51820  0s ago     ok
 
-wg0 Gdi16G4B… (/etc/wireguard/wg0.conf:5): working (handshake 8s ago)
+wg0 vCBZUzZi… (/etc/wireguard/wg0.conf:5): working (last heard from 0s ago)
 
 # ... the server's connection gets a new address, and its DNS name follows ...
 
 $ wgresolve run
-2026-10-22T20:03:58Z wgresolve v1.0.0: watching 1 peer whose endpoint is a DNS name, every 30s
-2026-10-22T20:06:28Z wg0 peer Gdi16G4B… (home.example.net): endpoint 192.0.2.20:51820 -> 198.51.100.7:51820: no handshake for 2m39s, and 192.0.2.20:51820 is not what the name resolves to now
+2026-10-22T20:33:41Z wgresolve v1.0.0: watching 1 peer whose endpoint is a DNS name, every 30s
+2026-10-22T20:37:12Z wg0 peer vCBZUzZi… (home.example.net): endpoint 192.0.2.20:51820 -> 198.51.100.7:51820: nothing received from it for 3m31s, and 192.0.2.20:51820 is not what the name resolves to now
 
 $ wgresolve check
 INTERFACE  PEER       NAME                    ENDPOINT            HANDSHAKE  STATE
-wg0        Gdi16G4B…  home.example.net:51820  198.51.100.7:51820  23s ago    ok
+wg0        vCBZUzZi…  home.example.net:51820  198.51.100.7:51820  28s ago    ok
 ```
 
-(A real run, in network namespaces behind a NAT router. The path is
-shortened, and the first line of `run` is shown as the release prints it.)
+(A real run, in network namespaces behind a NAT router; the path is
+shortened.)
 
 ## How it decides
 
