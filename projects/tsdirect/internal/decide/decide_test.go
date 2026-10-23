@@ -29,7 +29,10 @@ func TestDecide(t *testing.T) {
 		{"gateway silent", home, func(o Observation) Observation { o.GatewayMAC = nil; return o }, false, "does not answer"},
 		{"no gateway", home, func(o Observation) Observation { o.Gateway, o.GatewayMAC = netip.Addr{}, nil; return o }, false, "no gateway"},
 		{"only part of it connected", home, func(o Observation) Observation { o.Connected = netip.MustParsePrefix("192.168.1.0/25"); return o }, false, "only partly"},
-		{"another route takes part of it", home, func(o Observation) Observation { o.Conflict = "the main table also sends 192.168.1.0/25 to wlan1, not eth0"; return o }, false, "would not keep it all on"},
+		{"another route takes part of it", home, func(o Observation) Observation {
+			o.Conflict = "the main table also sends 192.168.1.0/25 to wlan1, not eth0"
+			return o
+		}, false, "would not keep it all on"},
 		{"a wider connected network is fine", home, func(o Observation) Observation { o.Connected = netip.MustParsePrefix("192.168.0.0/16"); return o }, true, "via wlan0"},
 		{"probe answers", both, func(o Observation) Observation { o.ProbeOK = &yes; return o }, true, "probe 192.168.1.5:22 answers"},
 		{"probe fails", both, func(o Observation) Observation { o.ProbeOK, o.ProbeErr = &no, "connection refused"; return o }, false, "probe 192.168.1.5:22 failed"},
