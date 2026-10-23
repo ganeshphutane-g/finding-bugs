@@ -184,7 +184,7 @@ func (s *Linux) DelRule(r Rule) error {
 	return err
 }
 
-// Watch sends on the channel when addresses, routes, links or neighbours
+// Watch sends on the channel when addresses, routes or links
 // change, until ctx ends.
 func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
 	out := make(chan struct{}, 1)
@@ -236,8 +236,8 @@ func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
 // IsTailscale is the default Skip: Tailscale's interface names.
 func IsTailscale(name string) bool { return strings.HasPrefix(name, "tailscale") }
 
-// errNoAnswer means the address did not answer.
-var errNoAnswer = errors.New("no answer")
+// ErrNoAnswer means the address did not answer.
+var ErrNoAnswer = errors.New("no answer")
 
 func ifaceAddr(iface string, v4 bool) (*net.Interface, netip.Addr, error) {
 	ifi, err := net.InterfaceByName(iface)

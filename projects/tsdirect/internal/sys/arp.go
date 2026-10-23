@@ -15,7 +15,7 @@ import (
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
 
 // arpAsk sends an ARP request for addr out of iface and returns the MAC in
-// the first reply, or errNoAnswer after a second.
+// the first reply, or ErrNoAnswer after a second.
 func arpAsk(ctx context.Context, iface string, addr netip.Addr) (net.HardwareAddr, error) {
 	ifi, src, err := ifaceAddr(iface, true)
 	if err != nil {
@@ -73,7 +73,7 @@ func arpAsk(ctx context.Context, iface string, addr netip.Addr) (net.HardwareAdd
 			return net.HardwareAddr(append([]byte(nil), buf[8:14]...)), nil
 		}
 	}
-	return nil, errNoAnswer
+	return nil, ErrNoAnswer
 }
 
 // ndAsk refreshes the neighbour entry for an IPv6 address (a probe makes
@@ -107,5 +107,5 @@ func ndAsk(ctx context.Context, iface string, addr netip.Addr) (net.HardwareAddr
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return nil, errNoAnswer
+	return nil, ErrNoAnswer
 }

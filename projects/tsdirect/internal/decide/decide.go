@@ -25,6 +25,9 @@ type Observation struct {
 	// was found (nil: no answer, not looked at, or no gateway).
 	Gateway    netip.Addr
 	GatewayMAC net.HardwareAddr
+	// GatewayErr: asking failed for another reason than silence (no
+	// Ethernet address, no permission).
+	GatewayErr string
 	// ProbeOK: the probe connected (nil: not tried).
 	ProbeOK  *bool
 	ProbeErr string
@@ -48,6 +51,8 @@ func Decide(l config.LAN, o Observation) Verdict {
 		switch {
 		case !o.Gateway.IsValid():
 			return Verdict{Reason: fmt.Sprintf("on a %s network on %s, but it has no gateway to check", l.Prefix, o.Iface)}
+		case o.GatewayMAC == nil && o.GatewayErr != "":
+			return Verdict{Reason: fmt.Sprintf("on a %s network on %s, but its gateway %s could not be asked: %s", l.Prefix, o.Iface, o.Gateway, o.GatewayErr)}
 		case o.GatewayMAC == nil:
 			return Verdict{Reason: fmt.Sprintf("on a %s network on %s, but its gateway %s does not answer", l.Prefix, o.Iface, o.Gateway)}
 		case !bytes.Equal(o.GatewayMAC, l.GatewayMAC):
