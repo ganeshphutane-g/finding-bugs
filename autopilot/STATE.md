@@ -1,22 +1,33 @@
 # State
 
 Current project: #14, tsdirect (LAN traffic off Tailscale subnet routes when
-on that LAN; the name is free on GitHub, checked 2026-10-23). Phase: spec.
-Research: IDEAS.md round 15.
+on that LAN; the name is free on GitHub, checked 2026-10-23). Phase: build.
+Spec: projects/tsdirect/SPEC.md (with what the lab verified).
 
 ## Next step
 
-Before writing projects/tsdirect/SPEC.md:
-1. Build a lab: headscale as the control server, and tailscaled with kernel
-   TUN in network namespaces (a LAN with a subnet router, and a client that
-   is on that LAN and later leaves it). Go install of headscale and
-   tailscale works through the Go proxy here. Confirm table 52 and rules
-   5210–5270 appear as described, and that an `ip rule to <prefix> lookup
-   main` ahead of them keeps LAN traffic local.
-2. Design the network-identity check (gateway MAC, a probe host, or both);
-   it must fail closed.
-3. Check tailscale PR #21591 again.
-If the lab cannot work here or in CI, fall back to round 15's runners-up.
+Build milestone 1 (config, fingerprints, decision rules), then 2 (netlink,
+run/check/learn/cleanup), 3 (end-to-end tests in the headscale lab, CI), 4
+(docs, two reviews).
+
+Lab facts (2026-10-23):
+- `GOBIN=/tmp/ts-bin GOTOOLCHAIN=auto go install
+  tailscale.com/cmd/tailscaled@latest tailscale.com/cmd/tailscale@latest`
+  (1.104.2, fetches Go 1.27.3) and
+  `github.com/juanfont/headscale/cmd/headscale@latest` (v0.29.5). The disk is
+  tight: run `go clean -cache` after building them.
+- headscale needs a DERP region: enable the embedded DERP server
+  (`derp.server.enabled: true`, `urls: []`). Keep its state in a short path
+  (/tmp/tslabhs): the gRPC unix socket path must be under 108 bytes.
+- `headscale users create lab`; `preauthkeys create --user 1 --reusable`;
+  `nodes approve-routes --identifier N --routes 192.168.77.0/24`.
+- tailscaled per namespace: `--state=/tmp/tsl-X/state
+  --socket=/tmp/tsl-X/sock --tun=tailscale0 --port=41641`.
+- The lab script is projects/tsdirect/internal/e2e/lab-notes.sh (to become
+  the Go test harness).
+- In the lab the subnet router forwarded nothing back (rx 0), so LAN pings
+  through the tailnet failed. That does not matter for tsdirect's tests,
+  which check the direct path; look at it if a test needs the tailnet path.
 
 wgresolve (#13) is finished (see Finished projects); CI is green at 27e1655.
 
