@@ -27,7 +27,8 @@ type Linux struct {
 }
 
 // Connected finds the interface whose directly connected route in the main
-// table covers p.
+// table covers p (the most specific such route). With none, a connected
+// route inside p is returned, so the caller can say p is only partly there.
 func (s *Linux) Connected(p netip.Prefix) (iface string, index int, connected netip.Prefix, err error) {
 	family := netlink.FAMILY_V4
 	if p.Addr().Is6() {
@@ -37,21 +38,27 @@ func (s *Linux) Connected(p netip.Prefix) (iface string, index int, connected ne
 	if err != nil {
 		return "", 0, netip.Prefix{}, err
 	}
-	best := -1
+	best := 0
 	for _, r := range routes {
 		if r.Dst == nil || r.Scope != netlink.SCOPE_LINK || r.Gw != nil || r.Type != unix.RTN_UNICAST {
 			continue
 		}
 		dst, ok := prefixOf(r.Dst)
-		if !ok || dst.Bits() > p.Bits() || !dst.Contains(p.Addr()) || dst.Addr().Is4() != p.Addr().Is4() {
+		if !ok || dst.Addr().Is4() != p.Addr().Is4() || !dst.Overlaps(p) {
 			continue
 		}
 		link, err := netlink.LinkByIndex(r.LinkIndex)
 		if err != nil || link.Attrs().OperState == netlink.OperDown || s.Skip != nil && s.Skip(link.Attrs().Name) {
 			continue
 		}
-		if dst.Bits() > best { // the most specific
-			best = dst.Bits()
+		// Covering routes first, the most specific of them; then the
+		// widest of those inside p.
+		score := dst.Bits()
+		if dst.Bits() > p.Bits() {
+			score = -dst.Bits() - 1
+		}
+		if iface == "" || score > best {
+			best = score
 			iface, index, connected = link.Attrs().Name, r.LinkIndex, dst
 		}
 	}
@@ -138,6 +145,9 @@ func (s *Linux) Rules() ([]Rule, error) {
 	var out []Rule
 	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
 		rules, err := netlink.RuleList(fam)
+		if fam == netlink.FAMILY_V6 && errors.Is(err, unix.EAFNOSUPPORT) {
+			continue // IPv6 is off (ipv6.disable=1): no IPv6 rules
+		}
 		if err != nil {
 			return nil, err
 		}

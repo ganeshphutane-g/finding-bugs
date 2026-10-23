@@ -141,6 +141,7 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 		present[r] = true
 	}
 	a.mu.Lock()
+	lans := a.LANs
 	prev := map[netip.Prefix]Status{}
 	for _, s := range a.statuses {
 		prev[s.LAN.Prefix] = s
@@ -148,9 +149,11 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 	a.mu.Unlock()
 
 	now := a.now()
-	statuses := make([]Status, len(a.LANs))
+	statuses := make([]Status, len(lans))
 	want := map[sys.Rule]int{} // the LAN's index
-	for i, l := range a.LANs {
+	newReason := make([]bool, len(lans))
+	changed := make([]bool, len(lans))
+	for i, l := range lans {
 		o, err := Observe(ctx, a.Sys, l)
 		v := decide.Decide(l, o)
 		if err != nil {
@@ -165,7 +168,7 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 			}
 		}
 		if p, ok := prev[l.Prefix]; !ok || p.Verdict.Reason != v.Reason {
-			a.logf("%s: %s", l.Prefix, v.Reason)
+			newReason[i] = true
 		}
 		if v.On {
 			want[sys.Rule{Prefix: l.Prefix, Priority: a.Priority}] = i
@@ -173,7 +176,7 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 		statuses[i] = st
 	}
 	index := map[netip.Prefix]int{}
-	for i, l := range a.LANs {
+	for i, l := range lans {
 		index[l.Prefix] = i
 	}
 
@@ -203,9 +206,10 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 		a.logf("removed rule to %s lookup main priority %d: %s", r.Prefix, r.Priority, why)
 		if i, ok := index[r.Prefix]; ok {
 			statuses[i].Changes++
+			changed[i] = true
 		}
 	}
-	for i, l := range a.LANs {
+	for i, l := range lans {
 		r := sys.Rule{Prefix: l.Prefix, Priority: a.Priority}
 		if _, ok := want[r]; !ok {
 			continue
@@ -220,10 +224,17 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 		}
 		statuses[i].Rule = true
 		statuses[i].Changes++
+		changed[i] = true
 		a.logf("added rule to %s lookup main priority %d: %s", r.Prefix, r.Priority, statuses[i].Verdict.Reason)
 	}
+	// A changed verdict is logged with the rule it moved, or on its own.
+	for i, l := range lans {
+		if newReason[i] && !changed[i] {
+			a.logf("%s: %s", l.Prefix, statuses[i].Verdict.Reason)
+		}
+	}
 	if a.DryRun {
-		for i, l := range a.LANs {
+		for i, l := range lans {
 			statuses[i].Rule = present[sys.Rule{Prefix: l.Prefix, Priority: a.Priority}]
 		}
 	}
@@ -234,6 +245,13 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 	a.errors += len(errs)
 	a.mu.Unlock()
 	return errors.Join(errs...)
+}
+
+// SetLANs replaces the LANs (a reloaded config) for the next pass.
+func (a *Agent) SetLANs(lans []config.LAN) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.LANs = lans
 }
 
 // Cleanup removes every rule of tsdirect's (by its protocol mark) and says
