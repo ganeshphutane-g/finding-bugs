@@ -1,0 +1,39 @@
+[Unit]
+Description=tsdirect: keep LAN traffic on the LAN under Tailscale subnet routes
+Documentation=https://github.com/ganeshphutane-g/finding-bugs/tree/main/projects/tsdirect
+# Not required: tsdirect's rules are harmless without Tailscale, and it keeps
+# them across tailscaled restarts.
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+# LANs go in /etc/tsdirect.conf ("tsdirect learn PREFIX" prints a line);
+# flags in /etc/default/tsdirect, e.g. TSDIRECT_OPTS="--listen 127.0.0.1:9587"
+EnvironmentFile=-/etc/default/tsdirect
+ExecStart=/usr/local/bin/tsdirect run $TSDIRECT_OPTS
+# Re-reads /etc/tsdirect.conf.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+# ip rules (CAP_NET_ADMIN); ARP requests and probes bound to the LAN
+# interface (CAP_NET_RAW).
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

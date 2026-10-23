@@ -433,7 +433,8 @@ func (l *lab) close() {
 		os.WriteFile("/etc/resolv.conf", l.resolv, 0o644)
 		l.t.Log("put /etc/resolv.conf back")
 	}
-	if l.t.Failed() {
+	// TSDIRECT_E2E_LOGS=1 shows them on success too.
+	if l.t.Failed() || os.Getenv("TSDIRECT_E2E_LOGS") == "1" {
 		for _, p := range l.procs {
 			l.t.Logf("%s:\n%s", strings.Join(p.cmd.Args[3:], " "), p.out)
 		}

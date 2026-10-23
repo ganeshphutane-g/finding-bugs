@@ -8,9 +8,9 @@ cover that LAN, and only while it really is on that LAN.
 With `tailscale up --accept-routes`, Linux puts accepted subnet routes in
 table 52, behind ip rules (5210–5270) that are looked up before the main
 table. A laptop at home, on the 192.168.1.0/24 that the home subnet router
-advertises, then sends its LAN traffic into the tailnet. It is slow at best.
-In the lab it was broken: the client could not reach its own LAN at all, and
-it fails whenever Tailscale is down.
+advertises, then sends its LAN traffic into the tailnet: encrypted, through
+the subnet router and back, at the router's speed, and dependent on the
+tailnet being up.
 
 **Demand** (checked 2026-10-23):
 - tailscale#1227 "When local route is available to a subnet, bypass tailscale
@@ -36,11 +36,12 @@ or advertising a less specific prefix. No tool exists.
 - **The client's rules and routes:** 5210, 5230 and 5250 (fwmark
   0x80000/0xff0000), then 5270 `lookup 52`. Table 52 holds
   `192.168.77.0/24 dev tailscale0`. `ip route get 192.168.77.20` says
-  `dev tailscale0 table 52`, and a ping to the LAN host failed.
+  `dev tailscale0 table 52`. (A first ping failed, but that was the lab:
+  its relay had no TLS and the nodes had a proxy set. With those fixed the
+  LAN is reached through the subnet router.)
 - **The fix:** `ip rule add to 192.168.77.0/24 lookup main priority 5200`.
-  The route becomes `dev lcl` (the LAN interface), pings work, and they
-  keep working with the subnet router's Tailscale down. Without the rule,
-  the LAN is unreachable again.
+  The route becomes `dev lcl` (the LAN interface), and the LAN host is
+  reached directly, also with the subnet router's Tailscale down.
 
 ## What it does
 
@@ -71,8 +72,8 @@ hold, and removes it as soon as one does not:
      café on the same 192.168.1.0/24 must not get the home LAN's traffic.
 
 It acts:
-- on netlink events (addresses, routes, links, neighbours), and every
-  `--interval` (default 15 s);
+- on netlink events (addresses, routes, links), and every `--interval`
+  (default 15 s);
 - right after tailscaled starts or restarts (its rules come back, and
   tsdirect's stay).
 
