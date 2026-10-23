@@ -3,6 +3,131 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 16 — 2026-10-24 IST
+
+One research pass over trackers not scanned before:
+- Immich, Paperless-ngx, Vaultwarden;
+- docker/compose, podman-compose, moby/libnetwork;
+- more of Tailscale, plus Netbird, ZeroTier, Coolify, Portainer;
+- Kopia, borg, zrepl, sanoid, mergerfs, Cockpit;
+- systemd-networkd/resolved, Nextcloud desktop/AIO, rclone, Jellyfin;
+- sweeps of archived repos.
+
+Not scanned:
+- containers/podman and gluetun: the search returned an error;
+- the Jellyfin and Pi-hole forums: DNS failed.
+
+"verified" means read from a GitHub search result on 2026-10-24. "web" means
+a web-search summary only.
+
+### Chosen (provisional): tsexit, Tailscale exit-node policy for Linux (project #15)
+
+A daemon that turns the exit node on automatically on networks that are not
+one of yours, and off on trusted ones. Trusted networks are recognised by the
+same fail-closed fingerprints as tsdirect (gateway MAC by fresh ARP, a bound
+TCP probe), and later by Wi-Fi SSID through NetworkManager. Optional:
+- a kill switch, so no traffic leaves outside the tailnet while the exit
+  node is meant to be on (including while tailscaled restarts);
+- later, bypassing the exit node for chosen CIDRs or domains.
+
+**Demand:**
+
+| Issue | Request | 👍 | Open since | Checked |
+|---|---|---|---|---|
+| tailscale#3302 | automatically use an exit node on untrusted or new Wi-Fi | 127 | 2021-11 (updated 2026-06-22) | verified |
+| #7766 | bypass exit nodes for certain domains | 50 | 2023-04 | verified |
+| #12228 | split tunnelling in the desktop app | 38 | | not verified |
+| #10773 | kill switch while tailscaled updates | 23 | | not verified |
+| #13992 | exit node on demand | 20 | | not verified |
+
+**Gap:** no Linux tool was found.
+- woopstar/AutoExitNode (1★) is Windows only.
+- leolovenet/tailscale-routes (8★) is macOS only.
+
+**Upstream:** no PR was found for an automatic exit node. PR #18695
+("configurable Linux packet marks", open) could affect a kill-switch design.
+
+**Scores:** 5/4/4/3/4 = **20**. It ties composeremote. tsexit is chosen
+because:
+- its demand is several times larger;
+- the headscale lab and tsdirect's fingerprint and netlink code already
+  exist and are tested;
+- a wrong verdict fails safe: the exit node stays on.
+
+**Check before the spec:**
+- what `tailscale set --exit-node=` does on Linux, and how fast;
+- whether LocalAPI or the CLI is the better control;
+- the kill-switch mechanism (nftables with Tailscale's fwmark), and PR
+  #18695;
+- the name: `tsexit` is taken by kafu-densha/tsexit (0★, shell, created
+  2026-04-20, not read). Read it first: it may be a competing tool. Either
+  way, pick another name (`tsdirect exit`, a mode of tsdirect, is one
+  option);
+- whether to build it as a separate tool or as tsdirect's second mode. A
+  separate tool means a simpler config; sharing the code means copying
+  packages inside this repo, not depending on another module.
+
+**Risks:**
+- Much of the demand is from mobile and desktop users on other OSes.
+- Bypassing by domain is hard with MagicDNS; it is out of v1.
+- Tailscale could ship this itself.
+
+### Runners-up
+
+- **composeremote:** `docker compose up` against a remote DOCKER_HOST with
+  local bind-mount, config and secret files uploaded into volumes.
+  - **Demand:** docker/compose#11867 "Support remote DOCKER_HOST by copying
+    configs and secrets files instead of bind mounting them", 30 👍
+    (45 reactions), open since 2024-05-30 (verified). Several upstream PRs
+    were closed unmerged (seen by the researcher, not re-checked). There are
+    forum reports from Caddy and Docker (web).
+  - **Existing tools:** mutagen-io/mutagen-compose (112★, Go, last push
+    2025-02, verified) syncs files with Mutagen sessions, so it is partly a
+    gap. pardnchiu/PodRun (3★) targets Podman and k3s.
+  - **Scores:** 3/3/5/4/5 = 20.
+  - **Next round:** read #11867's thread, and what mutagen-compose does with
+    remote engines today.
+- **zfsunlock** (re-checked):
+  - **Demand:** openzfs#6824 has 84 👍 and #12649 has 17 👍 (seen by the
+    researcher).
+  - **Existing tools:** many small single-initramfs tools.
+  - **Scores:** 19. Still: a bug locks people out of their data, and ZFS in
+    CI is unproven.
+- **Docker macvlan host-access shim:** 19. Still no counted demand for the
+  shim itself.
+- **Immich WebDAV/SFTP gateway:**
+  - **Demand:** immich discussion #1687 has 106 👍.
+  - **Existing tools:** immich-sftp-server (33★) and immich-webdav-wrapper
+    (25★) exist.
+  - **Scores:** 17. Immich's fast-moving API means a heavy maintenance
+    burden.
+- **ZFS snapshots to S3 with raw incremental chains:** 17.
+  - zfsbackup-go (378★) has had no commit since 2023-02.
+  - There is no high-👍 issue.
+- **Compose watch for Podman:** podman-compose#792 has 104 👍 (seen). 17.
+  First check whether `docker compose watch` already works against the
+  Podman socket; if it does, there is no gap.
+
+### Rejected in round 16
+
+- **Already covered:**
+  - Duplicati monitor (wsj-br/duplistatus);
+  - several tailnets at once (Hydrascale, 43★);
+  - SMTP to Microsoft Graph (email-oauth2-proxy, SMTP2Graph);
+  - DoH in systemd-resolved (dnsproxy, dnscrypt-proxy);
+  - an exit node through a commercial VPN (tailguard, 610★);
+  - wake-on-demand proxying (Sablier).
+- **Too niche, too weak, or needing paid services:**
+  - a Corso successor (needs a Microsoft 365 tenant);
+  - per-device traffic accounting;
+  - Cockpit Docker support;
+  - a mergerfs mover;
+  - Docker volume quotas;
+  - a Swarm real client IP;
+  - Paperless CSV export.
+- **Being done upstream:** Nextcloud Linux VFS, Immich smart albums, Kopia
+  notifications.
+
 ## Research round 15 — 2026-10-23 IST
 
 One research pass over about 40 trackers not scanned before (Frigate,

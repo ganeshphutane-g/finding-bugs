@@ -2,6 +2,51 @@
 
 Newest first.
 
+## 2026-10-24 (IST) — run 13
+
+- **Project #14 tsdirect: from milestone 1 to finished in this run.**
+  - **Built:**
+    - the netlink system layer: routes, a fresh ARP request over
+      AF_PACKET, probes bound with SO_BINDTODEVICE, rules marked with
+      protocol 0xd1, and events;
+    - the reconcile agent;
+    - `run`, `check`, `learn` and `cleanup`, with /metrics and SIGHUP
+      reload;
+    - a hardened systemd unit, checked to work as a dynamic user with only
+      CAP_NET_ADMIN and CAP_NET_RAW;
+    - the README, CHANGELOG, LICENSE, and CI.
+  - **End-to-end harness:** headscale v0.29.5 and real tailscaled 1.104.2 in
+    network namespaces, with a home LAN and a café LAN on the same
+    addresses. It covers 8 scenarios, run with `--interval 10m` so that
+    events drive every reaction. It is green locally and in CI; CI also runs
+    the unit tests on big-endian MIPS under qemu.
+  - **Lab lessons, recorded in STATE:**
+    - Tailscale's relay (DERP) needs TLS;
+    - the sandbox proxy variables must be stripped;
+    - bridges take their lowest port's MAC.
+    The SPEC's earlier claim that "the client could not reach its LAN at
+    all" was a lab artefact, and has been corrected.
+  - **Two full reviews**, 17 findings, all fixed. The most important:
+    - kernels before 4.17 drop the rule's protocol value, so tsdirect would
+      never find its rules to remove them; it now refuses to start on them;
+    - netlink subscriptions could die silently;
+    - a probe to the machine's own address succeeded through loopback;
+    - the route choice differed from the kernel's (it now detects
+      conflicts);
+    - ARP byte order was wrong on big-endian CPUs;
+    - a failed start left a crashed run's rule in place;
+    - IPv6 was untested, so it is now refused in the config.
+  - Mutation checks fail the tests as they should: an unbound probe, and no
+    follow-up passes.
+- **Research round 16:** about 30 trackers scanned. Provisional pick: a Linux
+  exit-node policy for Tailscale (tailscale#3302, 127 👍; #7766, 50 👍; no
+  Linux tool found). Runner-up: composeremote (compose#11867, 30 👍; partly
+  covered by mutagen-compose).
+- **Next:** the checks before the spec (listed in IDEAS round 16), then the
+  spec and the build.
+- **Owner:** create the tag `tsdirect/v1.0.0` on b56a34c, along with the
+  earlier tags listed in STATE. The repo is still public.
+
 ## 2026-10-23 (IST) — run 12
 
 - **READMEs:** roadmap sections were added to packparity, bucketmove,
