@@ -1,17 +1,14 @@
 # State
 
-Current project: #14, tsdirect (LAN traffic off Tailscale subnet routes when
-on that LAN; the name is free on GitHub, checked 2026-10-23). Phase: build.
-Spec: projects/tsdirect/SPEC.md (with what the lab verified).
+Current project: none (tsdirect, #14, is finished; see Finished projects).
+Phase: research (round 16).
 
 ## Next step
 
-Milestones 1-3 are done (config and decision; netlink, run/check/learn/
-cleanup; e2e with headscale and real tailscaled, all 7 scenarios passing
-locally, CI workflow .github/workflows/tsdirect.yml). Next: check CI is
-green, then milestone 4: README with real runs (from the e2e log), CHANGELOG,
-LICENSE, systemd unit (After=tailscaled), SPEC corrections, two full reviews
-with fixes.
+Research round 16 for project #15: at least 5 scored candidates in
+autopilot/IDEAS.md, each with 3+ independent demand sources and named
+existing tools. Round 15's runners-up are still open (exit node on untrusted
+networks reuses tsdirect's fingerprint logic). Then spec and build.
 
 Lab facts (2026-10-24):
 - `GOBIN=/tmp/ts-bin GOTOOLCHAIN=auto go install
@@ -359,6 +356,38 @@ Actions as codeberg.org/forgejo/forgejo:16.
     - **Owner checks before going public:** README; run `wgresolve check`
       on a machine with a dynamic-DNS peer; then the service for a day.
 
+14. **tsdirect** (projects/tsdirect, v1.0.0 at commit b56a34c). Keeps a
+    Linux machine's LAN traffic on the LAN while Tailscale's accepted subnet
+    routes cover that LAN, and only while it really is on it
+    (tailscale#1227, 88 👍; #7947, #6231, #3646).
+    - **How:** adds `ip rule to PREFIX lookup main priority 5200 proto 0xd1`
+      while the kernel's main-table route for the prefix is a connected one
+      on an up, non-Tailscale interface, no other route takes part of the
+      prefix, and the fingerprint matches (gateway MAC by a fresh ARP
+      request; and/or a TCP probe bound to the LAN interface, never to the
+      machine's own address). Fails closed. Its rules are found by their
+      protocol value: removed on exit, on failed starts, on stale
+      priorities/LANs and by `cleanup`. Netlink events (plus two follow-up
+      looks), `check` (exit 3 on a lookalike network), `learn`, /metrics,
+      SIGHUP reload, a hardened systemd unit (dynamic user, CAP_NET_ADMIN +
+      CAP_NET_RAW, verified working with only those). IPv4 only; Linux 4.17+.
+    - **Reviews:** two full reviews, 17 findings, all fixed. The worst:
+      kernels before 4.17 drop the rule's protocol value (rules never found,
+      so never removed: now refused at start); netlink subscriptions dying
+      silently; a probe to the machine's own address succeeding through
+      loopback; route choice that differed from the kernel's; ARP byte order
+      on big-endian CPUs.
+    - **Tests:** unit tests (also on big-endian MIPS under qemu in CI); end
+      to end with headscale v0.29.5 and real tailscaled 1.104.2 in network
+      namespaces (home LAN, café with the same addresses, leaving, tailscaled
+      restart, a second interface with part of the prefix, kill -9 and
+      cleanup, a probe the tailnet could have answered), with
+      `--interval 10m` so events drive every reaction. A mutation check
+      showed the probe test fails without SO_BINDTODEVICE.
+    - **Owner checks before going public:** README; on a laptop with
+      `--accept-routes`, `sudo tsdirect learn <home prefix>`, `check` at home
+      and on another network, then the service for a few days.
+
 ## Blockers for the owner
 
 - The finding-bugs repo itself is PUBLIC (seen 2026-10-15). Everything in it
@@ -385,6 +414,7 @@ Actions as codeberg.org/forgejo/forgejo:16.
   (df3dbb4), `issuemove/v1.0.0` (e7c8051), `kumafile/v1.0.0` (aa90445),
   `docker-edit/v1.0.0` (cdc7019), `pushprobe/v1.0.0` (0e881d2),
   `alertlines/v1.0.0` (5e2f87c), `xffdns/v1.0.0` (e52932e), `pullwhy/v1.0.0`
-  (90c49bd), `packparity/v1.0.0` (89cf92f) and `wgresolve/v1.0.0` (27e1655),
+  (90c49bd), `packparity/v1.0.0` (89cf92f), `wgresolve/v1.0.0` (27e1655)
+  and `tsdirect/v1.0.0` (b56a34c),
   plus `docker-mop/v1.0.0`
   (50c1a1e) if not yet done.
