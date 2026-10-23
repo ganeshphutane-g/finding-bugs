@@ -6,31 +6,31 @@ Spec: projects/tsdirect/SPEC.md (with what the lab verified).
 
 ## Next step
 
-Build milestone 1 (config, fingerprints, decision rules), then 2 (netlink,
-run/check/learn/cleanup), 3 (end-to-end tests in the headscale lab, CI), 4
-(docs, two reviews).
+Milestones 1-3 are done (config and decision; netlink, run/check/learn/
+cleanup; e2e with headscale and real tailscaled, all 7 scenarios passing
+locally, CI workflow .github/workflows/tsdirect.yml). Next: check CI is
+green, then milestone 4: README with real runs (from the e2e log), CHANGELOG,
+LICENSE, systemd unit (After=tailscaled), SPEC corrections, two full reviews
+with fixes.
 
-Lab facts (2026-10-23):
+Lab facts (2026-10-24):
 - `GOBIN=/tmp/ts-bin GOTOOLCHAIN=auto go install
-  tailscale.com/cmd/tailscaled@latest tailscale.com/cmd/tailscale@latest`
-  (1.104.2, fetches Go 1.27.3) and
-  `github.com/juanfont/headscale/cmd/headscale@latest` (v0.29.5). The disk is
-  tight: run `go clean -cache` after building them.
-- headscale needs a DERP region: enable the embedded DERP server
-  (`derp.server.enabled: true`, `urls: []`). Keep its state in a short path
-  (/tmp/tslabhs): the gRPC unix socket path must be under 108 bytes.
-- `headscale users create lab`; `preauthkeys create --user 1 --reusable`;
-  `nodes approve-routes --identifier N --routes 192.168.77.0/24`.
-- tailscaled per namespace: `--state=/tmp/tsl-X/state
-  --socket=/tmp/tsl-X/sock --tun=tailscale0 --port=41641`. Always `tailscale
-  up ... --accept-dns=false`: otherwise tailscaled rewrites the sandbox's own
-  /etc/resolv.conf (namespaces share it) and DNS breaks for everything.
-  `tailscale set --accept-dns=false` restores it.
-- The lab script is projects/tsdirect/internal/e2e/lab-notes.sh (to become
-  the Go test harness).
-- In the lab the subnet router forwarded nothing back (rx 0), so LAN pings
-  through the tailnet failed. That does not matter for tsdirect's tests,
-  which check the direct path; look at it if a test needs the tailnet path.
+  tailscale.com/cmd/tailscaled@v1.104.2 tailscale.com/cmd/tailscale@v1.104.2`
+  (fetches Go 1.27.3) and `github.com/juanfont/headscale/cmd/headscale@v0.29.5`.
+  The disk is tight: run `go clean -cache` after building them.
+- The harness is projects/tsdirect/internal/e2e/e2e_test.go: run with
+  `PATH=/tmp/ts-bin:$PATH TSDIRECT_INTEGRATION=1 TSDIRECT_BIN=/tmp/tsdirect`
+  (about 40 s). It writes its own headscale config.
+- Tailscale's relay (DERP) needs TLS: the harness makes a self-signed cert
+  for 10.50.0.2 and gives tailscaled SSL_CERT_FILE. Without DERP the nodes
+  may never talk (that was the earlier "rx 0").
+- Strip HTTP(S)_PROXY from lab processes: tailscaled uses the sandbox's
+  proxy for DERP otherwise.
+- A Linux bridge takes its lowest port's MAC: give lab "routers" fixed MACs,
+  or two LANs end up with the same gateway MAC.
+- Always `tailscale up ... --accept-dns=false`: otherwise tailscaled
+  rewrites /etc/resolv.conf (namespaces share it). The harness also puts it
+  back on cleanup.
 
 wgresolve (#13) is finished (see Finished projects); CI is green at 27e1655.
 
