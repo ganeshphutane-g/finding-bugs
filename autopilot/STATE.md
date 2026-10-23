@@ -22,7 +22,10 @@ Lab facts (2026-10-23):
 - `headscale users create lab`; `preauthkeys create --user 1 --reusable`;
   `nodes approve-routes --identifier N --routes 192.168.77.0/24`.
 - tailscaled per namespace: `--state=/tmp/tsl-X/state
-  --socket=/tmp/tsl-X/sock --tun=tailscale0 --port=41641`.
+  --socket=/tmp/tsl-X/sock --tun=tailscale0 --port=41641`. Always `tailscale
+  up ... --accept-dns=false`: otherwise tailscaled rewrites the sandbox's own
+  /etc/resolv.conf (namespaces share it) and DNS breaks for everything.
+  `tailscale set --accept-dns=false` restores it.
 - The lab script is projects/tsdirect/internal/e2e/lab-notes.sh (to become
   the Go test harness).
 - In the lab the subnet router forwarded nothing back (rx 0), so LAN pings
