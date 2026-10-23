@@ -65,7 +65,7 @@ hold, and removes it as soon as one does not:
 2. **The network is the one configured:**
    - `gateway-mac`: the neighbour entry of the main table's gateway on that
      interface (or, for a LAN without a default route, of a given address)
-     has that MAC. It is refreshed with an ARP or NDP probe.
+     has that MAC, asked with a fresh ARP request (IPv4 only in v1).
    - `probe host:port`: a TCP connection made from that interface (bound to
      it, outside the tailnet) succeeds.
    - Both can be required. With neither, the LAN is refused. Fail closed: a
@@ -100,7 +100,9 @@ Also:
 
 - Go, one static binary, `github.com/vishvananda/netlink` (Apache-2.0) for
   routes, rules, neighbours and events.
-- Root or CAP_NET_ADMIN (ip rules; SO_BINDTODEVICE for probes).
+- Root, or CAP_NET_ADMIN (ip rules) and CAP_NET_RAW (ARP requests;
+  SO_BINDTODEVICE for probes). Linux 4.17 or newer, which keeps a rule's
+  protocol value.
 - A systemd unit ordered after tailscaled.
 
 ## Tests

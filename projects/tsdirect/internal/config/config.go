@@ -64,6 +64,9 @@ func Parse(line, source string) (LAN, error) {
 	if p.Masked() != p {
 		return LAN{}, fmt.Errorf("%s: %s has host bits set; did you mean %s?", source, p, p.Masked())
 	}
+	if !p.Addr().Is4() {
+		return LAN{}, fmt.Errorf("%s: %s: only IPv4 LANs are supported for now", source, p)
+	}
 	if p.Bits() == 0 {
 		return LAN{}, fmt.Errorf("%s: %s is everything, not a LAN", source, p)
 	}
@@ -90,11 +93,17 @@ func Parse(line, source string) (LAN, error) {
 			if err != nil || !p.Contains(a) {
 				return LAN{}, fmt.Errorf("%s: gateway %q must be an address in %s", source, v, p)
 			}
+			if l.Gateway.IsValid() {
+				return LAN{}, fmt.Errorf("%s: gateway given twice", source)
+			}
 			l.Gateway = a
 		case "probe":
 			ap, err := netip.ParseAddrPort(v)
 			if err != nil || ap.Port() == 0 || !p.Contains(ap.Addr()) {
 				return LAN{}, fmt.Errorf("%s: probe %q must be address:port with the address in %s", source, v, p)
+			}
+			if l.Probe.IsValid() {
+				return LAN{}, fmt.Errorf("%s: probe given twice", source)
 			}
 			l.Probe = ap
 		default:
@@ -122,7 +131,7 @@ func Read(r io.Reader, name string) ([]LAN, error) {
 		if line == "" {
 			continue
 		}
-		if !strings.HasPrefix(line, "lan ") {
+		if f := strings.Fields(line); f[0] != "lan" {
 			return nil, fmt.Errorf("%s:%d: expected \"lan PREFIX ...\"", name, no)
 		}
 		l, err := Parse(line, fmt.Sprintf("%s:%d", name, no))

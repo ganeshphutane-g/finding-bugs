@@ -15,6 +15,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -76,6 +77,9 @@ type Deps struct {
 func Main(args []string, stdout, stderr io.Writer, deps Deps) int {
 	if deps.System == nil {
 		deps.System = func(proto uint8) (agent.System, error) {
+			if err := sys.CheckKernel(); err != nil {
+				return nil, err
+			}
 			return &sys.Linux{Proto: proto, Skip: sys.IsTailscale}, nil
 		}
 	}
@@ -133,15 +137,27 @@ func (p *protoFlag) Set(v string) error {
 		return errors.New("a number from 5 to 255, such as 0xd1")
 	}
 	// 0-4 are the kernel's and iproute2's own (unspec, redirect, kernel,
-	// boot, static): cleanup would remove rules that are not tsdirect's.
+	// boot, static), the others routing daemons' (rtnetlink.h): cleanup
+	// would remove rules that are not tsdirect's.
 	if n < 5 {
 		return errors.New("0 to 4 are used by the kernel and ip itself; pick 5 to 255")
+	}
+	if name, ok := knownProtos[uint8(n)]; ok {
+		return fmt.Errorf("%d is %s's; pick another, such as the default 0xd1", n, name)
 	}
 	*p = protoFlag(n)
 	return nil
 }
 
 const defaultProto = 0xd1
+
+// knownProtos are the protocol values in the kernel's rtnetlink.h.
+var knownProtos = map[uint8]string{
+	8: "gated", 9: "ra", 10: "mrt", 11: "zebra", 12: "bird", 13: "dnrouted",
+	14: "xorp", 15: "ntk", 16: "dhcp", 17: "mrouted", 18: "keepalived",
+	42: "babel", 99: "openr", 186: "bgp", 187: "isis", 188: "ospf", 189: "rip",
+	192: "eigrp",
+}
 
 func newFlags(name string, stderr io.Writer, args string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
@@ -182,7 +198,11 @@ func (o *options) load() ([]config.LAN, error) {
 		return nil, err
 	}
 	if len(lans) == 0 {
-		return nil, fmt.Errorf("no LANs: add \"lan\" lines to %s or give --lan (tsdirect learn PREFIX prints one)", o.config)
+		where := "give --lan"
+		if o.config != "" {
+			where = fmt.Sprintf("add \"lan\" lines to %s or give --lan", o.config)
+		}
+		return nil, fmt.Errorf("no LANs: %s (tsdirect learn PREFIX prints one)", where)
 	}
 	return lans, nil
 }
@@ -219,11 +239,6 @@ func command(name string, args []string, stdout, stderr io.Writer, deps Deps) in
 	if o.priority >= tailscalePriority {
 		fmt.Fprintf(stderr, "tsdirect: warning: --priority %d comes after Tailscale's rules (from %d): its routes still win\n", o.priority, tailscalePriority)
 	}
-	lans, err := o.load()
-	if err != nil {
-		fmt.Fprintln(stderr, "tsdirect:", err)
-		return exitError
-	}
 	// Signals first: a reload (SIGHUP) while starting must not kill it.
 	var sig chan os.Signal
 	if name == "run" {
@@ -235,7 +250,18 @@ func command(name string, args []string, stdout, stderr io.Writer, deps Deps) in
 		fmt.Fprintln(stderr, "tsdirect:", err)
 		return exitError
 	}
-	a := &agent.Agent{Sys: s, LANs: lans, Priority: o.priority, DryRun: name == "check"}
+	a := &agent.Agent{Sys: s, Priority: o.priority, DryRun: name == "check"}
+	lans, err := o.load()
+	if err != nil {
+		fmt.Fprintln(stderr, "tsdirect:", err)
+		if name == "run" {
+			// A run that cannot start must not leave the rules of one
+			// that crashed: the machine may no longer be on the LAN.
+			stopped(a, stderr, stderr)
+		}
+		return exitError
+	}
+	a.LANs = lans
 	if name == "check" {
 		return check(a, stdout, stderr)
 	}
@@ -276,6 +302,9 @@ func check(a *agent.Agent, stdout, stderr io.Writer) int {
 	}
 	tw.Flush()
 	fmt.Fprintln(stdout)
+	for _, r := range a.Stale() {
+		fmt.Fprintf(stdout, "note: rule to %s priority %d is tsdirect's but no configured LAN has it at that priority [run would remove it]\n", r.Prefix, r.Priority)
+	}
 	for _, s := range st {
 		fmt.Fprintf(stdout, "%s: %s", s.LAN.Prefix, s.Verdict.Reason)
 		switch {
@@ -311,12 +340,14 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps, sig cha
 	events, err := deps.Watch(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, "tsdirect: watching for network changes:", err)
+		stopped(a, stdout, stderr)
 		return exitError
 	}
 	if o.listen != "" {
 		ln, err := net.Listen("tcp", o.listen)
 		if err != nil {
 			fmt.Fprintln(stderr, "tsdirect:", err)
+			stopped(a, stdout, stderr)
 			return exitError
 		}
 		srv := &http.Server{Handler: handler(a, o.interval), ReadHeaderTimeout: 5 * time.Second}
@@ -334,9 +365,17 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps, sig cha
 		default:
 		}
 	}
+	// Without events a move to another network would only be seen at the
+	// next interval: stop (removing the rules) and let systemd restart it.
+	var lost atomic.Bool
 	go func() {
 		for range events {
 			poke()
+		}
+		if ctx.Err() == nil {
+			lost.Store(true)
+			fmt.Fprintln(stderr, "tsdirect: network change events stopped (the kernel dropped some); stopping")
+			cancel()
 		}
 	}()
 	go func() {
@@ -357,13 +396,21 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps, sig cha
 		}
 	}()
 	a.Run(ctx, o.interval, merged)
+	if !stopped(a, stdout, stderr) || lost.Load() {
+		return exitError
+	}
+	return exitOK
+}
+
+// stopped removes the rules on the way out, and says whether that worked.
+func stopped(a *agent.Agent, stdout, stderr io.Writer) bool {
 	removed, err := a.Cleanup()
 	fmt.Fprintf(stdout, "stopping: removed %d %s\n", removed, plural(removed, "rule", "rules"))
 	if err != nil {
 		fmt.Fprintln(stderr, "tsdirect:", err)
-		return exitError
+		return false
 	}
-	return exitOK
+	return true
 }
 
 func learn(args []string, stdout, stderr io.Writer, deps Deps) int {
@@ -392,9 +439,24 @@ func learn(args []string, stdout, stderr io.Writer, deps Deps) int {
 		return exitUsage
 	}
 	p, err := netip.ParsePrefix(prefix)
-	if err != nil || p.Masked() != p || p.Bits() == 0 {
-		fmt.Fprintf(stderr, "tsdirect: %q is not a network prefix such as 192.168.1.0/24\n", prefix)
+	if err != nil || p.Masked() != p || p.Bits() == 0 || !p.Addr().Is4() {
+		fmt.Fprintf(stderr, "tsdirect: %q is not an IPv4 network prefix such as 192.168.1.0/24\n", prefix)
 		return exitUsage
+	}
+	var ap netip.AddrPort
+	if probe != "" {
+		ap, err = netip.ParseAddrPort(probe)
+		if err != nil || !p.Contains(ap.Addr()) || ap.Port() == 0 {
+			fmt.Fprintf(stderr, "tsdirect: --probe %q: address:port with the address in %s\n", probe, p)
+			return exitUsage
+		}
+	}
+	var gw netip.Addr
+	if gateway != "" {
+		if gw, err = netip.ParseAddr(gateway); err != nil || !p.Contains(gw) {
+			fmt.Fprintf(stderr, "tsdirect: --gateway %q: an address in %s\n", gateway, p)
+			return exitUsage
+		}
 	}
 	s, err := deps.System(defaultProto)
 	if err != nil {
@@ -415,16 +477,11 @@ func learn(args []string, stdout, stderr io.Writer, deps Deps) int {
 		return exitError
 	}
 	line := "lan " + p.String()
-	var gw netip.Addr
-	if gateway != "" {
-		if gw, err = netip.ParseAddr(gateway); err != nil || !p.Contains(gw) {
-			fmt.Fprintf(stderr, "tsdirect: --gateway %q: an address in %s\n", gateway, p)
-			return exitUsage
-		}
+	if gw.IsValid() {
 		line += " gateway " + gw.String()
 	} else {
 		var ok bool
-		if gw, ok = s.DefaultGateway(index, p.Addr().Is6()); !ok {
+		if gw, ok = s.DefaultGateway(index); !ok {
 			fmt.Fprintf(stderr, "tsdirect: %s has no default gateway; give --gateway ADDR (an address on the LAN that is always there) or --probe HOST:PORT\n", iface)
 			if probe == "" {
 				return exitError
@@ -443,11 +500,6 @@ func learn(args []string, stdout, stderr io.Writer, deps Deps) int {
 		fmt.Fprintf(stderr, "%s is on %s; its gateway %s is %s\n", p, iface, gw, mac)
 	}
 	if probe != "" {
-		ap, err := netip.ParseAddrPort(probe)
-		if err != nil || !p.Contains(ap.Addr()) || ap.Port() == 0 {
-			fmt.Fprintf(stderr, "tsdirect: --probe %q: address:port with the address in %s\n", probe, p)
-			return exitUsage
-		}
 		if err := s.Probe(ctx, iface, ap); err != nil {
 			fmt.Fprintf(stderr, "tsdirect: the probe %s from %s failed: %v\n", ap, iface, err)
 			return exitError

@@ -42,7 +42,7 @@ func (m *machine) Connected(p netip.Prefix) (string, int, netip.Prefix, error) {
 	}
 	return m.iface, 3, c, nil
 }
-func (m *machine) DefaultGateway(int, bool) (netip.Addr, bool) { return m.gateway, m.gateway.IsValid() }
+func (m *machine) DefaultGateway(int) (netip.Addr, bool) { return m.gateway, m.gateway.IsValid() }
 func (m *machine) GatewayMAC(context.Context, string, netip.Addr) (net.HardwareAddr, error) {
 	if m.mac == nil {
 		return nil, sys.ErrNoAnswer
@@ -99,7 +99,11 @@ func TestBadFlags(t *testing.T) {
 		{[]string{"run", "--interval", "10ms"}, "at least 1s"},
 		{[]string{"check", "extra"}, `unexpected "extra"`},
 		{[]string{"learn"}, "Usage: tsdirect learn PREFIX"},
-		{[]string{"learn", "192.168.1.5/24"}, "not a network prefix"},
+		{[]string{"learn", "192.168.1.5/24"}, "not an IPv4 network prefix"},
+		{[]string{"learn", "fd00::/64"}, "not an IPv4 network prefix"},
+		{[]string{"learn", "192.168.1.0/24", "--probe", "10.0.0.1:22"}, "address in 192.168.1.0/24"},
+		{[]string{"check", "--rule-proto", "16"}, "16 is dhcp's"},
+		{[]string{"cleanup", "--rule-proto", "186"}, "186 is bgp's"},
 	} {
 		code, _, e := cmd(t, home(), c.args...)
 		if code != exitUsage || !strings.Contains(e, c.want) {
@@ -272,4 +276,76 @@ func (s *syncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+func TestRunThatCannotStartRemovesOldRules(t *testing.T) {
+	m := home()
+	m.rules[sys.Rule{Prefix: netip.MustParsePrefix("192.168.1.0/24"), Priority: 5200}] = true // a crash's
+	d := deps(m)
+	d.Signals = func(chan<- os.Signal) {}
+	var out, errb bytes.Buffer
+	code := Main([]string{"run", "--config", filepath.Join(t.TempDir(), "missing")}, &out, &errb, d)
+	if code != exitError || len(m.rules) != 0 || !strings.Contains(errb.String(), "no LANs") {
+		t.Errorf("exit %d, rules %v, stderr %q", code, m.rules, errb.String())
+	}
+}
+
+func TestRunStopsWhenEventsStop(t *testing.T) {
+	m := home()
+	d := deps(m)
+	d.Signals = func(chan<- os.Signal) {}
+	events := make(chan struct{})
+	d.Watch = func(ctx context.Context) (<-chan struct{}, error) { return events, nil }
+	var out, errb syncBuffer
+	done := make(chan int)
+	go func() { done <- Main([]string{"run", "--config", "", "--lan", homeLAN}, &out, &errb, d) }()
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(out.String(), "added rule"); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no rule added:\n%s", out.String())
+		}
+	}
+	close(events)
+	if code := <-done; code != exitError || len(m.rules) != 0 || !strings.Contains(errb.String(), "events stopped") {
+		t.Errorf("exit %d, rules %v, stderr %q", code, m.rules, errb.String())
+	}
+}
+
+func TestReload(t *testing.T) {
+	m := home()
+	conf := filepath.Join(t.TempDir(), "tsdirect.conf")
+	os.WriteFile(conf, []byte("lan 10.9.0.0/16 probe 10.9.0.1:22\n"), 0o644)
+	d := deps(m)
+	sig := make(chan chan<- os.Signal, 1)
+	d.Signals = func(c chan<- os.Signal) { sig <- c }
+	var out, errb syncBuffer
+	done := make(chan int)
+	go func() { done <- Main([]string{"run", "--config", conf}, &out, &errb, d) }()
+	c := <-sig
+	waitOut := func(s string) {
+		for deadline := time.Now().Add(5 * time.Second); !strings.Contains(out.String(), s); time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("no %q:\n%s%s", s, out.String(), errb.String())
+			}
+		}
+	}
+	waitOut("10.9.0.0/16: not on")
+	os.WriteFile(conf, []byte("lan 192.168.1.0/24 gateway-mac nope\n"), 0o644)
+	c <- syscall.SIGHUP
+	waitOut("keeping the LANs as they were")
+	os.WriteFile(conf, []byte("lan "+homeLAN+"\n"), 0o644)
+	c <- syscall.SIGHUP
+	waitOut("added rule to 192.168.1.0/24")
+	c <- syscall.SIGTERM
+	if code := <-done; code != exitOK || len(m.rules) != 0 {
+		t.Errorf("exit %d, rules %v", code, m.rules)
+	}
+}
+
+func TestCheckNotesStaleRules(t *testing.T) {
+	m := home()
+	m.rules[sys.Rule{Prefix: netip.MustParsePrefix("10.9.0.0/16"), Priority: 5200}] = true
+	_, out, _ := cmd(t, m, "check", "--config", "", "--lan", homeLAN)
+	if !strings.Contains(out, "note: rule to 10.9.0.0/16 priority 5200 is tsdirect's but no configured LAN has it") {
+		t.Errorf("out:\n%s", out)
+	}
 }

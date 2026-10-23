@@ -19,9 +19,12 @@ First release.
 - `tsdirect check` (exit code 3 when on a LAN's addresses with a fingerprint
   that does not match) and `tsdirect learn PREFIX` (prints the config line
   for the network the machine is on).
-- Reacts to netlink events within a second, and looks again every
-  `--interval`; config reload on SIGHUP; `/metrics` and `/healthz`; one log
-  line per rule change and per changed verdict.
+- Reacts to netlink events within a second (and looks twice more after a
+  change), and looks again every `--interval`; if the kernel drops events,
+  it removes its rules and exits so it is restarted. Config reload on
+  SIGHUP; `/metrics` and `/healthz`; one log line per rule change and per
+  changed verdict.
+- IPv4 LANs; Linux 4.17 or newer (checked at start).
 - A hardened systemd unit that runs it unprivileged with CAP_NET_ADMIN and
   CAP_NET_RAW.
 - Tested end to end with headscale and real tailscaled in network

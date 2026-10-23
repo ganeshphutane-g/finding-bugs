@@ -23,7 +23,7 @@ import (
 // tests).
 type System interface {
 	Connected(p netip.Prefix) (iface string, index int, connected netip.Prefix, err error)
-	DefaultGateway(index int, v6 bool) (netip.Addr, bool)
+	DefaultGateway(index int) (netip.Addr, bool)
 	GatewayMAC(ctx context.Context, iface string, addr netip.Addr) (net.HardwareAddr, error)
 	Probe(ctx context.Context, iface string, ap netip.AddrPort) error
 	Rules() ([]sys.Rule, error)
@@ -58,6 +58,7 @@ type Agent struct {
 
 	mu       sync.Mutex
 	statuses []Status
+	stale    []sys.Rule
 	errors   int
 	last     time.Time
 }
@@ -94,7 +95,7 @@ func Observe(ctx context.Context, s System, l config.LAN) (decide.Observation, e
 	if l.GatewayMAC != nil {
 		gw, ok := l.Gateway, l.Gateway.IsValid()
 		if !ok {
-			gw, ok = s.DefaultGateway(index, l.Prefix.Addr().Is6())
+			gw, ok = s.DefaultGateway(index)
 		}
 		if !ok {
 			return o, nil
@@ -182,6 +183,7 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 	}
 
 	// Removals first, so a rule moving to a new priority is never doubled.
+	var stale []sys.Rule
 	for _, r := range have {
 		if _, ok := want[r]; ok {
 			continue
@@ -193,6 +195,9 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 			} else {
 				why = statuses[i].Verdict.Reason
 			}
+		}
+		if _, ok := index[r.Prefix]; !ok || r.Priority != a.Priority {
+			stale = append(stale, r)
 		}
 		if a.DryRun {
 			continue
@@ -242,6 +247,7 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 
 	a.mu.Lock()
 	a.statuses = statuses
+	a.stale = stale
 	a.last = a.now()
 	a.errors += len(errs)
 	a.mu.Unlock()
@@ -279,6 +285,10 @@ func (a *Agent) Cleanup() (int, error) {
 // burst (Wi-Fi joining: link, address, routes) is one pass.
 var Settle = 500 * time.Millisecond
 
+// Again is how long after a change Run looks again, twice: a gateway or a
+// probe target may not answer the moment a network comes up.
+var Again = 2 * time.Second
+
 // Run reconciles now, every interval, and soon after each event, until ctx
 // ends. It does not remove the rules; the caller does (Cleanup).
 func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan struct{}) {
@@ -290,11 +300,19 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan s
 	pass()
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	var again <-chan time.Time
+	left := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-again:
+			if left--; left > 0 {
+				again = time.After(Again)
+			} else {
+				again = nil
+			}
 		case <-events:
 			settle := time.NewTimer(Settle)
 		wait:
@@ -308,6 +326,7 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan s
 					break wait
 				}
 			}
+			again, left = time.After(Again), 2
 		}
 		pass()
 	}
@@ -318,6 +337,14 @@ func (a *Agent) Statuses() []Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]Status(nil), a.statuses...)
+}
+
+// Stale is tsdirect's rules seen in the last pass that belong to no
+// configured LAN, or are at another priority (a dry run leaves them).
+func (a *Agent) Stale() []sys.Rule {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]sys.Rule(nil), a.stale...)
 }
 
 // Errors counts failed steps so far.

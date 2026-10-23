@@ -38,7 +38,7 @@ func (f *fake) Connected(p netip.Prefix) (string, int, netip.Prefix, error) {
 	return f.iface, 2, f.connected, nil
 }
 
-func (f *fake) DefaultGateway(index int, v6 bool) (netip.Addr, bool) {
+func (f *fake) DefaultGateway(index int) (netip.Addr, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.gateway, f.gateway.IsValid()
@@ -364,4 +364,47 @@ func waitFor(t *testing.T, ok func() bool) {
 		}
 	}
 	t.Fatal("timed out")
+}
+
+func TestChangingErrorTextIsNotANewVerdict(t *testing.T) {
+	f := atHome()
+	a, log := newAgent(t, f, "lan 192.168.1.0/24 probe 192.168.1.5:22")
+	for _, e := range []string{"i/o timeout", "connect: no route to host", "i/o timeout"} {
+		f.set(func(f *fake) { f.probeErr = errors.New(e) })
+		a.Reconcile(context.Background())
+	}
+	if n := strings.Count(log.String(), "probe 192.168.1.5:22 failed"); n != 1 {
+		t.Errorf("logged %d times:\n%s", n, log)
+	}
+}
+
+func TestStaleRulesInADryRun(t *testing.T) {
+	f := atHome()
+	old := sys.Rule{Prefix: netip.MustParsePrefix("10.9.0.0/16"), Priority: 5200}
+	f.rules = map[sys.Rule]bool{old: true, rule: true}
+	a, _ := newAgent(t, f, "lan 192.168.1.0/24 gateway-mac 3c:7c:3f:12:34:56")
+	a.DryRun = true
+	a.Reconcile(context.Background())
+	if st := a.Stale(); len(st) != 1 || st[0] != old {
+		t.Errorf("stale = %v", st)
+	}
+}
+
+func TestRunLooksAgainAfterAChange(t *testing.T) {
+	f := atHome()
+	f.mac = nil // the gateway does not answer yet
+	a, _ := newAgent(t, f, "lan 192.168.1.0/24 gateway-mac 3c:7c:3f:12:34:56")
+	oldS, oldA := Settle, Again
+	Settle, Again = 10*time.Millisecond, 50*time.Millisecond
+	defer func() { Settle, Again = oldS, oldA }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan struct{}, 1)
+	go a.Run(ctx, time.Hour, events)
+	waitFor(t, func() bool { return !a.LastPass().IsZero() })
+	events <- struct{}{}
+	time.Sleep(30 * time.Millisecond) // the event's own pass: still silent
+	f.set(func(f *fake) { f.mac = homeMAC })
+	// No more events: only the follow-up pass can find it.
+	waitFor(t, func() bool { st := a.Statuses(); return len(st) == 1 && st[0].Rule })
 }

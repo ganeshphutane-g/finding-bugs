@@ -1,6 +1,6 @@
 // Package sys is what tsdirect needs from Linux: connected routes, the
 // gateway's MAC (asked fresh, with ARP), probes from a given interface, its
-// own ip rules, and change events.
+// own ip rules, and change events. IPv4 only.
 package sys
 
 import (
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,25 +27,73 @@ type Linux struct {
 	Skip func(name string) bool
 }
 
-// Connected finds the interface whose directly connected route in the main
-// table covers p (the most specific such route). With none, a connected
-// route inside p is returned, so the caller can say p is only partly there.
-func (s *Linux) Connected(p netip.Prefix) (iface string, index int, connected netip.Prefix, err error) {
-	family := netlink.FAMILY_V4
-	if p.Addr().Is6() {
-		family = netlink.FAMILY_V6
+// CheckKernel refuses kernels older than 4.17: they ignore a rule's
+// protocol value, so tsdirect could not find its own rules to remove them.
+func CheckKernel() error {
+	var u unix.Utsname
+	if err := unix.Uname(&u); err != nil {
+		return err
 	}
-	routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
+	return kernelOK(unix.ByteSliceToString(u.Release[:]))
+}
+
+func kernelOK(release string) error {
+	f := strings.FieldsFunc(release, func(r rune) bool { return r < '0' || r > '9' })
+	if len(f) < 2 {
+		return fmt.Errorf("cannot read the kernel version %q", release)
+	}
+	major, _ := strconv.Atoi(f[0])
+	minor, _ := strconv.Atoi(f[1])
+	if major < 4 || major == 4 && minor < 17 {
+		return fmt.Errorf("Linux %s is too old: tsdirect needs 4.17 or newer, which keeps a rule's protocol value (how tsdirect finds its own rules)", release)
+	}
+	return nil
+}
+
+// route is a connected route, as far as Connected cares.
+type route struct {
+	dst   netip.Prefix
+	index int
+	name  string
+	// usable: the link is up and the route not marked linkdown.
+	usable bool
+}
+
+// pick chooses, among connected routes, the one covering p (the most
+// specific such); with none, the widest inside p, so the caller can say p
+// is only partly there.
+func pick(routes []route, p netip.Prefix) (route, bool) {
+	var best route
+	found, score := false, 0
+	for _, r := range routes {
+		if !r.usable || !r.dst.Overlaps(p) {
+			continue
+		}
+		s := r.dst.Bits()
+		if r.dst.Bits() > p.Bits() {
+			s = -r.dst.Bits() - 1
+		}
+		if !found || s > score {
+			best, found, score = r, true, s
+		}
+	}
+	return best, found
+}
+
+// Connected finds the interface whose directly connected route in the main
+// table covers p (see pick).
+func (s *Linux) Connected(p netip.Prefix) (iface string, index int, connected netip.Prefix, err error) {
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return "", 0, netip.Prefix{}, err
 	}
-	best := 0
+	var cands []route
 	for _, r := range routes {
-		if r.Dst == nil || r.Scope != netlink.SCOPE_LINK || r.Gw != nil || r.Type != unix.RTN_UNICAST {
+		if r.Dst == nil || r.Scope != netlink.SCOPE_LINK || r.Gw != nil || r.Type != unix.RTN_UNICAST || len(r.MultiPath) > 0 {
 			continue
 		}
 		dst, ok := prefixOf(r.Dst)
-		if !ok || dst.Addr().Is4() != p.Addr().Is4() || !dst.Overlaps(p) {
+		if !ok || !dst.Addr().Is4() {
 			continue
 		}
 		link, err := netlink.LinkByIndex(r.LinkIndex)
@@ -53,21 +102,14 @@ func (s *Linux) Connected(p netip.Prefix) (iface string, index int, connected ne
 		}
 		// Up, or unknown (interfaces that do not report it); not down, not
 		// without carrier, not dormant (Wi-Fi not yet authenticated).
-		if st := link.Attrs().OperState; st != netlink.OperUp && st != netlink.OperUnknown || r.Flags&unix.RTNH_F_LINKDOWN != 0 {
-			continue
-		}
-		// Covering routes first, the most specific of them; then the
-		// widest of those inside p.
-		score := dst.Bits()
-		if dst.Bits() > p.Bits() {
-			score = -dst.Bits() - 1
-		}
-		if iface == "" || score > best {
-			best = score
-			iface, index, connected = link.Attrs().Name, r.LinkIndex, dst
-		}
+		st := link.Attrs().OperState
+		usable := (st == netlink.OperUp || st == netlink.OperUnknown) && r.Flags&unix.RTNH_F_LINKDOWN == 0
+		cands = append(cands, route{dst: dst, index: r.LinkIndex, name: link.Attrs().Name, usable: usable})
 	}
-	return iface, index, connected, nil
+	if r, ok := pick(cands, p); ok {
+		return r.name, r.index, r.dst, nil
+	}
+	return "", 0, netip.Prefix{}, nil
 }
 
 func prefixOf(n *net.IPNet) (netip.Prefix, bool) {
@@ -75,18 +117,21 @@ func prefixOf(n *net.IPNet) (netip.Prefix, bool) {
 	if !ok {
 		return netip.Prefix{}, false
 	}
-	ones, _ := n.Mask.Size()
-	return netip.PrefixFrom(a.Unmap(), ones).Masked(), true
+	ones, bits := n.Mask.Size()
+	if bits == 0 {
+		return netip.Prefix{}, false
+	}
+	a = a.Unmap()
+	if a.Is4() && bits == 128 {
+		ones -= 96
+	}
+	return netip.PrefixFrom(a, ones).Masked(), true
 }
 
 // DefaultGateway is the main table's default gateway through the link, if
 // any.
-func (s *Linux) DefaultGateway(index int, v6 bool) (netip.Addr, bool) {
-	family := netlink.FAMILY_V4
-	if v6 {
-		family = netlink.FAMILY_V6
-	}
-	routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: unix.RT_TABLE_MAIN, LinkIndex: index}, netlink.RT_FILTER_TABLE|netlink.RT_FILTER_OIF)
+func (s *Linux) DefaultGateway(index int) (netip.Addr, bool) {
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{Table: unix.RT_TABLE_MAIN, LinkIndex: index}, netlink.RT_FILTER_TABLE|netlink.RT_FILTER_OIF)
 	if err != nil {
 		return netip.Addr{}, false
 	}
@@ -106,21 +151,20 @@ func (s *Linux) DefaultGateway(index int, v6 bool) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
-// GatewayMAC asks the address for its MAC now: an ARP request for IPv4
-// (the kernel's neighbour table can still hold the last network's entry),
-// and a reachable neighbour entry, refreshed by a probe, for IPv6.
+// GatewayMAC asks the address for its MAC now, with an ARP request: the
+// kernel's neighbour table can still hold the last network's entry.
 func (s *Linux) GatewayMAC(ctx context.Context, iface string, addr netip.Addr) (net.HardwareAddr, error) {
-	if addr.Is4() {
-		return arpAsk(ctx, iface, addr)
+	if !addr.Is4() {
+		return nil, errors.New("only IPv4 gateways can be checked")
 	}
-	return ndAsk(ctx, iface, addr)
+	return arpAsk(ctx, iface, addr)
 }
 
 // Probe makes a TCP connection to ap from iface (bound to it, so not
 // through the tailnet).
 func (s *Linux) Probe(ctx context.Context, iface string, ap netip.AddrPort) error {
 	d := net.Dialer{Timeout: 3 * time.Second, Control: bindTo(iface)}
-	c, err := d.DialContext(ctx, "tcp", ap.String())
+	c, err := d.DialContext(ctx, "tcp4", ap.String())
 	if err != nil {
 		return err
 	}
@@ -145,24 +189,20 @@ type Rule struct {
 	Priority int
 }
 
-// Rules lists tsdirect's rules (by their protocol mark).
+// Rules lists tsdirect's rules: "to PREFIX lookup main" with its protocol
+// value.
 func (s *Linux) Rules() ([]Rule, error) {
+	rules, err := netlink.RuleList(netlink.FAMILY_V4)
+	if err != nil {
+		return nil, err
+	}
 	var out []Rule
-	for _, fam := range []int{netlink.FAMILY_V4, netlink.FAMILY_V6} {
-		rules, err := netlink.RuleList(fam)
-		if fam == netlink.FAMILY_V6 && errors.Is(err, unix.EAFNOSUPPORT) {
-			continue // IPv6 is off (ipv6.disable=1): no IPv6 rules
+	for _, r := range rules {
+		if r.Protocol != s.Proto || r.Dst == nil || r.Table != unix.RT_TABLE_MAIN {
+			continue
 		}
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range rules {
-			if r.Protocol != s.Proto || r.Dst == nil {
-				continue
-			}
-			if p, ok := prefixOf(r.Dst); ok {
-				out = append(out, Rule{Prefix: p, Priority: r.Priority})
-			}
+		if p, ok := prefixOf(r.Dst); ok {
+			out = append(out, Rule{Prefix: p, Priority: r.Priority})
 		}
 	}
 	return out, nil
@@ -172,12 +212,9 @@ func (s *Linux) rule(r Rule) *netlink.Rule {
 	nr := netlink.NewRule()
 	nr.Priority = r.Priority
 	nr.Table = unix.RT_TABLE_MAIN
-	nr.Dst = &net.IPNet{IP: r.Prefix.Addr().AsSlice(), Mask: net.CIDRMask(r.Prefix.Bits(), r.Prefix.Addr().BitLen())}
+	nr.Dst = &net.IPNet{IP: r.Prefix.Addr().AsSlice(), Mask: net.CIDRMask(r.Prefix.Bits(), 32)}
 	nr.Protocol = s.Proto
 	nr.Family = netlink.FAMILY_V4
-	if r.Prefix.Addr().Is6() {
-		nr.Family = netlink.FAMILY_V6
-	}
 	return nr
 }
 
@@ -199,8 +236,9 @@ func (s *Linux) DelRule(r Rule) error {
 	return err
 }
 
-// Watch sends on the channel when addresses, routes or links
-// change, until ctx ends.
+// Watch sends on the channel when IPv4 addresses, routes or links change,
+// until ctx ends. If a subscription fails (the kernel dropped events), the
+// channel is closed: the caller can no longer rely on it.
 func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
 	out := make(chan struct{}, 1)
 	poke := func() {
@@ -209,29 +247,39 @@ func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
 		default:
 		}
 	}
-	done := ctx.Done()
-	routes := make(chan netlink.RouteUpdate, 16)
+	// The subscriptions end with ctx, or on an error; either ends Watch.
+	sub, stop := context.WithCancel(ctx)
+	done := sub.Done()
+	const rcvbuf = 1 << 20 // route bursts (Tailscale's table 52) are large
+	routes := make(chan netlink.RouteUpdate, 64)
 	addrs := make(chan netlink.AddrUpdate, 16)
 	links := make(chan netlink.LinkUpdate, 16)
-	if err := netlink.RouteSubscribe(routes, done); err != nil {
+	if err := netlink.RouteSubscribeWithOptions(routes, done, netlink.RouteSubscribeOptions{ReceiveBufferSize: rcvbuf}); err != nil {
+		stop()
 		return nil, err
 	}
-	if err := netlink.AddrSubscribe(addrs, done); err != nil {
+	if err := netlink.AddrSubscribeWithOptions(addrs, done, netlink.AddrSubscribeOptions{ReceiveBufferSize: rcvbuf}); err != nil {
+		stop()
 		return nil, err
 	}
-	if err := netlink.LinkSubscribe(links, done); err != nil {
+	if err := netlink.LinkSubscribeWithOptions(links, done, netlink.LinkSubscribeOptions{ReceiveBufferSize: rcvbuf}); err != nil {
+		stop()
 		return nil, err
 	}
 	go func() {
+		defer close(out)
+		defer stop()
 		for {
 			select {
 			case <-done:
 				return
-			case _, ok := <-routes:
+			case u, ok := <-routes:
 				if !ok {
 					return
 				}
-				poke()
+				if u.Table == unix.RT_TABLE_MAIN {
+					poke()
+				}
 			case _, ok := <-addrs:
 				if !ok {
 					return
@@ -254,7 +302,9 @@ func IsTailscale(name string) bool { return strings.HasPrefix(name, "tailscale")
 // ErrNoAnswer means the address did not answer.
 var ErrNoAnswer = errors.New("no answer")
 
-func ifaceAddr(iface string, v4 bool) (*net.Interface, netip.Addr, error) {
+// ifaceAddr is the interface and its IPv4 address on the same network as
+// peer, to ask from.
+func ifaceAddr(iface string, peer netip.Addr) (*net.Interface, netip.Addr, error) {
 	ifi, err := net.InterfaceByName(iface)
 	if err != nil {
 		return nil, netip.Addr{}, err
@@ -264,11 +314,17 @@ func ifaceAddr(iface string, v4 bool) (*net.Interface, netip.Addr, error) {
 		return nil, netip.Addr{}, err
 	}
 	for _, a := range addrs {
-		if n, ok := a.(*net.IPNet); ok {
-			if ip, ok := netip.AddrFromSlice(n.IP); ok && ip.Unmap().Is4() == v4 {
-				return ifi, ip.Unmap(), nil
-			}
+		n, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		p, ok := prefixOf(n)
+		if !ok || !p.Addr().Is4() || !p.Contains(peer) {
+			continue
+		}
+		if ip, ok := netip.AddrFromSlice(n.IP); ok {
+			return ifi, ip.Unmap(), nil
 		}
 	}
-	return nil, netip.Addr{}, fmt.Errorf("%s has no address to ask from", iface)
+	return nil, netip.Addr{}, fmt.Errorf("%s has no address on %s's network to ask from", iface, peer)
 }

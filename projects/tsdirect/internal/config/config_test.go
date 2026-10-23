@@ -16,14 +16,17 @@ func TestParse(t *testing.T) {
 	for line, want := range map[string]string{
 		"lan":                "needs a prefix",
 		"lan 192.168.1.0/24": "no fingerprint",
-		"lan 192.168.1.1/24 gateway-mac 00:11:22:33:44:55":            "host bits",
-		"lan 0.0.0.0/0 probe 1.2.3.4:5":                               "everything",
-		"lan 192.168.1.0/24 probe 10.0.0.1:22":                        "with the address in",
-		"lan 192.168.1.0/24 probe 192.168.1.1":                        "address:port",
-		"lan 192.168.1.0/24 gateway-mac nope":                         "not a MAC",
-		"lan 192.168.1.0/24 gateway 192.168.1.1 probe 192.168.1.1:22": "only used with gateway-mac",
-		"lan 192.168.1.0/24 colour blue":                              "unknown",
-		"lan 192.168.1.0/24 gateway-mac":                              "needs a value",
+		"lan 192.168.1.1/24 gateway-mac 00:11:22:33:44:55":                                         "host bits",
+		"lan 0.0.0.0/0 probe 1.2.3.4:5":                                                            "everything",
+		"lan 192.168.1.0/24 probe 10.0.0.1:22":                                                     "with the address in",
+		"lan 192.168.1.0/24 probe 192.168.1.1":                                                     "address:port",
+		"lan 192.168.1.0/24 gateway-mac nope":                                                      "not a MAC",
+		"lan 192.168.1.0/24 gateway 192.168.1.1 probe 192.168.1.1:22":                              "only used with gateway-mac",
+		"lan 192.168.1.0/24 colour blue":                                                           "unknown",
+		"lan 192.168.1.0/24 gateway-mac":                                                           "needs a value",
+		"lan fd00:1::/64 probe [fd00:1::5]:22":                                                     "only IPv4",
+		"lan 192.168.1.0/24 probe 192.168.1.5:22 probe 192.168.1.6:22":                             "probe given twice",
+		"lan 192.168.1.0/24 gateway 192.168.1.1 gateway 192.168.1.2 gateway-mac 00:11:22:33:44:55": "gateway given twice",
 	} {
 		if _, err := Parse(line, "t"); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v", line, err)
@@ -42,6 +45,9 @@ lan 10.10.0.0/16 probe 10.10.0.5:22
 	}
 	if _, err := Read(strings.NewReader("lan 10.0.0.0/8 probe 10.0.0.1:22\nlan 10.1.0.0/16 probe 10.1.0.1:22\n"), "f"); err == nil || !strings.Contains(err.Error(), "overlap") {
 		t.Fatal(err)
+	}
+	if lans, err := Read(strings.NewReader("lan\t10.0.0.0/8\tprobe 10.0.0.1:22\n"), "f"); err != nil || len(lans) != 1 {
+		t.Fatal("a tab after lan:", lans, err)
 	}
 	if _, err := Read(strings.NewReader("route 10.0.0.0/8\n"), "f"); err == nil {
 		t.Fatal("accepted")

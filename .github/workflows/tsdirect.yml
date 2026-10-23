@@ -35,11 +35,15 @@ jobs:
           done
       - name: unit tests
         run: go test -race -count=1 ./...
+      - name: unit tests on a big-endian CPU (mips, under qemu)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q qemu-user
+          GOARCH=mips GOMIPS=softfloat go test -count=1 -exec qemu-mips ./internal/...
       - name: Tailscale and headscale for the end-to-end tests
         # tailscale 1.104 needs a newer Go than tsdirect; GOTOOLCHAIN=auto
         # fetches it.
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q nftables
+          sudo apt-get install -y -q nftables
           GOTOOLCHAIN=auto GOBIN=/tmp/ts-bin go install tailscale.com/cmd/tailscale@v1.104.2 tailscale.com/cmd/tailscaled@v1.104.2
           GOTOOLCHAIN=auto GOBIN=/tmp/ts-bin go install github.com/juanfont/headscale/cmd/headscale@v0.29.5
           /tmp/ts-bin/tailscale version

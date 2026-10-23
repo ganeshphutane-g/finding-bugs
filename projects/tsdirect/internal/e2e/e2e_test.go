@@ -509,7 +509,8 @@ func TestTailscaleLab(t *testing.T) {
 		t.Fatalf("check at home: %v\n%s", err, out)
 	}
 
-	td := l.tsdirect("run", "--config", "", "--lan", lan, "--interval", "2s")
+	// A long interval: every reaction below comes from network events.
+	td := l.tsdirect("run", "--config", "", "--lan", lan, "--interval", "10m")
 	waitRule := func(t *testing.T, want int) {
 		t.Helper()
 		waitFor(t, fmt.Sprintf("%d rule(s)", want), 20*time.Second, func() bool { return l.rules() == want })
@@ -581,7 +582,7 @@ func TestTailscaleLab(t *testing.T) {
 		if n := l.rules(); n != 1 {
 			t.Fatalf("%d rules after the crash", n)
 		}
-		td = l.tsdirect("run", "--config", "", "--lan", lan, "--interval", "2s")
+		td = l.tsdirect("run", "--config", "", "--lan", lan, "--interval", "10m")
 		waitFor(t, "a pass", 20*time.Second, func() bool { return strings.Contains(td.out.String(), "192.168.77.0/24: on") })
 		time.Sleep(3 * time.Second)
 		if n := l.rules(); n != 1 || strings.Contains(td.out.String(), "added") {
@@ -595,7 +596,7 @@ func TestTailscaleLab(t *testing.T) {
 	})
 
 	t.Run("a probe fingerprint, made from the LAN interface", func(t *testing.T) {
-		td = l.tsdirect("run", "--config", "", "--lan", "192.168.77.0/24 probe 192.168.77.20:8022", "--interval", "2s")
+		td = l.tsdirect("run", "--config", "", "--lan", "192.168.77.0/24 probe 192.168.77.20:8022", "--interval", "10m")
 		waitRule(t, 1)
 		l.moveClient(true)
 		waitRule(t, 0)

@@ -52,8 +52,10 @@ version and interval are shown as they would be in an installed run.
 
 ## Install
 
-Linux only. It needs root, or CAP_NET_ADMIN (ip rules) and CAP_NET_RAW (ARP
-requests and probes bound to an interface).
+Linux 4.17 or newer (older kernels drop a rule's protocol value, which is
+how tsdirect finds its own rules; it refuses to run on them). It needs root,
+or CAP_NET_ADMIN (ip rules) and CAP_NET_RAW (ARP requests and probes bound
+to an interface).
 
 With Go 1.24 or newer:
 
@@ -115,15 +117,15 @@ lan 192.168.50.0/24 gateway 192.168.50.254 gateway-mac 00:11:22:33:44:55 probe 1
 - `gateway-mac MAC`: the main table's default gateway on the LAN's interface
   must have this MAC. tsdirect sends an ARP request each time it looks; it
   does not trust the neighbour cache, which can still hold the last
-  network's entry. For IPv6 it waits for a reachable neighbour entry after a
-  probe.
+  network's entry.
 - `gateway ADDR`: check this address's MAC instead of the default gateway's.
 - `probe HOST:PORT`: a TCP connection to it must succeed. The connection is
   bound to the LAN interface (SO_BINDTODEVICE), so it cannot reach the host
   through the tailnet. Without that, a probe from the café would succeed
   through the subnet router; the end-to-end tests check this. A refused
   connection counts as a failure, so pick a port that is open.
-- A LAN must have a fingerprint. LANs must not overlap.
+- A LAN must have a fingerprint. LANs must not overlap. IPv4 only, for
+  now.
 
 LANs can also be given with `--lan "192.168.1.0/24 gateway-mac ..."`
 (repeat), and `--config ""` reads no file. `systemctl reload tsdirect`
@@ -177,13 +179,17 @@ Then it adds or removes `ip rule to PREFIX lookup main priority 5200 proto
 connected route is.
 
 It looks on every address, route and link change (netlink events, settled
-for half a second) and every `--interval`. Tailscale's rules are its own and
+for half a second, then twice more 2 s apart, for a gateway that is slow to
+answer on a network just joined) and every `--interval`. If the kernel drops
+events, tsdirect removes its rules and exits with an error, so systemd
+restarts it, rather than miss a move to another network. Tailscale's rules are its own and
 tsdirect never touches them. tailscaled restarts delete and re-add only
 Tailscale's rules, so tsdirect's rule stays.
 
 Its rules are found by their protocol value, so tsdirect only ever removes
 its own:
-- on exit;
+- on exit, and when a start fails (a broken config): a crashed run's rule
+  does not outlive it;
 - at start, after a crash: the rule is kept, not added twice;
 - when the priority or the configured LANs change;
 - with `cleanup`.
@@ -200,19 +206,23 @@ its own:
   that needs protection on a strange network needs encryption of its own.
   Without tsdirect, the static-rule workaround fails worse: it trusts any
   network with the addresses.
-- **IPv6 is untested end to end.** The code handles IPv6 prefixes (NDP for
-  the gateway MAC), but the test environment had no IPv6.
+- **IPv4 only.** IPv6 LANs are refused in the config: the test environment
+  had no IPv6, and an untested fingerprint path is one that could fail
+  open.
 - **Linux only.** macOS and Windows route differently.
 - **Exit nodes are out of scope.** `--exit-node-allow-lan-access` already
   exists for them.
 
 ## Testing
 
-`make test` runs the unit tests. `make test-tailscale` (root) also runs the
+`make test` runs the unit tests (CI also runs them on big-endian MIPS under
+qemu). `make test-tailscale` (root) also runs the
 end-to-end tests. These start headscale and two real tailscaled (a subnet
 router and a client with `--accept-routes`) in network namespaces, on two
 LANs with the same addresses. They check:
 - the problem itself: LAN traffic goes to `tailscale0` before tsdirect runs;
+- (tsdirect runs with `--interval 10m` throughout, so every reaction below
+  comes from network events);
 - at home: the rule is added, traffic goes direct, and still works with the
   subnet router down;
 - restarting tailscaled: the rule stays;
@@ -237,7 +247,7 @@ CI runs both suites on every change.
   ([#21591](https://github.com/tailscale/tailscale/pull/21591)) adds static
   allow and deny lists for accepted routes. tsdirect could then drive the
   deny list instead of ip rules.
-- Test IPv6 end to end.
+- IPv6 LANs (NDP for the gateway MAC), tested end to end.
 - A fingerprint from the Wi-Fi network (BSSID or SSID through
   NetworkManager) as a third option.
 - The same detection for the reverse case: use an exit node automatically
