@@ -48,7 +48,12 @@ func (s *Linux) Connected(p netip.Prefix) (iface string, index int, connected ne
 			continue
 		}
 		link, err := netlink.LinkByIndex(r.LinkIndex)
-		if err != nil || link.Attrs().OperState == netlink.OperDown || s.Skip != nil && s.Skip(link.Attrs().Name) {
+		if err != nil || s.Skip != nil && s.Skip(link.Attrs().Name) {
+			continue
+		}
+		// Up, or unknown (interfaces that do not report it); not down, not
+		// without carrier, not dormant (Wi-Fi not yet authenticated).
+		if st := link.Attrs().OperState; st != netlink.OperUp && st != netlink.OperUnknown || r.Flags&unix.RTNH_F_LINKDOWN != 0 {
 			continue
 		}
 		// Covering routes first, the most specific of them; then the

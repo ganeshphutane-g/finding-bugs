@@ -35,36 +35,57 @@ type Observation struct {
 
 // Verdict is the decision.
 type Verdict struct {
-	On     bool
+	On bool
+	// Kind is which rule decided, without the details (an error's text)
+	// that Reason has: it says whether the verdict changed.
+	Kind   Kind
 	Reason string
 }
+
+// Kind is which rule decided.
+type Kind string
+
+// The kinds of verdict.
+const (
+	Direct          Kind = "direct"
+	Absent          Kind = "absent"
+	Partial         Kind = "partial"
+	NoGateway       Kind = "no gateway"
+	GatewayError    Kind = "gateway error"
+	GatewaySilent   Kind = "gateway silent"
+	GatewayMismatch Kind = "gateway mismatch"
+	ProbeUntried    Kind = "probe not tried"
+	ProbeFailed     Kind = "probe failed"
+	// Error: the machine could not be looked at (set by the caller).
+	Error Kind = "error"
+)
 
 // Decide applies the rules.
 func Decide(l config.LAN, o Observation) Verdict {
 	if o.Iface == "" {
-		return Verdict{Reason: fmt.Sprintf("not on %s (no interface has it as a connected network)", l.Prefix)}
+		return Verdict{Kind: Absent, Reason: fmt.Sprintf("not on %s (no interface has it as a connected network)", l.Prefix)}
 	}
 	if !o.Connected.IsValid() || o.Connected.Bits() > l.Prefix.Bits() || !o.Connected.Contains(l.Prefix.Addr()) {
-		return Verdict{Reason: fmt.Sprintf("%s is only partly on %s (%s): configure the network's own prefix", l.Prefix, o.Iface, o.Connected)}
+		return Verdict{Kind: Partial, Reason: fmt.Sprintf("%s is only partly on %s (%s): configure the network's own prefix", l.Prefix, o.Iface, o.Connected)}
 	}
 	if l.GatewayMAC != nil {
 		switch {
 		case !o.Gateway.IsValid():
-			return Verdict{Reason: fmt.Sprintf("on a %s network on %s, but it has no gateway to check", l.Prefix, o.Iface)}
+			return Verdict{Kind: NoGateway, Reason: fmt.Sprintf("on a %s network on %s, but it has no gateway to check", l.Prefix, o.Iface)}
 		case o.GatewayMAC == nil && o.GatewayErr != "":
-			return Verdict{Reason: fmt.Sprintf("on a %s network on %s, but its gateway %s could not be asked: %s", l.Prefix, o.Iface, o.Gateway, o.GatewayErr)}
+			return Verdict{Kind: GatewayError, Reason: fmt.Sprintf("on a %s network on %s, but its gateway %s could not be asked: %s", l.Prefix, o.Iface, o.Gateway, o.GatewayErr)}
 		case o.GatewayMAC == nil:
-			return Verdict{Reason: fmt.Sprintf("on a %s network on %s, but its gateway %s does not answer", l.Prefix, o.Iface, o.Gateway)}
+			return Verdict{Kind: GatewaySilent, Reason: fmt.Sprintf("on a %s network on %s, but its gateway %s does not answer", l.Prefix, o.Iface, o.Gateway)}
 		case !bytes.Equal(o.GatewayMAC, l.GatewayMAC):
-			return Verdict{Reason: fmt.Sprintf("on a %s network on %s, but its gateway %s is %s, not %s: another network", l.Prefix, o.Iface, o.Gateway, o.GatewayMAC, l.GatewayMAC)}
+			return Verdict{Kind: GatewayMismatch, Reason: fmt.Sprintf("on a %s network on %s, but its gateway %s is %s, not %s: another network", l.Prefix, o.Iface, o.Gateway, o.GatewayMAC, l.GatewayMAC)}
 		}
 	}
 	if l.Probe.IsValid() {
 		switch {
 		case o.ProbeOK == nil:
-			return Verdict{Reason: fmt.Sprintf("on a %s network on %s; the probe %s was not tried", l.Prefix, o.Iface, l.Probe)}
+			return Verdict{Kind: ProbeUntried, Reason: fmt.Sprintf("on a %s network on %s; the probe %s was not tried", l.Prefix, o.Iface, l.Probe)}
 		case !*o.ProbeOK:
-			return Verdict{Reason: fmt.Sprintf("on a %s network on %s, but the probe %s failed (%s): another network", l.Prefix, o.Iface, l.Probe, o.ProbeErr)}
+			return Verdict{Kind: ProbeFailed, Reason: fmt.Sprintf("on a %s network on %s, but the probe %s failed (%s): another network", l.Prefix, o.Iface, l.Probe, o.ProbeErr)}
 		}
 	}
 	what := []string{}
@@ -74,5 +95,5 @@ func Decide(l config.LAN, o Observation) Verdict {
 	if l.Probe.IsValid() {
 		what = append(what, "probe "+l.Probe.String()+" answers")
 	}
-	return Verdict{On: true, Reason: fmt.Sprintf("on %s via %s (%s)", l.Prefix, o.Iface, strings.Join(what, ", "))}
+	return Verdict{On: true, Kind: Direct, Reason: fmt.Sprintf("on %s via %s (%s)", l.Prefix, o.Iface, strings.Join(what, ", "))}
 }

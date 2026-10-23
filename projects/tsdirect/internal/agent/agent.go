@@ -158,17 +158,18 @@ func (a *Agent) Reconcile(ctx context.Context) error {
 		v := decide.Decide(l, o)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", l.Prefix, err))
-			v = decide.Verdict{Reason: fmt.Sprintf("could not look at %s: %v", l.Prefix, err)}
+			v = decide.Verdict{Kind: decide.Error, Reason: fmt.Sprintf("could not look at %s: %v", l.Prefix, err)}
 		}
 		st := Status{LAN: l, Observation: o, Verdict: v, Since: now}
+		// A verdict is the same while its kind and interface are: a
+		// failing probe's error text may differ from one pass to the next.
+		if p, ok := prev[l.Prefix]; ok && p.Verdict.Kind == v.Kind && p.Observation.Iface == o.Iface {
+			st.Since = p.Since
+		} else {
+			newReason[i] = true
+		}
 		if p, ok := prev[l.Prefix]; ok {
 			st.Changes = p.Changes
-			if p.Verdict == v {
-				st.Since = p.Since
-			}
-		}
-		if p, ok := prev[l.Prefix]; !ok || p.Verdict.Reason != v.Reason {
-			newReason[i] = true
 		}
 		if v.On {
 			want[sys.Rule{Prefix: l.Prefix, Priority: a.Priority}] = i
