@@ -349,3 +349,59 @@ func TestCheckNotesStaleRules(t *testing.T) {
 		t.Errorf("out:\n%s", out)
 	}
 }
+
+func TestRunWithBadFlagsRemovesOldRules(t *testing.T) {
+	m := home()
+	m.rules[sys.Rule{Prefix: netip.MustParsePrefix("192.168.1.0/24"), Priority: 5200}] = true
+	d := deps(m)
+	d.Signals = func(chan<- os.Signal) {}
+	var out, errb bytes.Buffer
+	if code := Main([]string{"run", "--interval", "500ms"}, &out, &errb, d); code != exitUsage || len(m.rules) != 0 {
+		t.Errorf("exit %d, rules %v, stderr %q", code, m.rules, errb.String())
+	}
+}
+
+func TestCheckCannotAskIsAnError(t *testing.T) {
+	m := &errMachine{home()}
+	var out, errb bytes.Buffer
+	d := deps(m.machine)
+	d.System = func(uint8) (agent.System, error) { return m, nil }
+	code := Main([]string{"check", "--config", "", "--lan", homeLAN}, &out, &errb, d)
+	if code != exitError || !strings.Contains(out.String(), "could not be asked") {
+		t.Errorf("exit %d:\n%s", code, out.String())
+	}
+}
+
+// errMachine cannot send ARP requests (no CAP_NET_RAW).
+type errMachine struct{ *machine }
+
+func (m *errMachine) GatewayMAC(context.Context, string, netip.Addr) (net.HardwareAddr, error) {
+	return nil, errors.New("ARP socket: operation not permitted")
+}
+
+func TestReloadToNoLANsRemovesTheRule(t *testing.T) {
+	m := home()
+	conf := filepath.Join(t.TempDir(), "tsdirect.conf")
+	os.WriteFile(conf, []byte("lan "+homeLAN+"\n"), 0o644)
+	d := deps(m)
+	sig := make(chan chan<- os.Signal, 1)
+	d.Signals = func(c chan<- os.Signal) { sig <- c }
+	var out, errb syncBuffer
+	done := make(chan int)
+	go func() { done <- Main([]string{"run", "--config", conf}, &out, &errb, d) }()
+	c := <-sig
+	waitOut := func(s string) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !strings.Contains(out.String(), s); time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("no %q:\n%s%s", s, out.String(), errb.String())
+			}
+		}
+	}
+	waitOut("added rule")
+	os.WriteFile(conf, []byte("# lan "+homeLAN+"\n"), 0o644)
+	c <- syscall.SIGHUP
+	waitOut("removed rule to 192.168.1.0/24 lookup main priority 5200: not configured")
+	c <- syscall.SIGTERM
+	<-done
+}

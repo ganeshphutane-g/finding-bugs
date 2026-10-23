@@ -27,6 +27,9 @@ type fake struct {
 	rules     map[sys.Rule]bool
 	asked     []string // what was looked at, in order
 	addErr    error
+	conflict  string
+	passes    int // Rules calls: one per pass
+	macFrom   int // the gateway answers from this pass on (0: always)
 }
 
 func (f *fake) Connected(p netip.Prefix) (string, int, netip.Prefix, error) {
@@ -34,6 +37,9 @@ func (f *fake) Connected(p netip.Prefix) (string, int, netip.Prefix, error) {
 	defer f.mu.Unlock()
 	if f.iface == "" || !f.connected.Contains(p.Addr()) {
 		return "", 0, netip.Prefix{}, nil
+	}
+	if f.conflict != "" {
+		return f.iface, 2, f.connected, &sys.ConflictError{Iface: f.iface, Index: 2, Connected: f.connected, Why: f.conflict}
 	}
 	return f.iface, 2, f.connected, nil
 }
@@ -48,6 +54,9 @@ func (f *fake) GatewayMAC(ctx context.Context, iface string, addr netip.Addr) (n
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asked = append(f.asked, "mac "+addr.String())
+	if f.passes < f.macFrom {
+		return nil, sys.ErrNoAnswer
+	}
 	if f.macErr != nil {
 		return nil, f.macErr
 	}
@@ -67,6 +76,7 @@ func (f *fake) Probe(ctx context.Context, iface string, ap netip.AddrPort) error
 func (f *fake) Rules() ([]sys.Rule, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.passes++
 	var out []sys.Rule
 	for r := range f.rules {
 		out = append(out, r)
@@ -392,19 +402,43 @@ func TestStaleRulesInADryRun(t *testing.T) {
 
 func TestRunLooksAgainAfterAChange(t *testing.T) {
 	f := atHome()
-	f.mac = nil // the gateway does not answer yet
+	f.macFrom = 3 // silent at start and in the event's own pass
 	a, _ := newAgent(t, f, "lan 192.168.1.0/24 gateway-mac 3c:7c:3f:12:34:56")
 	oldS, oldA := Settle, Again
-	Settle, Again = 10*time.Millisecond, 50*time.Millisecond
+	Settle, Again = 5*time.Millisecond, 20*time.Millisecond
 	defer func() { Settle, Again = oldS, oldA }()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	events := make(chan struct{}, 1)
 	go a.Run(ctx, time.Hour, events)
-	waitFor(t, func() bool { return !a.LastPass().IsZero() })
+	passes := func() int {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.passes
+	}
+	waitFor(t, func() bool { return passes() == 1 })
 	events <- struct{}{}
-	time.Sleep(30 * time.Millisecond) // the event's own pass: still silent
-	f.set(func(f *fake) { f.mac = homeMAC })
-	// No more events: only the follow-up pass can find it.
+	// The first follow-up pass finds the gateway.
 	waitFor(t, func() bool { st := a.Statuses(); return len(st) == 1 && st[0].Rule })
+	// Two follow-ups, then nothing until the next event or interval.
+	waitFor(t, func() bool { return passes() == 4 })
+	time.Sleep(10 * Again)
+	if n := passes(); n != 4 {
+		t.Errorf("%d passes, want 4 (start, event, two follow-ups)", n)
+	}
+}
+
+func TestConflictingRoutesAreOff(t *testing.T) {
+	f := atHome()
+	a, _ := newAgent(t, f, "lan 192.168.1.0/24 gateway-mac 3c:7c:3f:12:34:56 probe 192.168.1.5:22")
+	a.Reconcile(context.Background())
+	f.conflict = "the main table also sends 192.168.1.0/25 to wlan1, not wlan0"
+	a.Reconcile(context.Background())
+	st := a.Statuses()[0]
+	if len(f.rules) != 0 || st.Verdict.On || !strings.Contains(st.Verdict.Reason, "192.168.1.0/25 to wlan1") {
+		t.Errorf("rules %v, verdict %+v", f.rules, st.Verdict)
+	}
+	if strings.Count(strings.Join(f.asked, ","), "mac") != 1 {
+		t.Errorf("fingerprint asked with a conflict: %v", f.asked)
+	}
 }

@@ -22,6 +22,7 @@ import (
 
 	"github.com/ganeshphutane-g/tsdirect/internal/agent"
 	"github.com/ganeshphutane-g/tsdirect/internal/config"
+	"github.com/ganeshphutane-g/tsdirect/internal/decide"
 	"github.com/ganeshphutane-g/tsdirect/internal/sys"
 )
 
@@ -177,8 +178,9 @@ type options struct {
 	interval       time.Duration
 }
 
-// load reads the LANs: --lan flags, then the config file.
-func (o *options) load() ([]config.LAN, error) {
+// load reads the LANs: --lan flags, then the config file. None is an error
+// unless allowed (a reload: the user took the last one out).
+func (o *options) load(noneOK bool) ([]config.LAN, error) {
 	var lans []config.LAN
 	for _, s := range o.lans {
 		l, err := config.Parse(s, "--lan")
@@ -197,7 +199,7 @@ func (o *options) load() ([]config.LAN, error) {
 	if err := config.Check(lans); err != nil {
 		return nil, err
 	}
-	if len(lans) == 0 {
+	if len(lans) == 0 && !noneOK {
 		where := "give --lan"
 		if o.config != "" {
 			where = fmt.Sprintf("add \"lan\" lines to %s or give --lan", o.config)
@@ -211,30 +213,41 @@ func command(name string, args []string, stdout, stderr io.Writer, deps Deps) in
 	fs := newFlags(name, stderr, " [flags]")
 	o := options{proto: defaultProto}
 	fs.StringVar(&o.config, "config", DefaultConfig, "the config file (\"\" for none; a missing file is no LANs)")
-	fs.Var(&o.lans, "lan", `a LAN, as in the config: "PREFIX gateway-mac MAC" and/or "probe HOST:PORT" (repeat)`)
+	fs.Var(&o.lans, "lan", `a LAN, as in the config: "PREFIX gateway-mac MAC" and/or "probe ADDR:PORT" (repeat)`)
 	fs.Var(&o.proto, "rule-proto", "the protocol value that marks tsdirect's rules")
 	fs.IntVar(&o.priority, "priority", 5200, "the rules' priority (before Tailscale's, which start at 5210)")
 	if name == "run" {
 		fs.DurationVar(&o.interval, "interval", 15*time.Second, "how often to look, besides on network changes")
 		fs.StringVar(&o.listen, "listen", "", "serve /metrics and /healthz here, e.g. 127.0.0.1:9587 (default: off)")
 	}
+	// A run that cannot start must not leave the rules of one that
+	// crashed: the machine may no longer be on the LAN. (With --rule-proto
+	// itself unreadable, the default's.)
+	failed := func(code int) int {
+		if name == "run" {
+			if s, err := deps.System(uint8(o.proto)); err == nil {
+				stopped(&agent.Agent{Sys: s}, stderr, stderr)
+			}
+		}
+		return code
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK
 		}
-		return exitUsage
+		return failed(exitUsage)
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "tsdirect: unexpected %q\n", fs.Arg(0))
-		return exitUsage
+		return failed(exitUsage)
 	}
 	if o.priority < 1 || o.priority > 32765 {
 		fmt.Fprintf(stderr, "tsdirect: --priority %d: from 1 to 32765 (32766 is the main table's own rule)\n", o.priority)
-		return exitUsage
+		return failed(exitUsage)
 	}
 	if name == "run" && o.interval < time.Second {
 		fmt.Fprintf(stderr, "tsdirect: --interval %s: at least 1s\n", o.interval)
-		return exitUsage
+		return failed(exitUsage)
 	}
 	if o.priority >= tailscalePriority {
 		fmt.Fprintf(stderr, "tsdirect: warning: --priority %d comes after Tailscale's rules (from %d): its routes still win\n", o.priority, tailscalePriority)
@@ -251,12 +264,10 @@ func command(name string, args []string, stdout, stderr io.Writer, deps Deps) in
 		return exitError
 	}
 	a := &agent.Agent{Sys: s, Priority: o.priority, DryRun: name == "check"}
-	lans, err := o.load()
+	lans, err := o.load(false)
 	if err != nil {
 		fmt.Fprintln(stderr, "tsdirect:", err)
 		if name == "run" {
-			// A run that cannot start must not leave the rules of one
-			// that crashed: the machine may no longer be on the LAN.
 			stopped(a, stderr, stderr)
 		}
 		return exitError
@@ -288,6 +299,10 @@ func check(a *agent.Agent, stdout, stderr io.Writer) int {
 		switch {
 		case s.Verdict.On:
 			state = "direct"
+		case s.Verdict.Kind == decide.GatewayError || s.Verdict.Kind == decide.Error:
+			// Not a verdict on the network: tsdirect could not look.
+			state = "error"
+			code = exitError
 		case s.Observation.Iface != "":
 			state = "not confirmed"
 			if code == exitOK {
@@ -381,7 +396,7 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps, sig cha
 	go func() {
 		for s := range sig {
 			if s == syscall.SIGHUP {
-				lans, err := o.load()
+				lans, err := o.load(true)
 				if err != nil {
 					fmt.Fprintf(stdout, "reload: %v (keeping the LANs as they were)\n", err)
 					continue
@@ -417,7 +432,7 @@ func learn(args []string, stdout, stderr io.Writer, deps Deps) int {
 	fs := newFlags("learn", stderr, " PREFIX [flags]")
 	var gateway, probe string
 	fs.StringVar(&gateway, "gateway", "", "ask this address for its MAC instead of the default gateway (an address on the LAN that is always there)")
-	fs.StringVar(&probe, "probe", "", "also require a TCP connection to HOST:PORT on the LAN; it is tried now")
+	fs.StringVar(&probe, "probe", "", "also require a TCP connection to ADDR:PORT on the LAN; it is tried now")
 	var prefix string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		prefix, args = args[0], args[1:]
@@ -482,7 +497,7 @@ func learn(args []string, stdout, stderr io.Writer, deps Deps) int {
 	} else {
 		var ok bool
 		if gw, ok = s.DefaultGateway(index); !ok {
-			fmt.Fprintf(stderr, "tsdirect: %s has no default gateway; give --gateway ADDR (an address on the LAN that is always there) or --probe HOST:PORT\n", iface)
+			fmt.Fprintf(stderr, "tsdirect: %s has no default gateway; give --gateway ADDR (an address on the LAN that is always there) or --probe ADDR:PORT\n", iface)
 			if probe == "" {
 				return exitError
 			}

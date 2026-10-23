@@ -8,11 +8,13 @@ First release.
   configured LAN while the machine is really on it, so the LAN's traffic
   stays on the LAN instead of going through Tailscale's accepted subnet
   routes (table 52), and removes it as soon as it is not.
-- "Really on it": the prefix is a directly connected network on an interface
-  that is up and not Tailscale's, and its fingerprint matches: the gateway's
+- "Really on it": the main table's route for the prefix is a directly
+  connected one on an interface that is up and not Tailscale's, no other
+  route takes part of the prefix elsewhere, and its fingerprint matches: the gateway's
   MAC (asked fresh with ARP, not taken from the neighbour cache), a TCP probe
   made from the LAN interface (bound to it, so the tailnet cannot answer it),
-  or both. Anything unknown counts as "not this LAN".
+  or both; a probe to the machine's own address fails. Anything unknown
+  counts as "not this LAN".
 - Its rules carry their own protocol value (`--rule-proto`, 0xd1), so it
   only ever removes its own: on exit, at start after a crash, with stale
   priorities or LANs no longer configured, and with `tsdirect cleanup`.
@@ -29,4 +31,6 @@ First release.
   CAP_NET_RAW.
 - Tested end to end with headscale and real tailscaled in network
   namespaces: home LAN, a café with the same addresses, leaving, restarting
-  tailscaled, a crash, and a probe that the tailnet could have answered.
+  tailscaled, a second interface with part of the prefix, a crash, and a
+  probe that the tailnet could have answered, all with a 10-minute interval
+  so that events drive every reaction.

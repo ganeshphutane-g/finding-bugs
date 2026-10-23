@@ -82,6 +82,11 @@ func (a *Agent) logf(format string, args ...any) {
 func Observe(ctx context.Context, s System, l config.LAN) (decide.Observation, error) {
 	var o decide.Observation
 	iface, index, connected, err := s.Connected(l.Prefix)
+	var conflict *sys.ConflictError
+	if errors.As(err, &conflict) {
+		o.Iface, o.Connected, o.Conflict = conflict.Iface, conflict.Connected, conflict.Why
+		return o, nil
+	}
 	if err != nil {
 		return o, fmt.Errorf("reading routes: %w", err)
 	}

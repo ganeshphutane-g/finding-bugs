@@ -577,6 +577,21 @@ func TestTailscaleLab(t *testing.T) {
 		waitRule(t, 1)
 	})
 
+	t.Run("another interface with part of the prefix: no rule", func(t *testing.T) {
+		// With the rule, 192.168.77.128/25 would go to dum0 instead of
+		// through the tailnet: tsdirect must not add it.
+		l.in(l.cl, "ip", "link", "add", "dum0", "type", "veth", "peer", "name", "dum1")
+		l.in(l.cl, "ip", "addr", "add", "192.168.77.200/25", "dev", "dum0")
+		l.in(l.cl, "ip", "link", "set", "dum1", "up")
+		l.in(l.cl, "ip", "link", "set", "dum0", "up")
+		waitRule(t, 0)
+		if !strings.Contains(td.out.String(), "192.168.77.128/25 to dum0") {
+			t.Errorf("the log does not say why:\n%s", td.out)
+		}
+		l.in(l.cl, "ip", "link", "del", "dum0")
+		waitRule(t, 1)
+	})
+
 	t.Run("after a crash: one rule, and cleanup removes it", func(t *testing.T) {
 		td.stop(syscall.SIGKILL)
 		if n := l.rules(); n != 1 {

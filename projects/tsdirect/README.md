@@ -119,11 +119,12 @@ lan 192.168.50.0/24 gateway 192.168.50.254 gateway-mac 00:11:22:33:44:55 probe 1
   does not trust the neighbour cache, which can still hold the last
   network's entry.
 - `gateway ADDR`: check this address's MAC instead of the default gateway's.
-- `probe HOST:PORT`: a TCP connection to it must succeed. The connection is
+- `probe ADDR:PORT`: a TCP connection (an IP address, not a name) to it must succeed. The connection is
   bound to the LAN interface (SO_BINDTODEVICE), so it cannot reach the host
   through the tailnet. Without that, a probe from the café would succeed
   through the subnet router; the end-to-end tests check this. A refused
-  connection counts as a failure, so pick a port that is open.
+  connection counts as a failure, so pick a port that is open. A probe to
+  one of the machine's own addresses fails: it would answer itself.
 - A LAN must have a fingerprint. LANs must not overlap. IPv4 only, for
   now.
 
@@ -137,7 +138,7 @@ LANs can also be given with `--lan "192.168.1.0/24 gateway-mac ..."`
 |---|---|
 | `tsdirect run` | Keeps the rules right until stopped, then removes them. |
 | `tsdirect check` | One look: each LAN, its state, whether its rule is there, and why. Changes nothing. |
-| `tsdirect learn PREFIX` | Prints the `lan` line for the network the machine is on now (`--gateway ADDR`, `--probe HOST:PORT`). |
+| `tsdirect learn PREFIX` | Prints the `lan` line for the network the machine is on now (`--gateway ADDR`, `--probe ADDR:PORT`). |
 | `tsdirect cleanup` | Removes every rule tsdirect added (after a `kill -9`, or before uninstalling). |
 | `tsdirect version` | Prints the version. |
 
@@ -169,8 +170,12 @@ $ echo $?
 ## How it works
 
 For each LAN, tsdirect looks:
-1. at the main table, for a connected route covering the whole prefix, on
-   an interface that is up and not `tailscale*`;
+1. at the main table, for the route the kernel would use for the prefix:
+   it must be a connected route on an interface that is up and not
+   `tailscale*`, and no other route may take part of the prefix elsewhere
+   (the same prefix on another interface, or a more specific one, such as a
+   second interface on 192.168.1.128/25). Otherwise the rule would hand that
+   traffic to the other route;
 2. at the fingerprint, step by step. No probe is sent onto a network whose
    gateway MAC is already wrong.
 
@@ -228,6 +233,7 @@ LANs with the same addresses. They check:
 - restarting tailscaled: the rule stays;
 - at the café: no rule;
 - leaving the LAN (address gone, link down): the rule goes;
+- a second interface with part of the prefix: no rule;
 - a `kill -9`: one rule after restarting, and `cleanup` removes it;
 - a probe fingerprint: at the café, where the NAS is reachable through the
   tailnet, the probe does not count it.

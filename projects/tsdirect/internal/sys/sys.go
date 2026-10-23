@@ -50,66 +50,129 @@ func kernelOK(release string) error {
 	return nil
 }
 
-// route is a connected route, as far as Connected cares.
+// route is a main-table route, as far as Connected cares.
 type route struct {
 	dst   netip.Prefix
 	index int
 	name  string
+	// connected: directly connected (scope link, no gateway, unicast).
+	connected bool
 	// usable: the link is up and the route not marked linkdown.
 	usable bool
 }
 
-// pick chooses, among connected routes, the one covering p (the most
-// specific such); with none, the widest inside p, so the caller can say p
-// is only partly there.
-func pick(routes []route, p netip.Prefix) (route, bool) {
-	var best route
-	found, score := false, 0
+// ConflictError says the prefix is connected, but other main-table routes
+// would take some of its traffic once it is sent to the main table.
+type ConflictError struct {
+	Iface     string
+	Index     int
+	Connected netip.Prefix
+	Why       string
+}
+
+func (e *ConflictError) Error() string { return e.Why }
+
+// pick finds the route the kernel uses for p in the main table: the most
+// specific one covering p. It must be a connected route on a usable link,
+// and no other route may take part of p elsewhere: one with the same
+// prefix on another interface, or a more specific one inside p that is not
+// on the same interface (the rule would hand that traffic to it). With no
+// connected route covering p, the widest connected one inside p is
+// returned with ok false, so the caller can say p is only partly there.
+func pick(routes []route, p netip.Prefix) (best route, ok bool, conflict string) {
+	found := false
 	for _, r := range routes {
-		if !r.usable || !r.dst.Overlaps(p) {
+		if r.dst.Bits() > p.Bits() || !r.dst.Contains(p.Addr()) {
 			continue
 		}
-		s := r.dst.Bits()
-		if r.dst.Bits() > p.Bits() {
-			s = -r.dst.Bits() - 1
-		}
-		if !found || s > score {
-			best, found, score = r, true, s
+		if !found || r.dst.Bits() > best.dst.Bits() { // ties: the kernel's first
+			best, found = r, true
 		}
 	}
-	return best, found
+	if !found || !best.connected || !best.usable {
+		// Not on p (or its link is down): report a usable connected route
+		// inside p, if any, as partial.
+		var part route
+		for _, r := range routes {
+			if r.connected && r.usable && r.dst.Bits() > p.Bits() && p.Contains(r.dst.Addr()) && (part.name == "" || r.dst.Bits() < part.dst.Bits()) {
+				part = r
+			}
+		}
+		return part, false, ""
+	}
+	for _, r := range routes {
+		if r.index == best.index {
+			continue
+		}
+		if r.dst == best.dst || r.dst.Bits() > best.dst.Bits() && r.dst.Overlaps(p) {
+			return best, true, fmt.Sprintf("the main table also sends %s to %s, not %s", r.dst, r.name, best.name)
+		}
+	}
+	return best, true, ""
 }
 
 // Connected finds the interface whose directly connected route in the main
-// table covers p (see pick).
+// table covers p (see pick). A *ConflictError means it does, but the rule
+// would not keep all of p on it.
 func (s *Linux) Connected(p netip.Prefix) (iface string, index int, connected netip.Prefix, err error) {
 	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return "", 0, netip.Prefix{}, err
 	}
+	type link struct {
+		name string
+		up   bool
+	}
+	links := map[int]link{}
 	var cands []route
 	for _, r := range routes {
-		if r.Dst == nil || r.Scope != netlink.SCOPE_LINK || r.Gw != nil || r.Type != unix.RTN_UNICAST || len(r.MultiPath) > 0 {
-			continue
+		dst := netip.PrefixFrom(netip.IPv4Unspecified(), 0) // the default route
+		if r.Dst != nil {
+			var ok bool
+			if dst, ok = prefixOf(r.Dst); !ok || !dst.Addr().Is4() {
+				continue
+			}
 		}
-		dst, ok := prefixOf(r.Dst)
-		if !ok || !dst.Addr().Is4() {
-			continue
+		l, seen := links[r.LinkIndex]
+		if !seen && r.LinkIndex != 0 {
+			if nl, err := netlink.LinkByIndex(r.LinkIndex); err == nil {
+				// Up, or unknown (interfaces that do not report it); not
+				// down, not without carrier, not dormant.
+				st := nl.Attrs().OperState
+				l = link{name: nl.Attrs().Name, up: st == netlink.OperUp || st == netlink.OperUnknown}
+			}
+			links[r.LinkIndex] = l
 		}
-		link, err := netlink.LinkByIndex(r.LinkIndex)
-		if err != nil || s.Skip != nil && s.Skip(link.Attrs().Name) {
-			continue
+		name, up := l.name, l.up
+		if name == "" {
+			name = fmt.Sprintf("a %s route", routeKind(r.Type))
 		}
-		// Up, or unknown (interfaces that do not report it); not down, not
-		// without carrier, not dormant (Wi-Fi not yet authenticated).
-		st := link.Attrs().OperState
-		usable := (st == netlink.OperUp || st == netlink.OperUnknown) && r.Flags&unix.RTNH_F_LINKDOWN == 0
-		cands = append(cands, route{dst: dst, index: r.LinkIndex, name: link.Attrs().Name, usable: usable})
+		c := route{dst: dst, index: r.LinkIndex, name: name}
+		c.connected = r.Scope == netlink.SCOPE_LINK && r.Gw == nil && r.Type == unix.RTN_UNICAST && len(r.MultiPath) == 0 &&
+			r.LinkIndex != 0 && !(s.Skip != nil && s.Skip(name))
+		c.usable = up && r.Flags&unix.RTNH_F_LINKDOWN == 0
+		cands = append(cands, c)
 	}
-	if r, ok := pick(cands, p); ok {
+	r, ok, conflict := pick(cands, p)
+	switch {
+	case conflict != "":
+		return r.name, r.index, r.dst, &ConflictError{Iface: r.name, Index: r.index, Connected: r.dst, Why: conflict}
+	case ok, r.name != "":
 		return r.name, r.index, r.dst, nil
 	}
 	return "", 0, netip.Prefix{}, nil
+}
+
+func routeKind(t int) string {
+	switch t {
+	case unix.RTN_BLACKHOLE:
+		return "blackhole"
+	case unix.RTN_UNREACHABLE:
+		return "unreachable"
+	case unix.RTN_PROHIBIT:
+		return "prohibit"
+	}
+	return "multipath"
 }
 
 func prefixOf(n *net.IPNet) (netip.Prefix, bool) {
@@ -163,6 +226,14 @@ func (s *Linux) GatewayMAC(ctx context.Context, iface string, addr netip.Addr) (
 // Probe makes a TCP connection to ap from iface (bound to it, so not
 // through the tailnet).
 func (s *Linux) Probe(ctx context.Context, iface string, ap netip.AddrPort) error {
+	// A connection to one of the machine's own addresses goes through
+	// loopback whatever the binding: on a network that gave the machine the
+	// probe's address, it would answer itself.
+	if own, err := isOwn(ap.Addr()); err != nil {
+		return err
+	} else if own {
+		return fmt.Errorf("%s is this machine's own address now", ap.Addr())
+	}
 	d := net.Dialer{Timeout: 3 * time.Second, Control: bindTo(iface)}
 	c, err := d.DialContext(ctx, "tcp4", ap.String())
 	if err != nil {
@@ -183,6 +254,21 @@ func bindTo(iface string) func(network, address string, c syscall.RawConn) error
 	}
 }
 
+func isOwn(a netip.Addr) (bool, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false, err
+	}
+	for _, x := range addrs {
+		if n, ok := x.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(n.IP); ok && ip.Unmap() == a {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // Rule is one of tsdirect's rules.
 type Rule struct {
 	Prefix   netip.Prefix
@@ -193,6 +279,12 @@ type Rule struct {
 // value.
 func (s *Linux) Rules() ([]Rule, error) {
 	rules, err := netlink.RuleList(netlink.FAMILY_V4)
+	// A dump is interrupted when the rules change meanwhile (tailscaled
+	// starting): ask again.
+	for try := 0; try < 5 && errors.Is(err, netlink.ErrDumpInterrupted); try++ {
+		time.Sleep(20 * time.Millisecond)
+		rules, err = netlink.RuleList(netlink.FAMILY_V4)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -250,21 +342,34 @@ func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
 	// The subscriptions end with ctx, or on an error; either ends Watch.
 	sub, stop := context.WithCancel(ctx)
 	done := sub.Done()
-	const rcvbuf = 1 << 20 // route bursts (Tailscale's table 52) are large
+	// Route bursts (Tailscale's table 52) are large: a big buffer, beyond
+	// rmem_max when allowed (CAP_NET_ADMIN), else as big as allowed.
+	const rcvbuf = 1 << 20
 	routes := make(chan netlink.RouteUpdate, 64)
 	addrs := make(chan netlink.AddrUpdate, 16)
 	links := make(chan netlink.LinkUpdate, 16)
-	if err := netlink.RouteSubscribeWithOptions(routes, done, netlink.RouteSubscribeOptions{ReceiveBufferSize: rcvbuf}); err != nil {
-		stop()
-		return nil, err
+	subscribe := func(force bool) error {
+		if err := netlink.RouteSubscribeWithOptions(routes, done, netlink.RouteSubscribeOptions{ReceiveBufferSize: rcvbuf, ReceiveBufferForceSize: force}); err != nil {
+			return err
+		}
+		if err := netlink.AddrSubscribeWithOptions(addrs, done, netlink.AddrSubscribeOptions{ReceiveBufferSize: rcvbuf, ReceiveBufferForceSize: force}); err != nil {
+			return err
+		}
+		return netlink.LinkSubscribeWithOptions(links, done, netlink.LinkSubscribeOptions{ReceiveBufferSize: rcvbuf, ReceiveBufferForceSize: force})
 	}
-	if err := netlink.AddrSubscribeWithOptions(addrs, done, netlink.AddrSubscribeOptions{ReceiveBufferSize: rcvbuf}); err != nil {
+	if err := subscribe(true); err != nil {
+		// The subscriptions made so far end with sub; start again without
+		// forcing.
 		stop()
-		return nil, err
-	}
-	if err := netlink.LinkSubscribeWithOptions(links, done, netlink.LinkSubscribeOptions{ReceiveBufferSize: rcvbuf}); err != nil {
-		stop()
-		return nil, err
+		sub, stop = context.WithCancel(ctx)
+		done = sub.Done()
+		routes = make(chan netlink.RouteUpdate, 64)
+		addrs = make(chan netlink.AddrUpdate, 16)
+		links = make(chan netlink.LinkUpdate, 16)
+		if err := subscribe(false); err != nil {
+			stop()
+			return nil, err
+		}
 	}
 	go func() {
 		defer close(out)

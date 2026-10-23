@@ -90,9 +90,13 @@ func arpAsk(ctx context.Context, iface string, addr netip.Addr) (net.HardwareAdd
 				return nil, fmt.Errorf("ARP on %s: %w", iface, err)
 			}
 			for {
-				n, _, err := unix.Recvfrom(fd, buf, unix.MSG_DONTWAIT)
+				n, from, err := unix.Recvfrom(fd, buf, unix.MSG_DONTWAIT)
 				if err != nil {
 					break // nothing more for now
+				}
+				// Before bind, the socket hears every interface.
+				if ll, ok := from.(*unix.SockaddrLinklayer); !ok || ll.Ifindex != ifi.Index {
+					continue
 				}
 				if mac, ok := arpReplyFrom(buf[:n], addr); ok {
 					return mac, nil

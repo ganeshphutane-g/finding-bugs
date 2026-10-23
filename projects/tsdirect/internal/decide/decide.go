@@ -28,6 +28,9 @@ type Observation struct {
 	// GatewayErr: asking failed for another reason than silence (no
 	// Ethernet address, no permission).
 	GatewayErr string
+	// Conflict: other main-table routes would take part of the prefix
+	// elsewhere ("" if none).
+	Conflict string
 	// ProbeOK: the probe connected (nil: not tried).
 	ProbeOK  *bool
 	ProbeErr string
@@ -50,6 +53,7 @@ const (
 	Direct          Kind = "direct"
 	Absent          Kind = "absent"
 	Partial         Kind = "partial"
+	Conflict        Kind = "conflict"
 	NoGateway       Kind = "no gateway"
 	GatewayError    Kind = "gateway error"
 	GatewaySilent   Kind = "gateway silent"
@@ -67,6 +71,9 @@ func Decide(l config.LAN, o Observation) Verdict {
 	}
 	if !o.Connected.IsValid() || o.Connected.Bits() > l.Prefix.Bits() || !o.Connected.Contains(l.Prefix.Addr()) {
 		return Verdict{Kind: Partial, Reason: fmt.Sprintf("%s is only partly on %s (%s): configure the network's own prefix", l.Prefix, o.Iface, o.Connected)}
+	}
+	if o.Conflict != "" {
+		return Verdict{Kind: Conflict, Reason: fmt.Sprintf("on %s via %s, but %s: sending %s to the main table would not keep it all on %s", l.Prefix, o.Iface, o.Conflict, l.Prefix, o.Iface)}
 	}
 	if l.GatewayMAC != nil {
 		switch {

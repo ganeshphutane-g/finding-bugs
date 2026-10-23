@@ -66,7 +66,7 @@ hold, and removes it as soon as one does not:
    - `gateway-mac`: the neighbour entry of the main table's gateway on that
      interface (or, for a LAN without a default route, of a given address)
      has that MAC, asked with a fresh ARP request (IPv4 only in v1).
-   - `probe host:port`: a TCP connection made from that interface (bound to
+   - `probe addr:port`: a TCP connection made from that interface (bound to
      it, outside the tailnet) succeeds.
    - Both can be required. With neither, the LAN is refused. Fail closed: a
      café on the same 192.168.1.0/24 must not get the home LAN's traffic.
