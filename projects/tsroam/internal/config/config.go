@@ -5,6 +5,7 @@
 //
 //	exit-node 100.64.0.1
 //	kill-switch on
+//	allow-lan off
 //	trusted 192.168.1.0/24 gateway-mac 3c:7c:3f:12:34:56
 //	trusted 10.10.0.0/16 probe 10.10.0.5:22
 //	trusted 192.168.50.0/24 gateway 192.168.50.254 gateway-mac 00:11:22:33:44:55 probe 192.168.50.10:443
@@ -130,11 +131,14 @@ type Config struct {
 	// KillSwitch: while the exit node is meant to be on, nothing but
 	// tailnet traffic (and DHCP) leaves the machine.
 	KillSwitch bool
-	Trusted    []Network
+	// AllowLAN: on untrusted networks, the local network stays reachable
+	// directly (printers, the captive portal's own address).
+	AllowLAN bool
+	Trusted  []Network
 }
 
-// Read reads a config file: "exit-node", "kill-switch" and "trusted"
-// lines, # comments, blank lines.
+// Read reads a config file: "exit-node", "kill-switch", "allow-lan" and
+// "trusted" lines, # comments, blank lines.
 func Read(r io.Reader, name string) (Config, error) {
 	var c Config
 	sc := bufio.NewScanner(r)
@@ -169,13 +173,17 @@ func Read(r io.Reader, name string) (Config, error) {
 				return Config{}, fmt.Errorf("%s: %v", where, err)
 			}
 			c.ExitNode = f[1]
-		case "kill-switch":
+		case "kill-switch", "allow-lan":
 			if len(f) != 2 || f[1] != "on" && f[1] != "off" {
-				return Config{}, fmt.Errorf("%s: kill-switch takes on or off", where)
+				return Config{}, fmt.Errorf("%s: %s takes on or off", where, f[0])
 			}
-			c.KillSwitch = f[1] == "on"
+			if f[0] == "kill-switch" {
+				c.KillSwitch = f[1] == "on"
+			} else {
+				c.AllowLAN = f[1] == "on"
+			}
 		default:
-			return Config{}, fmt.Errorf("%s: unknown %q (use exit-node, kill-switch or trusted)", where, f[0])
+			return Config{}, fmt.Errorf("%s: unknown %q (use exit-node, kill-switch, allow-lan or trusted)", where, f[0])
 		}
 	}
 	if err := sc.Err(); err != nil {

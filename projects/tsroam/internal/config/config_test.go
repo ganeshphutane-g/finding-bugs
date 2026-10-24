@@ -38,11 +38,12 @@ func TestRead(t *testing.T) {
 	c, err := Read(strings.NewReader(`# home
 exit-node 100.64.0.1
 kill-switch on
+allow-lan on
 trusted 192.168.1.0/24 gateway-mac 3c:7c:3f:12:34:56   # the router
 
 trusted	10.10.0.0/16 probe 10.10.0.5:22
 `), "f")
-	if err != nil || c.ExitNode != "100.64.0.1" || !c.KillSwitch || len(c.Trusted) != 2 || c.Trusted[1].Source != "f:6" {
+	if err != nil || c.ExitNode != "100.64.0.1" || !c.KillSwitch || len(c.Trusted) != 2 || c.Trusted[1].Source != "f:7" || !c.AllowLAN {
 		t.Fatal(c, err)
 	}
 	for text, want := range map[string]string{
