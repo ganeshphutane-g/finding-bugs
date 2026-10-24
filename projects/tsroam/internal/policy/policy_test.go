@@ -161,3 +161,13 @@ func TestProbeOnlyAfterTheMAC(t *testing.T) {
 		t.Errorf("a failing probe: %+v", p)
 	}
 }
+
+func TestIPv6OnlyIsUntrusted(t *testing.T) {
+	// sys.Linux reports an IPv6-only default route this way: a name, no
+	// IPv4 gateway.
+	f := atHome()
+	f.def, f.gateway = "wlan0 (IPv6 only)", netip.Addr{}
+	if p := Look(context.Background(), f, trusted(t, home)); p.Kind != Untrusted {
+		t.Fatalf("%+v", p)
+	}
+}

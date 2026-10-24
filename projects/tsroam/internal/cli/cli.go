@@ -38,6 +38,10 @@ const (
 	exitUntrusted = 4
 )
 
+// probeMark is the mark on tsroam's trust probes (under killswitch.ProbeMask),
+// so the kill switch lets them out.
+const probeMark = 0x1000000
+
 // DefaultConfig is where tsroam is configured.
 const DefaultConfig = "/etc/tsroam.conf"
 
@@ -81,7 +85,7 @@ type Deps struct {
 // Main runs tsroam and returns its exit code.
 func Main(args []string, stdout, stderr io.Writer, deps Deps) int {
 	if deps.System == nil {
-		deps.System = func() policy.System { return &sys.Linux{Skip: sys.IsTailscale} }
+		deps.System = func() policy.System { return &sys.Linux{Skip: sys.IsTailscale, ProbeMark: probeMark} }
 	}
 	if deps.Tailnet == nil {
 		deps.Tailnet = func(bin, socket string) agent.Tailnet { return &tailscale.CLI{Bin: bin, Socket: socket} }
@@ -235,7 +239,7 @@ func command(name string, args []string, stdout, stderr io.Writer, deps Deps) in
 	}
 	a := &agent.Agent{
 		Sys: deps.System(), TS: deps.Tailnet(o.tailscale, o.socket), Wall: deps.Wall(), Config: c,
-		Rules:     killswitch.Rules{Tun: o.tun, Mark: o.mark.mark, Mask: o.mark.mask},
+		Rules:     killswitch.Rules{Tun: o.tun, Mark: o.mark.mark, Mask: o.mark.mask, ProbeMark: probeMark},
 		PauseFile: o.pauseFile(), DryRun: name == "check",
 	}
 	if name == "check" {
@@ -386,9 +390,10 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps) int {
 // pause runs out.
 func off(o options, stdout, stderr io.Writer, deps Deps) int {
 	c, _ := config.ReadFile(o.config) // the trusted networks, for the network's key
-	p := policy.Look(context.Background(), deps.System(), c.Trusted)
+	s := deps.System()
+	p := policy.Look(context.Background(), s, c.Trusted)
 	until := time.Now().Add(o.pauseFor)
-	if err := agent.WritePause(o.pauseFile(), agent.Pause{Key: p.Key(), Until: until}); err != nil {
+	if err := agent.WritePause(o.pauseFile(), agent.Pause{Key: agent.PauseKey(context.Background(), s, p), Until: until}); err != nil {
 		fmt.Fprintln(stderr, "tsroam:", err)
 		return exitError
 	}

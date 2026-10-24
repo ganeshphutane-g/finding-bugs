@@ -42,7 +42,7 @@ jobs:
       - name: unit tests on a big-endian CPU (mips, under qemu)
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q qemu-user
-          GOARCH=mips GOMIPS=softfloat go test -count=1 -exec qemu-mips ./internal/config ./internal/netid ./internal/policy ./internal/sys ./internal/tailscale ./internal/agent
+          GOARCH=mips GOMIPS=softfloat go test -count=1 -exec qemu-mips ./internal/...
       - name: Tailscale and headscale for the end-to-end tests
         # tailscale 1.104 needs a newer Go than tsroam; GOTOOLCHAIN=auto
         # fetches it.

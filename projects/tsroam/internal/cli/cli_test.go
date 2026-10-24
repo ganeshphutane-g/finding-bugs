@@ -61,7 +61,7 @@ type tailnet struct {
 func (t *tailnet) Status(context.Context) (tailscale.Status, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return tailscale.Status{State: "Running", ExitNodeID: t.exit, Peers: []tailscale.Peer{{ID: "1", HostName: "sr", IPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}, Online: true}}}, nil
+	return tailscale.Status{State: "Running", ExitNodeID: t.exit, Peers: []tailscale.Peer{{ID: "1", HostName: "sr", DNSName: "sr.lab.example.", IPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}, Online: true}}}, nil
 }
 func (t *tailnet) SetExitNode(_ context.Context, node string, _ bool) error {
 	t.mu.Lock()
@@ -79,6 +79,11 @@ type wall struct {
 func (w *wall) On(killswitch.Rules) error { w.mu.Lock(); w.on = true; w.mu.Unlock(); return nil }
 func (w *wall) Off() error                { w.mu.Lock(); w.on = false; w.mu.Unlock(); return nil }
 func (w *wall) Active() (bool, error)     { w.mu.Lock(); defer w.mu.Unlock(); return w.on, nil }
+func (w *wall) Intact(killswitch.Rules) (bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.on, nil
+}
 
 type world struct {
 	m    *machine

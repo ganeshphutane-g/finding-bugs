@@ -33,6 +33,8 @@ type Wall interface {
 	On(r killswitch.Rules) error
 	Off() error
 	Active() (bool, error)
+	// Intact: in place with all of r's rules.
+	Intact(r killswitch.Rules) (bool, error)
 }
 
 // State is the last pass.
@@ -74,9 +76,14 @@ type Agent struct {
 	// offPending: arrived on a trusted network; the exit node is still to
 	// be turned off (tailscaled was not running yet).
 	offPending bool
-	wallFor    *killswitch.Rules // the rules last installed
-	changes    int
-	errors     int
+	// pauseDone is the pause whose exit-node-off was done (its Until).
+	pauseDone time.Time
+	// lastAllowLAN is the allow-lan setting the exit node was last set
+	// with.
+	lastAllowLAN *bool
+	wallFor      *killswitch.Rules // the rules last installed
+	changes      int
+	errors       int
 }
 
 func (a *Agent) now() time.Time {
@@ -124,6 +131,22 @@ func WritePause(path string, p Pause) error {
 	return os.Rename(tmp, path)
 }
 
+// PauseKey names the network for a pause: its kind, interface, gateway
+// address, connected prefix and the gateway's MAC (asked fresh), so another
+// network that happens to use the same gateway address ends the pause.
+func PauseKey(ctx context.Context, s policy.System, p policy.Place) string {
+	k := p.Key()
+	if p.Gateway.IsValid() {
+		if _, _, n, err := s.Connected(netip.PrefixFrom(p.Gateway, 32)); err == nil && n.IsValid() {
+			k += " " + n.String()
+		}
+		if mac, err := s.GatewayMAC(ctx, p.Iface, p.Gateway); err == nil {
+			k += " " + mac.String()
+		}
+	}
+	return k
+}
+
 // Pass looks once and acts.
 func (a *Agent) Pass(ctx context.Context) State {
 	a.mu.Lock()
@@ -142,25 +165,32 @@ func (a *Agent) Pass(ctx context.Context) State {
 	a.mu.Unlock()
 
 	// A pause lasts while the machine stays on the network it was made on.
+	var err error
 	if a.PauseFile != "" {
 		if p, ok := ReadPause(a.PauseFile); ok {
 			switch {
 			case a.now().After(p.Until):
 				a.logf("pause over: it ran out")
 				a.removePause()
-			case p.Key != key && place.Kind != policy.Offline:
+			case place.Kind == policy.Offline:
+				a.logf("pause over: the machine went offline")
+				a.removePause()
+			case p.Key != PauseKey(ctx, a.Sys, place):
 				a.logf("pause over: the network changed")
 				a.removePause()
 			default:
 				st.Paused = true
+				st.ExitNode, err = a.exitOffForPause(ctx, cfg, p)
+				if err != nil {
+					notes = append(notes, err.Error())
+				}
 			}
 		}
 	}
 
-	var err error
 	switch {
 	case st.Paused:
-		// Nothing forced; "tsroam off" already took both down.
+		// Both down, nothing forced.
 		st.Wall, err = a.Wall.Active()
 		if err == nil && st.Wall && !a.DryRun {
 			err = a.Wall.Off()
@@ -170,9 +200,17 @@ func (a *Agent) Pass(ctx context.Context) State {
 			notes = append(notes, err.Error())
 		}
 	case place.Kind == policy.Offline:
-		// No traffic leaves anyway; keep what is in place for when it is
-		// back (the next network decides).
-		st.Wall, _ = a.Wall.Active()
+		// With the kill switch, offline is where a move to an untrusted
+		// network starts: it goes in now, before that network is up. The
+		// exit node is left as it is.
+		if cfg.KillSwitch {
+			st.Wall, err = a.wallOn(cfg, place)
+			if err != nil {
+				notes = append(notes, err.Error())
+			}
+		} else {
+			st.Wall, _ = a.Wall.Active()
+		}
 		st.ExitNode = a.exitNodeOn(ctx, cfg)
 	case place.Kind == policy.Trusted:
 		st.Wall, err = a.wallOff()
@@ -196,7 +234,7 @@ func (a *Agent) Pass(ctx context.Context) State {
 		if err != nil {
 			notes = append(notes, err.Error())
 		}
-		st.ExitNode, err = a.exitOn(ctx, cfg)
+		st.ExitNode, err = a.exitOn(ctx, cfg, place, moved)
 		if err != nil {
 			notes = append(notes, err.Error())
 		}
@@ -238,24 +276,54 @@ func (a *Agent) removePause() {
 	}
 }
 
+// wallRules is the kill switch for a place: DHCP only on its interface,
+// and its LAN with allow-lan when the LAN is a private network.
+func (a *Agent) wallRules(cfg config.Config, place policy.Place) killswitch.Rules {
+	r := a.Rules
+	if !place.Gateway.IsValid() {
+		return r // offline, or IPv6 only: no LAN interface to name
+	}
+	r.Iface = place.Iface
+	if cfg.AllowLAN {
+		if lan := a.lanOf(place); killswitch.LANOK(lan) {
+			r.LAN = lan
+		} else if lan.IsValid() {
+			a.noteOnce(fmt.Sprintf("allow-lan: %s is not a private network; it is not let through", lan))
+		}
+	}
+	return r
+}
+
+// lanOf is the connected network the place's gateway is on.
+func (a *Agent) lanOf(place policy.Place) netip.Prefix {
+	if !place.Gateway.IsValid() {
+		return netip.Prefix{}
+	}
+	if _, _, lan, err := a.Sys.Connected(netip.PrefixFrom(place.Gateway, 32)); err == nil {
+		return lan
+	}
+	return netip.Prefix{}
+}
+
 // wallOn puts the kill switch in place, or replaces it when its rules
 // change (another LAN with allow-lan); it also restores a table someone
 // removed.
 func (a *Agent) wallOn(cfg config.Config, place policy.Place) (bool, error) {
-	r := a.Rules
-	if cfg.AllowLAN && place.Gateway.IsValid() {
-		if _, _, lan, err := a.Sys.Connected(netip.PrefixFrom(place.Gateway, 32)); err == nil && lan.IsValid() {
-			r.LAN = lan
-		}
-	}
-	active, err := a.Wall.Active()
+	r := a.wallRules(cfg, place)
+	intact, err := a.Wall.Intact(r)
 	if err != nil {
 		return false, fmt.Errorf("reading the kill switch: %w", err)
+	}
+	active := intact
+	if !intact {
+		if active, err = a.Wall.Active(); err != nil {
+			return false, fmt.Errorf("reading the kill switch: %w", err)
+		}
 	}
 	a.mu.Lock()
 	same := a.wallFor != nil && *a.wallFor == r
 	a.mu.Unlock()
-	if active && same {
+	if intact && same {
 		return true, nil
 	}
 	if a.DryRun {
@@ -301,7 +369,7 @@ func (a *Agent) wallOff() (bool, error) {
 
 // exitOn makes the configured exit node the one in use, every pass: if
 // anything turned it off on an untrusted network, it comes back.
-func (a *Agent) exitOn(ctx context.Context, cfg config.Config) (bool, error) {
+func (a *Agent) exitOn(ctx context.Context, cfg config.Config, place policy.Place, arrived bool) (bool, error) {
 	s, err := a.TS.Status(ctx)
 	if err != nil {
 		return false, err
@@ -313,18 +381,32 @@ func (a *Agent) exitOn(ctx context.Context, cfg config.Config) (bool, error) {
 	if !ok {
 		return false, fmt.Errorf("exit node %q is not in the tailnet (tailscale status)", cfg.ExitNode)
 	}
-	if s.ExitNodeID == p.ID {
+	// The LAN-access setting cannot be read back (status does not show
+	// it), so it is set again on arrival and when it changes.
+	// allow-lan only for a private LAN, as the kill switch does.
+	allowLAN := cfg.AllowLAN && killswitch.LANOK(a.lanOf(place))
+	a.mu.Lock()
+	lanChanged := a.lastAllowLAN == nil || *a.lastAllowLAN != allowLAN
+	a.mu.Unlock()
+	if s.ExitNodeID == p.ID && !arrived && !lanChanged {
 		return true, nil
 	}
 	if a.DryRun {
-		return false, nil
+		return s.ExitNodeID == p.ID, nil
 	}
-	if err := a.TS.SetExitNode(ctx, cfg.ExitNode, cfg.AllowLAN); err != nil {
+	if err := a.TS.SetExitNode(ctx, cfg.ExitNode, allowLAN); err != nil {
 		return false, err
 	}
 	a.mu.Lock()
-	a.changes++
+	a.lastAllowLAN = &allowLAN
+	was := s.ExitNodeID == p.ID
+	if !was {
+		a.changes++
+	}
 	a.mu.Unlock()
+	if was {
+		return true, nil
+	}
 	note := ""
 	if !p.Online {
 		note = " (it is offline now: traffic waits for it)"
@@ -373,6 +455,39 @@ func (a *Agent) exitOffOnArrival(ctx context.Context, cfg config.Config, arrived
 	return false, nil
 }
 
+// exitOffForPause turns the exit node off once per pause: "tsroam off"
+// did it too, but a pass running at that moment may have set it again.
+func (a *Agent) exitOffForPause(ctx context.Context, cfg config.Config, p Pause) (bool, error) {
+	a.mu.Lock()
+	done := a.pauseDone.Equal(p.Until)
+	a.mu.Unlock()
+	s, err := a.TS.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	if done || a.DryRun {
+		peer, ok := s.Find(cfg.ExitNode)
+		return ok && s.ExitNodeID == peer.ID, nil
+	}
+	// Passes run one at a time: one that set the exit node just before
+	// the pause was written has finished by now.
+	if s.ExitNodeID == "" {
+		a.mu.Lock()
+		a.pauseDone = p.Until
+		a.mu.Unlock()
+		return false, nil
+	}
+	if err := a.TS.SetExitNode(ctx, "", false); err != nil {
+		return true, err
+	}
+	a.mu.Lock()
+	a.pauseDone = p.Until
+	a.changes++
+	a.mu.Unlock()
+	a.logf("exit node off (paused)")
+	return false, nil
+}
+
 func (a *Agent) exitNodeOn(ctx context.Context, cfg config.Config) bool {
 	s, err := a.TS.Status(ctx)
 	if err != nil {
@@ -407,6 +522,8 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan s
 	pass()
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	guard := time.NewTicker(Guard)
+	defer guard.Stop()
 	var again <-chan time.Time
 	left := 0
 	for {
@@ -414,6 +531,10 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan s
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-guard.C:
+			if !a.needsPass() {
+				continue
+			}
 		case <-again:
 			if left--; left > 0 {
 				again = time.After(Again)
@@ -421,6 +542,7 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan s
 				again = nil
 			}
 		case <-events:
+			a.preArm()
 			settle := time.NewTimer(Settle)
 		wait:
 			for {
@@ -437,6 +559,58 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan s
 		}
 		pass()
 	}
+}
+
+// Guard is how often Run checks, between passes, that the kill switch is
+// still intact and whether "tsroam off" has paused it.
+var Guard = 2 * time.Second
+
+// needsPass says whether a pass is due before the next interval: the kill
+// switch should be in place but is not intact (someone flushed or removed
+// it), or a pause appeared or went away.
+func (a *Agent) needsPass() bool {
+	a.mu.Lock()
+	last, cfg, r := a.state, a.Config, a.wallFor
+	a.mu.Unlock()
+	if a.PauseFile != "" {
+		_, paused := ReadPause(a.PauseFile)
+		if paused != last.Paused {
+			return true
+		}
+	}
+	if cfg.KillSwitch && last.Wall && r != nil {
+		if ok, err := a.Wall.Intact(*r); err == nil && !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// preArm puts the kill switch in at once when the default route has moved
+// (another interface or gateway, or none): the full look (ARP, probes)
+// takes a moment, and the new network may already be carrying traffic. A
+// trusted verdict takes it out again.
+func (a *Agent) preArm() {
+	a.mu.Lock()
+	cfg, last := a.Config, a.state
+	a.mu.Unlock()
+	if !cfg.KillSwitch || last.Wall || a.DryRun {
+		return
+	}
+	iface, _, gw, ok, err := a.Sys.DefaultRoute()
+	if err == nil && ok && iface == last.Place.Iface && gw == last.Place.Gateway {
+		return
+	}
+	r := a.Rules
+	if err := a.Wall.On(r); err != nil {
+		a.noteOnce(err.Error())
+		return
+	}
+	a.mu.Lock()
+	a.wallFor = &r
+	a.changes++
+	a.mu.Unlock()
+	a.logf("kill switch on: the network changed; looking at it")
 }
 
 // noteOnce logs a problem when it is new.

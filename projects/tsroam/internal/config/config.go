@@ -201,11 +201,12 @@ func CheckExitNode(v string) error {
 	return nil
 }
 
-// ReadFile reads a config file; a missing one is an empty config.
+// ReadFile reads a config file. A missing one is an error: tsroam without
+// its config would run with no kill switch and no trusted networks.
 func ReadFile(path string) (Config, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Config{}, nil
+		return Config{}, fmt.Errorf("%s does not exist (tsroam learn prints its first trusted line)", path)
 	}
 	if err != nil {
 		return Config{}, err

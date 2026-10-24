@@ -83,28 +83,34 @@ type Status struct {
 // Running says whether tailscaled is up and connected.
 func (s Status) Running() bool { return s.State == "Running" }
 
-// Find is the peer that node names: one of its IPs, its host name, or its
-// DNS name (with or without the tailnet's domain), as "tailscale set
-// --exit-node" takes it.
+// Find is the peer that node names, matched the way "tailscale set
+// --exit-node" matches it: one of its IPs, or its DNS name, with or without
+// the tailnet's domain (not its host name, which tailscale does not use).
+// A name that fits several peers is an error there, and not found here.
 func (s Status) Find(node string) (Peer, bool) {
-	ip, ipErr := netip.ParseAddr(node)
-	n := strings.ToLower(strings.TrimSuffix(node, "."))
-	for _, p := range s.Peers {
-		if ipErr == nil {
+	if ip, err := netip.ParseAddr(node); err == nil {
+		for _, p := range s.Peers {
 			for _, a := range p.IPs {
 				if a == ip {
 					return p, true
 				}
 			}
-			continue
 		}
+		return Peer{}, false
+	}
+	n := strings.ToLower(strings.TrimSuffix(node, "."))
+	var found []Peer
+	for _, p := range s.Peers {
 		dns := strings.ToLower(strings.TrimSuffix(p.DNSName, "."))
 		short, _, _ := strings.Cut(dns, ".")
-		if strings.EqualFold(p.HostName, n) || dns == n || short == n {
-			return p, true
+		if dns == n || short == n {
+			found = append(found, p)
 		}
 	}
-	return Peer{}, false
+	if len(found) != 1 {
+		return Peer{}, false
+	}
+	return found[0], true
 }
 
 // Status reads tailscaled's status.

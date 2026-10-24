@@ -63,8 +63,7 @@ trusted	10.10.0.0/16 probe 10.10.0.5:22
 }
 
 func TestReadFileMissing(t *testing.T) {
-	c, err := ReadFile(t.TempDir() + "/none")
-	if err != nil || c.ExitNode != "" || c.Trusted != nil {
-		t.Fatal(c, err)
+	if _, err := ReadFile(t.TempDir() + "/none"); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatal(err)
 	}
 }

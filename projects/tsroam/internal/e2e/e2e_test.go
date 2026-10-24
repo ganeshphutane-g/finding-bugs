@@ -149,7 +149,7 @@ type lab struct {
 	t                         *testing.T
 	x, dir                    string
 	inet, hs, gw, cafe, web   string // namespaces
-	sr, caf, cl               string
+	sr, caf, cl, ctr          string // ctr: a container behind the client
 	clPort                    string // the client's cable, at the gateway end
 	hsCfg                     string
 	srDir, clDir              string
@@ -243,8 +243,8 @@ func newLab(t *testing.T) *lab {
 	// namespaces share the file: put it back whatever happens.
 	l.resolv, _ = os.ReadFile("/etc/resolv.conf")
 	t.Cleanup(l.close)
-	names := []string{"inet", "hs", "gw", "cafe", "web", "sr", "caf", "cl"}
-	ns := []*string{&l.inet, &l.hs, &l.gw, &l.cafe, &l.web, &l.sr, &l.caf, &l.cl}
+	names := []string{"inet", "hs", "gw", "cafe", "web", "sr", "caf", "cl", "ctr"}
+	ns := []*string{&l.inet, &l.hs, &l.gw, &l.cafe, &l.web, &l.sr, &l.caf, &l.cl, &l.ctr}
 	for i, n := range ns {
 		*n = "tr" + x + names[i]
 		sh(t, "ip", "netns", "add", *n)
@@ -307,6 +307,22 @@ func newLab(t *testing.T) *lab {
 	}
 	l.start(l.web, []string{"TSROAM_E2E_LISTEN=:80"}, exe)
 	l.start(l.caf, []string{"TSROAM_E2E_LISTEN=:80"}, exe)
+	l.start(l.sr, []string{"TSROAM_E2E_LISTEN=:80"}, exe) // home's probe target
+	// A container on the client: 10.88.0.2, forwarded and masqueraded out
+	// of the LAN, as Docker does.
+	sh(t, "ip", "link", "add", "tc"+x, "netns", l.cl, "type", "veth", "peer", "name", "tk"+x, "netns", l.ctr)
+	sh(t, "ip", "-n", l.cl, "addr", "add", "10.88.0.1/24", "dev", "tc"+x)
+	sh(t, "ip", "-n", l.ctr, "addr", "add", "10.88.0.2/24", "dev", "tk"+x)
+	sh(t, "ip", "-n", l.cl, "link", "set", "tc"+x, "up")
+	sh(t, "ip", "-n", l.ctr, "link", "set", "tk"+x, "up")
+	sh(t, "ip", "-n", l.ctr, "link", "set", "lo", "up")
+	sh(t, "ip", "-n", l.ctr, "route", "add", "default", "via", "10.88.0.1")
+	sh(t, "ip", "netns", "exec", l.cl, "sysctl", "-qw", "net.ipv4.ip_forward=1")
+	for _, c := range []string{"add table ip ctrnat",
+		"add chain ip ctrnat post { type nat hook postrouting priority 100 ; }",
+		"add rule ip ctrnat post ip saddr 10.88.0.0/24 oifname lan0 masquerade"} {
+		sh(t, append([]string{"ip", "netns", "exec", l.cl, "nft"}, strings.Fields(c)...)...)
+	}
 
 	l.headscale()
 	key := l.hsCmd("preauthkeys", "create", "--user", "1", "--reusable", "--expiration", "2h")
@@ -436,7 +452,7 @@ func (l *lab) close() {
 	for i := len(l.procs) - 1; i >= 0; i-- {
 		l.procs[i].stop(syscall.SIGTERM)
 	}
-	for _, n := range []string{l.cl, l.caf, l.sr, l.web, l.cafe, l.gw, l.hs, l.inet} {
+	for _, n := range []string{l.ctr, l.cl, l.caf, l.sr, l.web, l.cafe, l.gw, l.hs, l.inet} {
 		if n != "" {
 			exec.Command("ip", "netns", "del", n).Run()
 		}
@@ -465,8 +481,10 @@ func (l *lab) moveClient(toCafe bool) {
 }
 
 // seen is the address the web host sees the client as ("" unreachable).
-func (l *lab) seen(host string) string {
-	out, err := l.try(l.cl, "timeout", "3", "bash", "-c", "exec 3<>/dev/tcp/"+host+"/80; head -1 <&3")
+func (l *lab) seen(host string) string { return l.seenFrom(l.cl, host) }
+
+func (l *lab) seenFrom(ns, host string) string {
+	out, err := l.try(ns, "timeout", "3", "bash", "-c", "exec 3<>/dev/tcp/"+host+"/80; head -1 <&3")
 	if err != nil {
 		return ""
 	}
@@ -507,9 +525,11 @@ const viaHome, viaCafe = "10.51.0.2", "10.52.0.2"
 
 func TestTailscaleLab(t *testing.T) {
 	l := newLab(t)
-	learned, err := exec.Command("ip", "netns", "exec", l.cl, tsroam(t), "learn").Output()
+	// Home is recognised by its router's MAC and a probe to the exit
+	// node's port 80, which must work with the kill switch on.
+	learned, err := exec.Command("ip", "netns", "exec", l.cl, tsroam(t), "learn", "--probe", "192.168.77.10:80").Output()
 	line := strings.TrimSpace(string(learned))
-	if err != nil || !strings.HasPrefix(line, "trusted 192.168.77.0/24 gateway-mac 02:00:5e:77:00:01") {
+	if err != nil || line != "trusted 192.168.77.0/24 gateway-mac 02:00:5e:77:00:01 probe 192.168.77.10:80" {
 		t.Fatalf("learn: %v, printed %q", err, line)
 	}
 	conf := filepath.Join(l.dir, "tsroam.conf")
@@ -529,6 +549,9 @@ func TestTailscaleLab(t *testing.T) {
 		}
 		if s := l.seen("9.9.9.2"); s != viaHome {
 			t.Errorf("the web host sees %q", s)
+		}
+		if s := l.seenFrom(l.ctr, "9.9.9.2"); s != viaHome {
+			t.Errorf("the container's traffic: the web host sees %q", s)
 		}
 		if out, err := l.tsroamCmd(append([]string{"check"}, common...)...); err != nil || !strings.Contains(out, "network:     trusted") {
 			t.Errorf("check at home: %v\n%s", err, out)
@@ -555,6 +578,12 @@ func TestTailscaleLab(t *testing.T) {
 		if s := l.seen("9.9.9.2"); s != "" {
 			t.Fatalf("with tailscaled dead the web host saw %q: a leak", s)
 		}
+		if s := l.seen("192.168.77.20"); s != "" {
+			t.Errorf("with tailscaled dead the café's host saw %q", s)
+		}
+		if s := l.seenFrom(l.ctr, "9.9.9.2"); s != "" {
+			t.Errorf("with tailscaled dead the web host saw the container as %q: forwarded traffic leaks", s)
+		}
 		l.clTS = l.tailscaledIn(l.cl, l.clDir)
 		wait(t, "the web host through the exit node again", func() bool { return l.seen("9.9.9.2") == viaHome })
 	})
@@ -579,7 +608,7 @@ func TestTailscaleLab(t *testing.T) {
 		wait(t, "the exit node back", l.exitNode)
 	})
 
-	t.Run("café: tsroam off, then home ends the pause", func(t *testing.T) {
+	t.Run("café: tsroam off", func(t *testing.T) {
 		if out, err := l.tsroamCmd(append([]string{"off"}, common...)...); err != nil {
 			t.Fatalf("off: %v %s", err, out)
 		}
@@ -590,9 +619,12 @@ func TestTailscaleLab(t *testing.T) {
 		}
 	})
 
-	t.Run("home: both off", func(t *testing.T) {
+	t.Run("home: the pause ends; both off", func(t *testing.T) {
 		l.moveClient(false)
 		wait(t, "trusted", func() bool { return strings.Count(td.out.String(), "trusted: the trusted network") >= 2 })
+		if !strings.Contains(td.out.String(), "pause over: the network changed") {
+			t.Errorf("the pause did not end:\n%s", td.out)
+		}
 		// Once more, from the café with both on, home again.
 		l.moveClient(true)
 		wait(t, "the exit node", l.exitNode)

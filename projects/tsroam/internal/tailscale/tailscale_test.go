@@ -14,7 +14,7 @@ const status = `{
   "ExitNodeStatus": {"ID": "1", "Online": true, "TailscaleIPs": ["100.64.0.1/32"]},
   "Peer": {
     "nodekey:aa": {"ID": "1", "HostName": "sr", "DNSName": "sr.lab.example.", "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"], "ExitNode": true, "ExitNodeOption": true, "Online": true},
-    "nodekey:bb": {"ID": "7", "HostName": "nas", "DNSName": "nas.lab.example.", "TailscaleIPs": ["100.64.0.7"], "Online": false}
+    "nodekey:bb": {"ID": "7", "HostName": "nas", "DNSName": "nas-1.lab.example.", "TailscaleIPs": ["100.64.0.7"], "Online": false}
   }
 }`
 
@@ -23,11 +23,19 @@ func TestParseAndFind(t *testing.T) {
 	if err != nil || !s.Running() || s.ExitNodeID != "1" || len(s.Peers) != 2 {
 		t.Fatalf("%+v %v", s, err)
 	}
-	for node, id := range map[string]string{"100.64.0.1": "1", "fd7a:115c:a1e0::1": "1", "sr": "1", "SR": "1", "sr.lab.example": "1", "sr.lab.example.": "1", "nas": "7", "100.64.0.9": "", "s": "", "lab": ""} {
+	for node, id := range map[string]string{"100.64.0.1": "1", "fd7a:115c:a1e0::1": "1", "sr": "1", "SR": "1", "sr.lab.example": "1", "sr.lab.example.": "1", "nas-1": "7", "nas": "", "100.64.0.9": "", "s": "", "lab": ""} {
 		p, ok := s.Find(node)
 		if ok != (id != "") || p.ID != id {
 			t.Errorf("%s: %+v %v, want %q", node, p, ok, id)
 		}
+	}
+	// Two peers with one name: ambiguous, as tailscale says too.
+	two, _ := parseStatus([]byte(`{"Peer": {"a": {"ID": "1", "DNSName": "exit.a.ts.net."}, "b": {"ID": "2", "DNSName": "exit.b.ts.net."}}}`))
+	if p, ok := two.Find("exit"); ok {
+		t.Errorf("an ambiguous name found %+v", p)
+	}
+	if p, ok := two.Find("exit.b.ts.net"); !ok || p.ID != "2" {
+		t.Errorf("the full name: %+v %v", p, ok)
 	}
 	if s, _ := parseStatus([]byte(`{"BackendState":"Stopped"}`)); s.Running() || s.ExitNodeID != "" {
 		t.Errorf("%+v", s)

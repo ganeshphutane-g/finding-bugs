@@ -77,7 +77,7 @@ func (t *tailnet) Status(context.Context) (tailscale.Status, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return tailscale.Status{State: t.state, ExitNodeID: t.exit, Peers: []tailscale.Peer{
-		{ID: "1", HostName: "sr", IPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}, ExitNodeOption: true, Online: true},
+		{ID: "1", HostName: "sr", DNSName: "sr.lab.example.", IPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}, ExitNodeOption: true, Online: true},
 	}}, nil
 }
 
@@ -109,16 +109,23 @@ func (t *tailnet) n() int {
 
 // wall is the kill switch.
 type wall struct {
-	mu     sync.Mutex
-	on     bool
-	rules  killswitch.Rules
-	events []string
+	mu      sync.Mutex
+	on      bool
+	flushed bool // someone emptied the table
+	rules   killswitch.Rules
+	events  []string
+}
+
+func (w *wall) Intact(r killswitch.Rules) (bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.on && !w.flushed && w.rules == r, nil
 }
 
 func (w *wall) On(r killswitch.Rules) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.on, w.rules = true, r
+	w.on, w.rules, w.flushed = true, r, false
 	w.events = append(w.events, "on")
 	return nil
 }
@@ -190,8 +197,8 @@ func TestCafe(t *testing.T) {
 	if strings.Join(r.ts.calls, ",") != "set 100.64.0.1" || r.ts.lanFlag[0] {
 		t.Errorf("calls %v %v", r.ts.calls, r.ts.lanFlag)
 	}
-	if r.w.rules.LAN.IsValid() {
-		t.Errorf("the café LAN is allowed: %+v", r.w.rules)
+	if r.w.rules.LAN.IsValid() || r.w.rules.Iface != "wlan0" {
+		t.Errorf("rules %+v", r.w.rules)
 	}
 	r.pass()
 	if r.ts.n() != 1 || len(r.w.events) != 1 {
@@ -252,15 +259,80 @@ func TestMovingHomeAndAway(t *testing.T) {
 	}
 }
 
-func TestOfflineChangesNothing(t *testing.T) {
+func TestOfflineLeavesTheExitNode(t *testing.T) {
 	r := newRig(t, cafe(), conf)
 	r.pass()
 	r.m.set(func(m *machine) { m.iface = "" })
-	if st := r.pass(); st.Place.Kind != "offline" || !st.Wall {
+	if st := r.pass(); st.Place.Kind != "offline" || !st.Wall || !st.ExitNode {
 		t.Fatalf("%+v", st)
 	}
-	if r.ts.n() != 1 || len(r.w.events) != 1 {
-		t.Errorf("%v %v", r.ts.calls, r.w.events)
+	if r.ts.n() != 1 {
+		t.Errorf("%v", r.ts.calls)
+	}
+}
+
+func TestOfflineFromHomeArmsTheKillSwitch(t *testing.T) {
+	// Leaving home: the kill switch goes in while offline, before the next
+	// network is up.
+	r := newRig(t, home(), conf)
+	r.pass()
+	r.m.set(func(m *machine) { m.iface = "" })
+	if st := r.pass(); !st.Wall || st.ExitNode {
+		t.Fatalf("%+v", st)
+	}
+	if r.w.rules.Iface != "" || r.w.rules.LAN.IsValid() {
+		t.Errorf("offline rules %+v", r.w.rules)
+	}
+	r.m.set(func(m *machine) { m.iface = "wlan0" })
+	if st := r.pass(); st.Wall {
+		t.Fatalf("home again: %+v", st)
+	}
+	r = newRig(t, home(), "exit-node sr\n"+"trusted 192.168.1.0/24 gateway-mac 3c:7c:3f:12:34:56\n")
+	r.pass()
+	r.m.set(func(m *machine) { m.iface = "" })
+	if st := r.pass(); st.Wall {
+		t.Errorf("no kill switch configured, but it went on: %+v", st)
+	}
+}
+
+func TestPreArm(t *testing.T) {
+	r := newRig(t, home(), conf)
+	r.pass()
+	// An event that did not move the default route (a DHCP renewal).
+	r.a.preArm()
+	if r.w.on {
+		t.Fatal("armed without a move")
+	}
+	// The default route moves to another gateway: armed before any look.
+	r.m.set(func(m *machine) { m.gateway = netip.MustParseAddr("192.168.1.254") })
+	r.a.preArm()
+	if !r.w.on || !strings.Contains(r.log.String(), "kill switch on: the network changed") {
+		t.Fatalf("not armed:\n%s", r.log)
+	}
+}
+
+func TestGuardRepairsAFlushedTable(t *testing.T) {
+	r := newRig(t, cafe(), conf)
+	r.pass()
+	if r.a.needsPass() {
+		t.Fatal("a pass is due with nothing changed")
+	}
+	r.w.mu.Lock()
+	r.w.flushed = true
+	r.w.mu.Unlock()
+	if !r.a.needsPass() {
+		t.Fatal("a flushed table goes unnoticed")
+	}
+	if st := r.pass(); !st.Wall || !strings.Contains(r.log.String(), "kill switch updated") {
+		t.Errorf("%+v\n%s", st, r.log)
+	}
+	if ok, _ := r.w.Intact(r.w.rules); !ok {
+		t.Error("not repaired")
+	}
+	// A pause appearing is noticed too.
+	WritePause(r.a.PauseFile, Pause{Key: "x", Until: r.now.Add(time.Hour)})
+	if !r.a.needsPass() {
+		t.Error("a new pause goes unnoticed")
 	}
 }
 
@@ -295,7 +367,7 @@ func TestPause(t *testing.T) {
 	// "tsroam off" at the café: both off, a pause for this network.
 	r.w.Off()
 	r.ts.SetExitNode(context.Background(), "", false)
-	if err := WritePause(r.a.PauseFile, Pause{Key: r.a.Last().Place.Key(), Until: r.now.Add(10 * time.Minute)}); err != nil {
+	if err := WritePause(r.a.PauseFile, Pause{Key: PauseKey(context.Background(), r.m, r.a.Last().Place), Until: r.now.Add(10 * time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	calls := r.ts.n()
@@ -311,10 +383,66 @@ func TestPause(t *testing.T) {
 		t.Error("the pause file is still there")
 	}
 	// A pause ends when the network changes.
-	WritePause(r.a.PauseFile, Pause{Key: r.a.Last().Place.Key(), Until: r.now.Add(time.Hour)})
-	r.m.set(func(m *machine) { m.gateway = netip.MustParseAddr("192.168.1.254") })
+	key := PauseKey(context.Background(), r.m, r.a.Last().Place)
+	WritePause(r.a.PauseFile, Pause{Key: key, Until: r.now.Add(time.Hour)})
+	if st := r.pass(); !st.Paused {
+		t.Fatal("not paused")
+	}
+	// Another café, the same router address and prefix, another MAC.
+	r.m.set(func(m *machine) { m.mac = net.HardwareAddr{2, 0, 0, 0, 0, 0x42} })
 	if st := r.pass(); st.Paused || !strings.Contains(r.log.String(), "pause over: the network changed") {
 		t.Fatalf("%+v\n%s", st, r.log)
+	}
+	// Going offline ends a pause too (a suspend, a new network next).
+	WritePause(r.a.PauseFile, Pause{Key: PauseKey(context.Background(), r.m, r.a.Last().Place), Until: r.now.Add(time.Hour)})
+	r.m.set(func(m *machine) { m.iface = "" })
+	if st := r.pass(); st.Paused || !strings.Contains(r.log.String(), "pause over: the machine went offline") {
+		t.Fatalf("%+v\n%s", st, r.log)
+	}
+}
+
+func TestPauseUndoesARacingPass(t *testing.T) {
+	r := newRig(t, cafe(), conf)
+	r.pass()
+	// "tsroam off" wrote the pause, but a pass running then set the exit
+	// node again.
+	WritePause(r.a.PauseFile, Pause{Key: PauseKey(context.Background(), r.m, r.a.Last().Place), Until: r.now.Add(time.Hour)})
+	if st := r.pass(); !st.Paused || st.ExitNode || st.Wall {
+		t.Fatalf("%+v %v", st, r.ts.calls)
+	}
+	// Once per pause: the user may pick an exit node while paused.
+	r.ts.set(func(t *tailnet) { t.exit = "1" })
+	n := r.ts.n()
+	r.pass()
+	if r.ts.n() != n {
+		t.Errorf("the exit node was turned off twice in one pause: %v", r.ts.calls)
+	}
+}
+
+func TestAllowLANOnlyForPrivateNetworks(t *testing.T) {
+	r := newRig(t, cafe(), conf+"allow-lan on\n")
+	r.m.set(func(m *machine) {
+		m.net, m.gateway = netip.MustParsePrefix("0.0.0.0/1"), netip.MustParseAddr("1.2.3.4")
+	})
+	st := r.pass()
+	if r.w.rules.LAN.IsValid() || r.ts.lanFlag[0] || !strings.Contains(r.log.String(), "not a private network") {
+		t.Fatalf("%+v %+v %v\n%s", st, r.w.rules, r.ts.lanFlag, r.log)
+	}
+}
+
+func TestExitNodeSetAgainOnArrival(t *testing.T) {
+	// The LAN-access setting cannot be read back: it is set on each
+	// arrival on an untrusted network, even with the exit node on.
+	r := newRig(t, cafe(), conf)
+	r.pass()
+	r.m.set(func(m *machine) { m.gateway = netip.MustParseAddr("192.168.1.254") })
+	r.pass()
+	if r.ts.n() != 2 {
+		t.Errorf("calls %v", r.ts.calls)
+	}
+	r.pass()
+	if r.ts.n() != 2 {
+		t.Errorf("set again without a move: %v", r.ts.calls)
 	}
 }
 

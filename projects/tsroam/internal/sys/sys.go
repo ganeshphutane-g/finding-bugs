@@ -22,6 +22,9 @@ import (
 type Linux struct {
 	// Skip says which interfaces are tunnels, not LANs (tailscale0).
 	Skip func(name string) bool
+	// ProbeMark, if not zero, is set on probes (SO_MARK), so the kill
+	// switch lets them out.
+	ProbeMark uint32
 }
 
 // route is a main-table route, as far as Connected cares.
@@ -195,6 +198,12 @@ func (s *Linux) DefaultRoute() (iface string, index int, gateway netip.Addr, ok 
 		}
 	}
 	if best == nil {
+		// No IPv4 default route; an IPv6 one is still a network traffic
+		// leaves on (IPv6-only, NAT64). Its name says where; there is no
+		// IPv4 gateway to fingerprint, so it cannot be a trusted one.
+		if name, ok := s.defaultRoute6(); ok {
+			return name, 0, netip.Addr{}, true, nil
+		}
 		return "", 0, netip.Addr{}, false, nil
 	}
 	if len(best.MultiPath) > 0 || best.LinkIndex == 0 {
@@ -208,6 +217,31 @@ func (s *Linux) DefaultRoute() (iface string, index int, gateway netip.Addr, ok 
 		gateway = a.Unmap()
 	}
 	return l.Attrs().Name, best.LinkIndex, gateway, true, nil
+}
+
+func (s *Linux) defaultRoute6() (string, bool) {
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_V6, &netlink.Route{Table: unix.RT_TABLE_MAIN}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return "", false
+	}
+	for _, r := range routes {
+		if r.Dst != nil && !isDefault(r.Dst) || r.Type != unix.RTN_UNICAST {
+			continue
+		}
+		name := "a multipath route"
+		if r.LinkIndex != 0 {
+			l, err := netlink.LinkByIndex(r.LinkIndex)
+			if err != nil {
+				continue
+			}
+			if s.Skip != nil && s.Skip(l.Attrs().Name) {
+				continue
+			}
+			name = l.Attrs().Name
+		}
+		return name + " (IPv6 only)", true
+	}
+	return "", false
 }
 
 // DefaultGateway is the main table's default gateway through the link, if
@@ -253,7 +287,7 @@ func (s *Linux) Probe(ctx context.Context, iface string, ap netip.AddrPort) erro
 	} else if own {
 		return fmt.Errorf("%s is this machine's own address now", ap.Addr())
 	}
-	d := net.Dialer{Timeout: 3 * time.Second, Control: bindTo(iface)}
+	d := net.Dialer{Timeout: 3 * time.Second, Control: bindTo(iface, s.ProbeMark)}
 	c, err := d.DialContext(ctx, "tcp4", ap.String())
 	if err != nil {
 		return err
@@ -261,11 +295,14 @@ func (s *Linux) Probe(ctx context.Context, iface string, ap netip.AddrPort) erro
 	return c.Close()
 }
 
-func bindTo(iface string) func(network, address string, c syscall.RawConn) error {
+func bindTo(iface string, mark uint32) func(network, address string, c syscall.RawConn) error {
 	return func(network, address string, c syscall.RawConn) error {
 		var serr error
 		if err := c.Control(func(fd uintptr) {
 			serr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, iface)
+			if serr == nil && mark != 0 {
+				serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
+			}
 		}); err != nil {
 			return err
 		}
