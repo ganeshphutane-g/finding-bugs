@@ -3,6 +3,100 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 17 — 2026-10-25 IST
+
+One research pass covering two things:
+- **Round 16's runners-up again:** composeremote, Compose watch for
+  Podman, zfsunlock, and ZFS to S3.
+- **Trackers not scanned before:** gluetun, Authelia, Pangolin, Beszel,
+  Dokploy, wg-easy, ntfy, rest-server, Grafana Alloy, Technitium, Incus, and
+  more of docker/compose.
+
+"verified" means read from a GitHub search result or the page itself on
+2026-10-24; "web" means a web-search summary only.
+
+### Chosen (provisional): host-side hooks for Compose through provider services (project #16)
+
+Since v2.36.0 (web), Compose has "provider services". With
+`provider: type: <binary>`, Compose runs that binary on the machine Compose
+runs on:
+- `<binary> compose --project-name P up --opt=val <service>` when the
+  project comes up;
+- `down` at teardown, and `stop` in reverse dependency order.
+
+Services that depend on the provider start after it, and they get the
+values it reports with `setenv`.
+
+The tool is one Go binary that offers declarative host actions:
+- run a host command before the dependent services start, and another on
+  `down`;
+- create bind-mount directories with an owner and mode;
+- later, `upload` local files into a named volume. That covers
+  composeremote (compose#11867).
+
+**Demand:**
+- docker/compose#6736 "Hooks to run scripts on host before starting any
+  containers": 225 👍 and 31 ❤️, 2019-05 to 2023-04, closed as "completed".
+  The researcher reads the closing comment as declining host hooks; that
+  comment has 163 👎 (seen by the researcher). The 👍 count and dates are
+  verified.
+- #1341 "Hooks/Plugins support to run arbitrary scripts": 90 👍, closed in
+  2017 (verified).
+- #468 "Add pre/post command option": 35 👍 (seen by the researcher).
+- #2781, bind-mount directories created as root: 11 👍 (seen).
+- Docker forum threads (web).
+
+**Gap:**
+- Compose's own `post_start`/`pre_start` hooks run inside containers.
+- People use a Makefile or a wrapper script, which Portainer, Dockge and
+  plain `docker compose` bypass.
+- The provider plugins that exist do other jobs: docker-vals (38★, secrets)
+  and a few 0★ ones. No generic host-hook provider was found.
+
+**Scores:** 4/4/5/4/5 = **22**, as scored by the researcher.
+
+**Check before the spec:**
+- the provider protocol in today's Compose: whether a provider that prints
+  nothing is accepted, the working directory and project directory, and
+  whether DOCKER_HOST and the context reach the provider (needed for
+  `upload`);
+- that the name is free (`composehook` is taken by an archived 18★ tool);
+- what UIs that bundle their own Compose do.
+
+**Risks:**
+- The provider protocol is young and may change.
+- Hooks fire only on `up` and `down`, not when dockerd restarts containers.
+- Host commands driven from a compose file look bad security-wise
+  (mitigated: the binary must be installed by the user).
+
+### Runners-up
+
+- **composeremote:** fold it into the pick as its `upload` action.
+  - Demand: compose#11867 is the top-voted open issue in docker/compose
+    (30 👍).
+  - Every upstream PR was closed unmerged.
+  - mutagen-compose is frozen on Compose v2.23.3, and its v0.18 is the last
+    series (seen by the researcher).
+- **zfsunlock:** 18. New finding: ZFS works on GitHub's ubuntu-latest
+  runners (zfsutils-linux + modprobe; several repos' CI, seen by the
+  researcher). Unattended unlock at boot still needs VM tests, and a bug
+  can lock people out of their data.
+- **WireGuard on-demand for Linux (wgroam):** 19. Its counted demand is weak
+  (netbird#5278 4 👍), but it would reuse tsroam's code.
+
+### Rejected in round 17
+
+- **Compose watch for Podman:** `podman compose` delegates to the Docker
+  Compose binary when it is installed, and posts report that `watch` works
+  against podman.sock (web). Check in 10 minutes before ever reconsidering.
+- **ZFS to S3 raw incrementals:** no counted demand.
+- **A gluetun hostname endpoint:** the maintainer is working on it.
+- **Reloading containers when config changes:** Compose watch
+  `sync+restart` does this.
+- **Docker MTU behind an exit node:** a possible tsroam feature (MSS clamp).
+- **Host access to Docker's internal DNS:** the same as round 8's runner-up.
+- **podman-compose `configs:`:** use Docker Compose v2 on the Podman socket.
+
 ## Research round 16 — 2026-10-24 IST
 
 One research pass over trackers not scanned before:

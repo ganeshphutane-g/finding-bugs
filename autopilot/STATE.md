@@ -1,27 +1,19 @@
 # State
 
-Current project: #15, tsroam (Tailscale exit node on untrusted networks, with a
-kill switch; Linux). Phase: build. Spec: projects/tsroam/SPEC.md.
+Current project: none (tsroam, #15, is finished; see Finished projects).
+Phase: research (round 17 recorded; checks before the spec next).
 
 ## Next step
 
-tsroam milestones 1–3 are done, and most of 4:
-- README, CHANGELOG and the systemd unit are written; the unit was
-  verified with only CAP_NET_ADMIN and CAP_NET_RAW;
-- review 1 found 13 issues, all fixed. The worst were forwarded traffic not
-  covered and a leak window on network moves;
-- CI is green through run 4.
+Project #16, provisional pick in IDEAS round 17: host-side hooks for Compose
+through its provider services (compose#6736, 225 👍). Before the spec, do
+that entry's "Check before the spec" list:
+- in a lab with a current Compose, test the provider protocol: no output,
+  the working directory, DOCKER_HOST and the context;
+- choose a free name;
+- decide whether `upload` (composeremote) is v1 or phase 2.
 
-Remaining:
-- review 2 (it was running at the end of run 14's last push), and fix its
-  findings;
-- confirm CI is green;
-- set tsroam to finished in STATE (tag `tsroam/v1.0.0` is an owner step);
-- research round 17.
-
-Run the tsroam e2e with `PATH=/tmp/ts-bin:$PATH TSROAM_INTEGRATION=1
-TSROAM_BIN=/tmp/tsroam` (9 scenarios, about 45 s). `tailscale up` with any
-flag fails once an exit node is set: use a bare `tailscale up`.
+Then write SPEC.md and build.
 
 Lab facts (2026-10-24):
 - `GOBIN=/tmp/ts-bin GOTOOLCHAIN=auto go install
@@ -401,6 +393,52 @@ Actions as codeberg.org/forgejo/forgejo:16.
       `--accept-routes`, `sudo tsdirect learn <home prefix>`, `check` at home
       and on another network, then the service for a few days.
 
+15. **tsroam** (projects/tsroam, v1.0.0 at commit 3905284). Uses a
+    Tailscale exit node on Linux whenever the machine is not on a trusted
+    network, with an optional nftables kill switch (tailscale#3302, 127 👍;
+    #10773, 23 👍).
+    - **How:** trusted networks are recognised with tsdirect's fail-closed
+      fingerprints (fresh ARP for the gateway MAC; a bound probe that
+      carries its own mark), on the default route's interface. On an
+      untrusted network:
+      - `tailscale set --exit-node`, enforced every pass;
+      - the kill switch: `inet tsroam`, postrouting, policy drop. It
+        admits only the tailnet, tailscaled's mark (but not its DNS off
+        the tailnet), tsroam's probes, the machine's DHCP to
+        broadcast/LAN, and IPv6 ND on the link. Forwarded traffic may use
+        only the tailnet. Its rules carry integrity tags.
+    - **When the switch goes in or stays:**
+      - it goes in at start, on the default route's link changes or
+        route moves, and while offline, before the network is looked at;
+      - it is checked every 2 s;
+      - it stays on a crash, and on a stop off trusted networks.
+    - **Other features:** `off` (for a captive portal: a pause until the
+      network, keyed by gateway MAC and prefix, changes, or it runs out),
+      `check`, `learn`, `cleanup`, /metrics, SIGHUP, and a systemd unit
+      before network-pre with only CAP_NET_ADMIN and CAP_NET_RAW
+      (verified).
+    - **Reviews:** two full reviews, 24 findings, all fixed. The worst were
+      forwarded traffic, a leak window on network moves (including a café
+      with home's gateway address), DHCP-port exfiltration, tailscaled's
+      DNS through its mark, a probe blocked by the switch, and pause
+      expiry.
+    - **Tests:**
+      - unit tests, with the kill switch tested with real traffic in
+        network namespaces (local, forwarded, marks, DHCP ports, a
+        hand-replaced rule);
+      - big-endian MIPS under qemu;
+      - end to end with headscale and tailscaled: 10 scenarios with
+        `--interval 10m` (home, café, tailscaled killed and down, re-set,
+        a flushed ruleset, off, home again with a probe under the switch,
+        a crash, stops);
+      - mutation checks for the mark rule, the probe mark and the
+        postrouting hook.
+    - **Owner checks before going public:**
+      - the README;
+      - on a laptop: `learn` at home, `check` at home and away, then the
+        service with `kill-switch on` for a few days;
+      - `tsroam off` behind a real captive portal.
+
 ## Blockers for the owner
 
 - The finding-bugs repo itself is PUBLIC (seen 2026-10-15). Everything in it
@@ -428,6 +466,6 @@ Actions as codeberg.org/forgejo/forgejo:16.
   `docker-edit/v1.0.0` (cdc7019), `pushprobe/v1.0.0` (0e881d2),
   `alertlines/v1.0.0` (5e2f87c), `xffdns/v1.0.0` (e52932e), `pullwhy/v1.0.0`
   (90c49bd), `packparity/v1.0.0` (89cf92f), `wgresolve/v1.0.0` (27e1655)
-  and `tsdirect/v1.0.0` (b56a34c),
+  `tsdirect/v1.0.0` (b56a34c) and `tsroam/v1.0.0` (3905284),
   plus `docker-mop/v1.0.0`
   (50c1a1e) if not yet done.

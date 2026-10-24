@@ -2,6 +2,54 @@
 
 Newest first.
 
+## 2026-10-25 (IST) — run 14
+
+- **Project #15 tsroam: from research checks to finished in this run.**
+  - **Checks, in a lab with headscale, an exit node and a client:**
+    - kafu-densha/tsexit is only a manual picker, so the pick has no
+      competitor; it was renamed tsroam;
+    - `tailscale set --exit-node` returns in about 20 ms;
+    - exit nodes forward only to public addresses;
+    - `kill -9 tailscaled` and `tailscale down` leak traffic straight out;
+    - an nftables chain that admits tailscaled's mark is a working kill
+      switch.
+  - **Built:**
+    - config, network identity (copied from tsdirect), and the
+      trusted/untrusted decision;
+    - the tailscale CLI driver and the nftables kill switch (google/
+      nftables);
+    - the agent;
+    - `run`, `check`, `learn`, `off`, `cleanup` and metrics;
+    - a systemd unit, the README, CHANGELOG and CI.
+  - **E2E:** headscale and real tailscaled, home and café LANs with the same
+    addresses, a public web host that reports the source address, and a
+    container. There are 10 scenarios, all with `--interval 10m`, green
+    locally and in CI.
+  - **Two full reviews**, 24 findings, all fixed. The most important:
+    - the kill switch moved to postrouting with policy drop: forwarded
+      traffic may use only the tailnet;
+    - it is armed at start, on the default route's link changes (a café
+      can share home's gateway address) and while offline;
+    - DHCP is only from the machine, to broadcast or the LAN;
+    - tailscaled's DNS off the tailnet is dropped;
+    - the probe carries a mark;
+    - rules carry integrity tags and are checked every 2 s;
+    - the switch stays on a stop off trusted networks;
+    - pause expiry and a stale trusted verdict are handled.
+  - Mutation checks fail the tests for the mark rule, the probe mark and the
+    postrouting hook.
+- **Research round 17:**
+  - **Provisional pick:** host-side hooks for Compose through its provider
+    services (compose#6736, 225 👍).
+  - composeremote folds into it as an `upload` action.
+  - ZFS works on GitHub runners, which revives zfsunlock as a runner-up.
+- **Next:** the provider-protocol checks listed in IDEAS round 17, then the
+  spec.
+- **Owner:**
+  - create the tag `tsroam/v1.0.0` on 3905284, plus the earlier tags in
+    STATE;
+  - the repo is still public.
+
 ## 2026-10-24 (IST) — run 13
 
 - **Project #14 tsdirect: from milestone 1 to finished in this run.**
