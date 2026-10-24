@@ -5,18 +5,23 @@ kill switch; Linux). Phase: build. Spec: projects/tsroam/SPEC.md.
 
 ## Next step
 
-Build tsroam, milestone by milestone, as in its SPEC:
-1. config, identity (copied from tsdirect) and the decision;
-2. the tailscale CLI driver and the nftables kill switch, plus run, check,
-   learn, off and cleanup;
-3. e2e with home and café LANs, the exit node, and a public web host;
-   then CI;
-4. docs and two reviews.
+tsroam milestones 1–3 are done:
+- config, identity and decision;
+- the tailscale driver and the nftables kill switch, plus run, check,
+  learn, off and cleanup;
+- e2e with headscale and real tailscaled: 9 scenarios passing locally, run
+  with `--interval 10m`; CI workflow .github/workflows/tsroam.yml.
 
-The exit-node lab facts are in IDEAS round 16 ("Checks done"). Remember:
-exit nodes forward only to public addresses. The quick lab script used
-this run was /tmp/claude-0/x/lab.sh; it is not kept, and the e2e harness
-replaces it.
+Next, milestone 4:
+- check that CI is green;
+- the README with real runs, CHANGELOG, a systemd unit (root with
+  CAP_NET_ADMIN/CAP_NET_RAW; tailscaled's socket needs root, so no
+  DynamicUser);
+- two full reviews, with fixes.
+
+Run the tsroam e2e with `PATH=/tmp/ts-bin:$PATH TSROAM_INTEGRATION=1
+TSROAM_BIN=/tmp/tsroam`. `tailscale up` with any flag fails once an exit node
+is set (it must mention every setting): use a bare `tailscale up`.
 
 Lab facts (2026-10-24):
 - `GOBIN=/tmp/ts-bin GOTOOLCHAIN=auto go install
