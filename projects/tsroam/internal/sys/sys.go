@@ -328,14 +328,8 @@ func isOwn(a netip.Addr) (bool, error) {
 // Watch sends on the channel when IPv4 addresses, main-table routes, links
 // or Tailscale's default route (the exit node) change, until ctx ends. If a subscription fails (the kernel dropped events), the
 // channel is closed: the caller can no longer rely on it.
-func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
-	out := make(chan struct{}, 1)
-	poke := func() {
-		select {
-		case out <- struct{}{}:
-		default:
-		}
-	}
+func (s *Linux) Watch(ctx context.Context) (<-chan Change, error) {
+	out := make(chan Change)
 	// The subscriptions end with ctx, or on an error; either ends Watch.
 	sub, stop := context.WithCancel(ctx)
 	done := sub.Done()
@@ -371,10 +365,19 @@ func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
 	go func() {
 		defer close(out)
 		defer stop()
+		// Changes that happen while the reader is busy are merged into one.
+		var pending Change
+		oper := map[int]netlink.LinkOperState{}
 		for {
+			var send chan<- Change
+			if pending != 0 {
+				send = out
+			}
 			select {
 			case <-done:
 				return
+			case send <- pending:
+				pending = 0
 			case u, ok := <-routes:
 				if !ok {
 					return
@@ -382,23 +385,48 @@ func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
 				// The main table (networks), and Tailscale's default route
 				// in its table 52 (the exit node turned on or off).
 				if u.Table == unix.RT_TABLE_MAIN || u.Table == TailscaleTable && (u.Dst == nil || isDefault(u.Dst)) {
-					poke()
+					pending |= ChangeRoute
 				}
 			case _, ok := <-addrs:
 				if !ok {
 					return
 				}
-				poke()
-			case _, ok := <-links:
+				pending |= ChangeAddr
+			case u, ok := <-links:
 				if !ok {
 					return
 				}
-				poke()
+				// A link going down or up (a cable moved, Wi-Fi joining):
+				// what a move to another network looks like.
+				a := u.Attrs()
+				if a == nil || s.Skip != nil && s.Skip(a.Name) {
+					continue
+				}
+				if prev, seen := oper[a.Index]; !seen || prev != a.OperState {
+					oper[a.Index] = a.OperState
+					pending |= ChangeLink
+				} else {
+					pending |= ChangeAddr // another link attribute
+				}
 			}
 		}
 	}()
 	return out, nil
 }
+
+// Change says what changed (bits).
+type Change uint8
+
+const (
+	// ChangeLink: a link's state (up, down, carrier) changed.
+	ChangeLink Change = 1 << iota
+	// ChangeRoute: a main-table route, or Tailscale's default route.
+	ChangeRoute
+	// ChangeAddr: an address, or another link attribute.
+	ChangeAddr
+	// ChangeReload: the config was reloaded (not from netlink).
+	ChangeReload
+)
 
 // TailscaleTable is the routing table tailscaled uses on Linux.
 const TailscaleTable = 52

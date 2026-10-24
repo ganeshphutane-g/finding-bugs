@@ -19,6 +19,7 @@ import (
 	"github.com/ganeshphutane-g/tsroam/internal/config"
 	"github.com/ganeshphutane-g/tsroam/internal/killswitch"
 	"github.com/ganeshphutane-g/tsroam/internal/policy"
+	"github.com/ganeshphutane-g/tsroam/internal/sys"
 	"github.com/ganeshphutane-g/tsroam/internal/tailscale"
 )
 
@@ -513,7 +514,7 @@ var Again = 2 * time.Second
 
 // Run passes now, every interval, and soon after each event, until ctx
 // ends.
-func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan struct{}) {
+func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan sys.Change) {
 	pass := func() {
 		if st := a.Pass(ctx); st.Note != "" && ctx.Err() == nil {
 			a.noteOnce(st.Note)
@@ -541,8 +542,8 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan s
 			} else {
 				again = nil
 			}
-		case <-events:
-			a.preArm()
+		case c := <-events:
+			a.preArm(c)
 			settle := time.NewTimer(Settle)
 		wait:
 			for {
@@ -550,7 +551,8 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan s
 				case <-ctx.Done():
 					settle.Stop()
 					return
-				case <-events:
+				case c := <-events:
+					a.preArm(c)
 				case <-settle.C:
 					break wait
 				}
@@ -586,20 +588,23 @@ func (a *Agent) needsPass() bool {
 	return false
 }
 
-// preArm puts the kill switch in at once when the default route has moved
-// (another interface or gateway, or none): the full look (ARP, probes)
-// takes a moment, and the new network may already be carrying traffic. A
-// trusted verdict takes it out again.
-func (a *Agent) preArm() {
+// preArm puts the kill switch in at once when a link went down or up (a
+// cable moved, Wi-Fi joined: a café can have the same gateway address as
+// home) or the default route moved (another interface or gateway, or
+// none): the full look (ARP, probes) takes a moment, and the new network
+// may already be carrying traffic. A trusted verdict takes it out again.
+func (a *Agent) preArm(c sys.Change) {
 	a.mu.Lock()
 	cfg, last := a.Config, a.state
 	a.mu.Unlock()
 	if !cfg.KillSwitch || last.Wall || a.DryRun {
 		return
 	}
-	iface, _, gw, ok, err := a.Sys.DefaultRoute()
-	if err == nil && ok && iface == last.Place.Iface && gw == last.Place.Gateway {
-		return
+	if c&sys.ChangeLink == 0 {
+		iface, _, gw, ok, err := a.Sys.DefaultRoute()
+		if err == nil && ok && iface == last.Place.Iface && gw == last.Place.Gateway {
+			return
+		}
 	}
 	r := a.Rules
 	if err := a.Wall.On(r); err != nil {
@@ -608,6 +613,7 @@ func (a *Agent) preArm() {
 	}
 	a.mu.Lock()
 	a.wallFor = &r
+	a.state.Wall = true // until the next pass says otherwise
 	a.changes++
 	a.mu.Unlock()
 	a.logf("kill switch on: the network changed; looking at it")

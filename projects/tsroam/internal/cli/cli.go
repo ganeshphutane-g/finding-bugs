@@ -78,7 +78,7 @@ type Deps struct {
 	System  func() policy.System
 	Tailnet func(bin, socket string) agent.Tailnet
 	Wall    func() agent.Wall
-	Watch   func(ctx context.Context) (<-chan struct{}, error)
+	Watch   func(ctx context.Context) (<-chan sys.Change, error)
 	Signals func(chan<- os.Signal)
 }
 
@@ -335,11 +335,13 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps) int {
 	n := len(a.Config.Trusted)
 	fmt.Fprintf(stdout, "tsroam %s: exit node %s except on %d trusted %s, kill switch %s, looking every %s and on network changes\n",
 		version(), a.Config.ExitNode, n, plural(n, "network", "networks"), onOff(a.Config.KillSwitch, "on", "off"), o.interval)
-	merged := make(chan struct{}, 1)
-	poke := func() {
+	// Changes are not dropped (a link change arms the kill switch): the
+	// watch merges them while this waits.
+	merged := make(chan sys.Change, 1)
+	poke := func(c sys.Change) {
 		select {
-		case merged <- struct{}{}:
-		default:
+		case merged <- c:
+		case <-ctx.Done():
 		}
 	}
 	// Without events a move to another network would only be seen at the
@@ -347,8 +349,8 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps) int {
 	// stays (an error exit is not a clean stop).
 	var lost atomic.Bool
 	go func() {
-		for range events {
-			poke()
+		for c := range events {
+			poke(c)
 		}
 		if ctx.Err() == nil {
 			lost.Store(true)
@@ -366,7 +368,7 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps) int {
 				}
 				a.SetConfig(c)
 				fmt.Fprintf(stdout, "reload: exit node %s, %d trusted %s\n", c.ExitNode, len(c.Trusted), plural(len(c.Trusted), "network", "networks"))
-				poke()
+				poke(sys.ChangeReload)
 				continue
 			}
 			cancel()

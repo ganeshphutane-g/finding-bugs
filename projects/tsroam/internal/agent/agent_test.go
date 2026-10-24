@@ -299,13 +299,22 @@ func TestPreArm(t *testing.T) {
 	r := newRig(t, home(), conf)
 	r.pass()
 	// An event that did not move the default route (a DHCP renewal).
-	r.a.preArm()
+	r.a.preArm(sys.ChangeRoute)
 	if r.w.on {
 		t.Fatal("armed without a move")
 	}
+	// A link went down and up (a cable moved): the café may use the same
+	// gateway address as home, so this arms too.
+	r.a.preArm(sys.ChangeLink)
+	r.a.preArm(sys.ChangeLink) // down, then up: armed once
+	if !r.w.on || len(r.w.events) != 1 {
+		t.Fatalf("a link change: %v", r.w.events)
+	}
+	r.w.Off()
+	r.pass()
 	// The default route moves to another gateway: armed before any look.
 	r.m.set(func(m *machine) { m.gateway = netip.MustParseAddr("192.168.1.254") })
-	r.a.preArm()
+	r.a.preArm(sys.ChangeRoute)
 	if !r.w.on || !strings.Contains(r.log.String(), "kill switch on: the network changed") {
 		t.Fatalf("not armed:\n%s", r.log)
 	}

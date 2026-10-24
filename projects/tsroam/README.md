@@ -48,7 +48,8 @@ $ sudo tsroam run
 tsroam v1.0.0: exit node sr except on 1 trusted network, kill switch on, looking every 15s and on network changes
 trusted: the trusted network 192.168.77.0/24 (/etc/tsroam.conf:3)
     ... the laptop joins a café's Wi-Fi, also 192.168.77.0/24, another router ...
-kill switch on: only the tailnet and DHCP are reachable
+kill switch on: the network changed; looking at it
+kill switch updated: only the tailnet and DHCP are reachable
 exit node on: sr
 untrusted: the network on lan0 is not a trusted one
     ... tailscaled is killed: nothing leaves; it restarts ...

@@ -105,7 +105,7 @@ func (w *world) deps() Deps {
 		System:  func() policy.System { return w.m },
 		Tailnet: func(string, string) agent.Tailnet { return w.ts },
 		Wall:    func() agent.Wall { return w.w },
-		Watch:   func(ctx context.Context) (<-chan struct{}, error) { return make(chan struct{}), nil },
+		Watch:   func(ctx context.Context) (<-chan sys.Change, error) { return make(chan sys.Change), nil },
 		Signals: func(chan<- os.Signal) {},
 	}
 }
@@ -260,8 +260,8 @@ func TestRun(t *testing.T) {
 func TestRunStopsWhenEventsStop(t *testing.T) {
 	w := newWorld(t, conf)
 	d := w.deps()
-	events := make(chan struct{})
-	d.Watch = func(ctx context.Context) (<-chan struct{}, error) { return events, nil }
+	events := make(chan sys.Change)
+	d.Watch = func(ctx context.Context) (<-chan sys.Change, error) { return events, nil }
 	var out, errb syncBuffer
 	done := make(chan int)
 	go func() { done <- Main([]string{"run", "--config", w.conf, "--state-dir", w.dir}, &out, &errb, d) }()
