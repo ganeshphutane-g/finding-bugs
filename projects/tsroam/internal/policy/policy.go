@@ -41,8 +41,10 @@ const (
 // Place is the answer, with what led to it.
 type Place struct {
 	Kind Kind
-	// Iface is the default route's interface ("" offline, or multipath).
-	Iface string
+	// Iface is the default route's interface ("" offline, or multipath),
+	// and Gateway its gateway (if any).
+	Iface   string
+	Gateway netip.Addr
 	// Network is the trusted network matched (when Trusted).
 	Network *config.Network
 	// Reason says why, in a sentence.
@@ -56,7 +58,7 @@ type Place struct {
 
 // Look decides where the machine is.
 func Look(ctx context.Context, s System, trusted []config.Network) Place {
-	iface, _, _, ok, err := s.DefaultRoute()
+	iface, _, gw, ok, err := s.DefaultRoute()
 	if err != nil {
 		return Place{Kind: Untrusted, Reason: fmt.Sprintf("could not read the default route: %v", err), Err: err}
 	}
@@ -66,7 +68,7 @@ func Look(ctx context.Context, s System, trusted []config.Network) Place {
 	if iface == "" {
 		return Place{Kind: Untrusted, Reason: "the default route has several paths; tsroam cannot tell which network traffic leaves on"}
 	}
-	p := Place{Kind: Untrusted, Iface: iface}
+	p := Place{Kind: Untrusted, Iface: iface, Gateway: gw}
 	var errs []error
 	var elsewhere string
 	for i := range trusted {
@@ -102,6 +104,16 @@ func Look(ctx context.Context, s System, trusted []config.Network) Place {
 		}
 	}
 	return p
+}
+
+// Key names the network for telling whether the machine has moved: its
+// kind, interface, gateway and trusted network.
+func (p Place) Key() string {
+	k := string(p.Kind) + " " + p.Iface + " " + p.Gateway.String()
+	if p.Network != nil {
+		k += " " + p.Network.Prefix.String()
+	}
+	return k
 }
 
 // Observe looks at the machine for one trusted network. Its fingerprint is
