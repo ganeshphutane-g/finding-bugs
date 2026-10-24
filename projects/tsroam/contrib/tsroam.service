@@ -1,8 +1,14 @@
 [Unit]
 Description=tsroam: Tailscale exit node on untrusted networks, with a kill switch
 Documentation=https://github.com/ganeshphutane-g/finding-bugs/tree/main/projects/tsroam
-After=network-online.target tailscaled.service
-Wants=network-online.target
+# Before the network comes up: with the kill switch on, the first network
+# is covered from the start. (tsroam does not need tailscaled to be up; it
+# sets the exit node when tailscaled runs.)
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
 
 [Service]
 # Settings go in /etc/tsroam.conf ("tsroam learn" prints a "trusted" line);

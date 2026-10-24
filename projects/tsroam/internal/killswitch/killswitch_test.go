@@ -61,15 +61,19 @@ func ping(ns string, args ...string) bool {
 
 // udp sends one datagram from sport to 10.77.0.2:dport and says whether the
 // peer got it.
-func udp(t *testing.T, ns string, sport, dport int) bool {
+func udp(t *testing.T, ns string, sport, dport int) bool { return udpFrom(t, ns, ns, sport, dport, 0) }
+
+// udpFrom is udp sent from the namespace from (ns or its container), with a
+// mark if not zero.
+func udpFrom(t *testing.T, ns, from string, sport, dport int, mark int) bool {
 	t.Helper()
 	got := make(chan bool, 1)
 	lis := exec.Command("ip", "netns", "exec", ns+"p", "timeout", "2", "python3", "-c", fmt.Sprintf(
 		"import socket\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\ns.bind(('10.77.0.2',%d))\ns.recv(64)\nprint('got')", dport))
 	go func() { out, _ := lis.Output(); got <- strings.Contains(string(out), "got") }()
 	time.Sleep(300 * time.Millisecond)
-	exec.Command("ip", "netns", "exec", ns, "python3", "-c", fmt.Sprintf(
-		"import socket\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\ns.bind(('0.0.0.0',%d))\ns.sendto(b'x',('10.77.0.2',%d))", sport, dport)).Run()
+	exec.Command("ip", "netns", "exec", from, "python3", "-c", fmt.Sprintf(
+		"import socket\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\nif %d: s.setsockopt(socket.SOL_SOCKET, 36, %d)\ns.bind(('0.0.0.0',%d))\ns.sendto(b'x',('10.77.0.2',%d))", mark, mark, sport, dport)).Run()
 	return <-got
 }
 
@@ -105,12 +109,31 @@ func TestKillSwitch(t *testing.T) {
 	if !ping(ns, "-m", "16777216", "10.77.0.2") {
 		t.Error("tsroam's probe mark is blocked")
 	}
-	// DHCP: only from the client's (privileged) port.
+	// DHCP: only from the client's (privileged) port, to broadcast or
+	// the network's own addresses (renewals).
+	if udp(t, ns, 68, 67) {
+		t.Error("DHCP to an address off the network gets out")
+	}
+	r.Net = netip.MustParsePrefix("10.77.0.0/24")
+	if err := s.On(r); err != nil {
+		t.Fatal(err)
+	}
 	if !udp(t, ns, 68, 67) {
-		t.Error("a DHCP request is blocked")
+		t.Error("a DHCP renewal on the network is blocked")
 	}
 	if udp(t, ns, 40000, 67) {
 		t.Error("UDP to port 67 from any port gets out: a way around the kill switch")
+	}
+	// A container may not use the DHCP ports (it can bind them).
+	if udpFrom(t, ns, ns+"c", 68, 67, 0) {
+		t.Error("forwarded traffic from port 68 gets out")
+	}
+	// tailscaled's own DNS to resolvers off the tailnet is dropped.
+	if udpFrom(t, ns, ns, 40001, 53, 0x80000) {
+		t.Error("tailscaled-marked DNS gets out")
+	}
+	if !udpFrom(t, ns, ns, 40002, 5353, 0x80000) {
+		t.Error("tailscaled-marked UDP to another port is blocked")
 	}
 	// Installing again replaces the table: allow-lan, DHCP on one interface.
 	r.LAN, r.Iface = netip.MustParsePrefix("10.77.0.0/24"), "kswa"
@@ -122,6 +145,31 @@ func TestKillSwitch(t *testing.T) {
 	}
 	if out, _ := exec.Command("ip", "netns", "exec", ns, "nft", "list", "ruleset").CombinedOutput(); strings.Count(string(out), "table inet tsroam") != 1 {
 		t.Errorf("ruleset:\n%s", out)
+	}
+	// A rule replaced by hand is not intact.
+	r.LAN, r.Iface = netip.Prefix{}, ""
+	s.On(r)
+	if ok, _ := s.Intact(r); !ok {
+		t.Fatal("a fresh table is not intact")
+	}
+	if ok, _ := s.Intact(Rules{Tun: "tun9", Mark: 0x80000, Mask: 0xff0000, ProbeMark: 0x1000000}); ok {
+		t.Error("intact for other rules")
+	}
+	out, _ := exec.Command("ip", "netns", "exec", ns, "nft", "-a", "list", "chain", "inet", "tsroam", "out").CombinedOutput()
+	var handle string
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "counter") && strings.Contains(line, "drop") && !strings.Contains(line, "iif") {
+			handle = line[strings.LastIndex(line, " ")+1:]
+		}
+	}
+	if handle == "" {
+		t.Fatalf("no drop rule in:\n%s", out)
+	}
+	if out, err := exec.Command("ip", "netns", "exec", ns, "nft", "replace", "rule", "inet", "tsroam", "out", "handle", handle, "accept").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if ok, _ := s.Intact(r); ok {
+		t.Error("a table with a rule replaced counts as intact")
 	}
 	// Flushed by someone else: the policy still drops, and Intact says so.
 	r.LAN = netip.Prefix{}

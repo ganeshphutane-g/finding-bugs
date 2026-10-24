@@ -51,7 +51,7 @@ func handler(a *agent.Agent, interval time.Duration) http.Handler {
 		help("tsroam_problem_passes_total", "counter", "Passes that could not do all they wanted.")
 		fmt.Fprintf(&b, "tsroam_problem_passes_total %d\n", errs)
 		if !st.At.IsZero() {
-			help("tsroam_last_pass_timestamp_seconds", "gauge", "When the last pass finished.")
+			help("tsroam_last_pass_timestamp_seconds", "gauge", "When the last pass started.")
 			fmt.Fprintf(&b, "tsroam_last_pass_timestamp_seconds %d\n", st.At.Unix())
 		}
 		rw.Write([]byte(b.String()))

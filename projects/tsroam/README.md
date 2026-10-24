@@ -34,8 +34,8 @@ leaves on.
   - a DHCP client's requests;
   - IPv6 router and neighbour discovery on the link.
 
-  This applies to the machine's own traffic and to traffic it forwards
-  (containers, VMs).
+  It covers the machine's own traffic. Traffic it routes for containers and
+  VMs may use only the tailnet.
 - **Back on a trusted network**, it turns the exit node off and removes the
   table.
 
@@ -164,7 +164,7 @@ The fingerprint rules are tsdirect's and fail closed:
 
 | Command | What it does |
 |---|---|
-| `tsroam run` | Applies the policy until stopped. Removes the kill switch on a clean stop; a crash leaves it in place. |
+| `tsroam run` | Applies the policy until stopped. A stop on an untrusted network (or a crash) leaves the kill switch in place, so a restart or an upgrade opens no gap; `tsroam cleanup` or `tsroam off` removes it. |
 | `tsroam check` | One look: the network, each trusted line's verdict, the exit node, the kill switch, and what run would do. Changes nothing. Exit 0: trusted or offline; 4: untrusted; 1: a problem. |
 | `tsroam learn [PREFIX]` | Prints the `trusted` line for the network the machine is on (`--gateway`, `--probe`). |
 | `tsroam off [--for 10m]` | Captive portals: turns both off until the network changes or the time runs out. |
@@ -186,17 +186,27 @@ Flags (`tsroam run -h` lists them all):
 
 ## How it works
 
+**At start:** with the kill switch configured, it goes in before the first
+look, which takes a moment (ARP, probes). The systemd unit starts before
+the network does, so even the first network after boot is covered.
+
 **When it looks:**
 - on every address, link and main-table route change (netlink events,
-  settled for half a second, then twice more 2 s apart). With the kill
-  switch configured, a change that moves the default route puts the switch
-  in at once, before that look. It also goes in while the machine is
-  offline. A trusted verdict takes it out;
+  settled for half a second, then twice more 2 s apart);
+- with the kill switch configured:
+  - when the default route's link goes down or up, or the default route
+    moves, the switch goes in at once, before the look. A café can use the
+    same gateway address as home, so a link change counts even when the
+    route looks the same;
+  - while the machine is offline, the switch stays in;
+  - a trusted verdict takes it out, unless the network changed while that
+    look was being made;
 - when Tailscale's own default route in table 52 changes, which is the exit
   node turned on or off;
-- every 2 s, a check that the kill switch is still in place with all its
-  rules (`systemctl restart nftables` flushes the ruleset), and whether
-  `tsroam off` has paused it;
+- every 2 s, a check:
+  - that the kill switch is still in place with all its rules
+    (`systemctl restart nftables` flushes the ruleset);
+  - whether `tsroam off` has paused it, or the pause has run out;
 - every `--interval`.
 
 **On an untrusted network:**
@@ -216,7 +226,7 @@ tsroam leaves it alone.
 the exit node is set once it is back. The lab measured about a second from
 restart to working traffic.
 
-**The kill switch's rules** (on a network whose interface is wlan0):
+**The kill switch's rules** (on a network 192.168.1.0/24 on wlan0):
 
 ```
 table inet tsroam {
@@ -224,10 +234,16 @@ table inet tsroam {
 		type filter hook postrouting priority filter; policy drop;
 		oifname "lo" accept
 		oifname "tailscale0" accept
+		meta mark & 0x00ff0000 == 0x00080000 udp dport 53 drop
+		meta mark & 0x00ff0000 == 0x00080000 tcp dport 53 drop
+		meta mark & 0x00ff0000 == 0x00080000 tcp dport 853 drop
 		meta mark & 0x00ff0000 == 0x00080000 accept
 		meta mark 0x01000000/8 accept
-		oifname "wlan0" udp sport 68 udp dport 67 accept
-		oifname "wlan0" udp sport 546 udp dport 547 accept
+		iif != 0 counter packets 0 bytes 0 drop
+		oifname "wlan0" udp sport 68 udp dport 67 ip daddr 255.255.255.255 accept
+		oifname "wlan0" udp sport 68 udp dport 67 ip daddr 192.168.1.0/24 accept
+		oifname "wlan0" udp sport 546 udp dport 547 ip6 daddr ff02::/16 accept
+		oifname "wlan0" udp sport 546 udp dport 547 ip6 daddr fe80::/10 accept
 		icmpv6 type 133-136 ip6 daddr fe80::/10 accept
 		icmpv6 type 133-136 ip6 daddr ff02::/16 accept
 		counter packets 0 bytes 0 drop
@@ -235,13 +251,19 @@ table inet tsroam {
 }
 ```
 
-- **Postrouting:** the chain hooks postrouting, so forwarded traffic is
-  covered, and its policy is drop, so a flushed chain still lets nothing
-  out.
-- **Marks:** `0x80000` is tailscaled's mark. `0x01000000` marks tsroam's own
-  trust probes, so a trusted network can be recognised with the switch on.
-- **DHCP:** only from the client ports, which are privileged, so no ordinary
-  program can use them to get around the switch.
+- **Postrouting:** the chain hooks postrouting, so routed traffic is
+  covered. Forwarded packets (from containers and VMs) have an input
+  interface there and are dropped unless they go into the tailnet. Its
+  policy is drop, so a flushed chain still lets nothing out.
+- **Integrity:** each rule carries a tag of what it was made from. The 2 s
+  check reinstalls a table whose rules were flushed, edited or replaced.
+- **Marks:** `0x80000` is tailscaled's mark (only root can set marks).
+  tailscaled's own DNS queries to resolvers off the tailnet (ports 53 and
+  853) are dropped even with it, so a moment without the exit node does not
+  send names to the café's resolver. `0x01000000` marks tsroam's own trust
+  probes, so a trusted network can be recognised with the switch on.
+- **DHCP:** only from the machine itself, from the client ports, which are
+  privileged, and only to broadcast or the network's own addresses.
 - **allow-lan:** with it on, a rule for the LAN's prefix is added, but only
   for a private or link-local network of /8 or narrower. A hostile DHCP
   netmask cannot make half the internet "the LAN".
@@ -256,7 +278,13 @@ table inet tsroam {
 
 - **Tailscale handles DNS.** With `--accept-dns=false`, a resolver on the
   café's LAN is blocked by the kill switch. Use Tailscale's DNS or a public
-  resolver; both go through the exit node.
+  resolver; with the exit node on, both go through it.
+- **Bridged and macvlan guests are not covered.** A VM bridged onto the
+  uplink without br_netfilter, or a macvlan/macvtap container, sends frames
+  that never pass the host's IP stack. Routed and NATed containers and VMs
+  (Docker's default, libvirt's default network) are covered.
+- **No automatic way out.** A stop on an untrusted network keeps the kill
+  switch: run `tsroam off` or `tsroam cleanup` to get out.
 - **The exit node can only reach the internet.** Tailscale exit nodes
   forward to public addresses only.
 - **IPv4 fingerprints only.** A network with only an IPv6 default route is
@@ -287,17 +315,19 @@ public web host that reports which address it sees. tsroam runs with
 - at the café: the exit node is on (the web host sees the home gateway's
   address), the kill switch is in place, and the café's own host cannot be
   reached;
-- tailscaled killed: nothing leaks, from the machine or from a container
-  behind it, and the café's host cannot be reached; restarted: traffic is
+- tailscaled killed: nothing leaks, from the machine or from a (routed,
+  NATed) container behind it, and the café's host cannot be reached; restarted: traffic is
   back through the exit node;
 - `tailscale down`: nothing leaks;
 - the exit node turned off by hand: tsroam turns it back on;
+- a flushed ruleset (`nft flush ruleset`): the kill switch is back within
+  the 2 s check;
 - `tsroam off`: traffic goes direct (the web host sees the café), and coming
   home ends the pause;
 - back home: both are off. Home is recognised by its router's MAC and a
   probe, and the probe works with the kill switch still on;
 - a `kill -9` of tsroam: the kill switch stays, and `cleanup` removes it;
-- a clean stop removes it.
+- a clean stop at the café keeps it; one at home leaves nothing.
 
 Mutation checks showed that the tests fail if any of these is taken out:
 the rule for tailscaled's mark, the probe mark, or the postrouting hook

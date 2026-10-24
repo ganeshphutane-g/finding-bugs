@@ -78,7 +78,7 @@ type Deps struct {
 	System  func() policy.System
 	Tailnet func(bin, socket string) agent.Tailnet
 	Wall    func() agent.Wall
-	Watch   func(ctx context.Context) (<-chan sys.Change, error)
+	Watch   func(ctx context.Context) (<-chan sys.Event, error)
 	Signals func(chan<- os.Signal)
 }
 
@@ -94,7 +94,7 @@ func Main(args []string, stdout, stderr io.Writer, deps Deps) int {
 		deps.Wall = func() agent.Wall { return &killswitch.Switch{} }
 	}
 	if deps.Watch == nil {
-		deps.Watch = (&sys.Linux{}).Watch
+		deps.Watch = (&sys.Linux{Skip: sys.IsTailscale}).Watch
 	}
 	if deps.Signals == nil {
 		deps.Signals = func(c chan<- os.Signal) { signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP) }
@@ -337,8 +337,8 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps) int {
 		version(), a.Config.ExitNode, n, plural(n, "network", "networks"), onOff(a.Config.KillSwitch, "on", "off"), o.interval)
 	// Changes are not dropped (a link change arms the kill switch): the
 	// watch merges them while this waits.
-	merged := make(chan sys.Change, 1)
-	poke := func(c sys.Change) {
+	merged := make(chan sys.Event, 1)
+	poke := func(c sys.Event) {
 		select {
 		case merged <- c:
 		case <-ctx.Done():
@@ -350,6 +350,7 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps) int {
 	var lost atomic.Bool
 	go func() {
 		for c := range events {
+			a.Touch() // a pass looking now may be out of date
 			poke(c)
 		}
 		if ctx.Err() == nil {
@@ -368,7 +369,7 @@ func run(a *agent.Agent, o options, stdout, stderr io.Writer, deps Deps) int {
 				}
 				a.SetConfig(c)
 				fmt.Fprintf(stdout, "reload: exit node %s, %d trusted %s\n", c.ExitNode, len(c.Trusted), plural(len(c.Trusted), "network", "networks"))
-				poke(sys.ChangeReload)
+				poke(sys.Event{What: sys.ChangeReload})
 				continue
 			}
 			cancel()

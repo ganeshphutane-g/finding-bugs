@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ganeshphutane-g/tsroam/internal/config"
@@ -68,12 +69,16 @@ type Agent struct {
 	DryRun bool
 	Now    func() time.Time
 
+	// gen counts network changes; a pass that saw it move while looking
+	// does not act on a trusted verdict.
+	gen atomic.Uint64
+
 	mu      sync.Mutex
 	state   State
 	lastKey string
 	lastLog string
-	// lastNote is the last problem logged.
-	lastNote string
+	// notes are the problems logged on this network.
+	notes map[string]bool
 	// offPending: arrived on a trusted network; the exit node is still to
 	// be turned off (tailscaled was not running yet).
 	offPending bool
@@ -150,6 +155,7 @@ func PauseKey(ctx context.Context, s policy.System, p policy.Place) string {
 
 // Pass looks once and acts.
 func (a *Agent) Pass(ctx context.Context) State {
+	gen := a.gen.Load()
 	a.mu.Lock()
 	cfg := a.Config
 	a.mu.Unlock()
@@ -213,6 +219,11 @@ func (a *Agent) Pass(ctx context.Context) State {
 			st.Wall, _ = a.Wall.Active()
 		}
 		st.ExitNode = a.exitNodeOn(ctx, cfg)
+	case place.Kind == policy.Trusted && a.gen.Load() != gen:
+		// The network changed while this pass looked: the verdict may be
+		// about the last one. The next pass (it is coming) decides.
+		st.Wall, _ = a.Wall.Active()
+		st.ExitNode = a.exitNodeOn(ctx, cfg)
 	case place.Kind == policy.Trusted:
 		st.Wall, err = a.wallOff()
 		if err != nil {
@@ -245,6 +256,9 @@ func (a *Agent) Pass(ctx context.Context) State {
 	}
 
 	a.mu.Lock()
+	if moved {
+		a.notes = nil // a new network: its problems are news
+	}
 	a.lastKey = key
 	a.state = st
 	if st.Note != "" {
@@ -285,8 +299,12 @@ func (a *Agent) wallRules(cfg config.Config, place policy.Place) killswitch.Rule
 		return r // offline, or IPv6 only: no LAN interface to name
 	}
 	r.Iface = place.Iface
+	lan := a.lanOf(place)
+	if lan.Addr().Is4() {
+		r.Net = lan
+	}
 	if cfg.AllowLAN {
-		if lan := a.lanOf(place); killswitch.LANOK(lan) {
+		if killswitch.LANOK(lan) {
 			r.LAN = lan
 		} else if lan.IsValid() {
 			a.noteOnce(fmt.Sprintf("allow-lan: %s is not a private network; it is not let through", lan))
@@ -514,10 +532,20 @@ var Again = 2 * time.Second
 
 // Run passes now, every interval, and soon after each event, until ctx
 // ends.
-func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan sys.Change) {
+func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan sys.Event) {
 	pass := func() {
 		if st := a.Pass(ctx); st.Note != "" && ctx.Err() == nil {
 			a.noteOnce(st.Note)
+		}
+	}
+	// The first look takes a moment (ARP, probes) and the machine may be
+	// on an untrusted network already: protect first.
+	a.mu.Lock()
+	ks := a.Config.KillSwitch
+	a.mu.Unlock()
+	if ks && !a.DryRun {
+		if ok, err := a.Wall.Intact(a.Rules); err != nil || !ok {
+			a.arm("starting; looking at the network")
 		}
 	}
 	pass()
@@ -563,6 +591,10 @@ func (a *Agent) Run(ctx context.Context, interval time.Duration, events <-chan s
 	}
 }
 
+// Touch says the network changed (a netlink event): a pass looking at that
+// moment may be out of date.
+func (a *Agent) Touch() { a.gen.Add(1) }
+
 // Guard is how often Run checks, between passes, that the kill switch is
 // still intact and whether "tsroam off" has paused it.
 var Guard = 2 * time.Second
@@ -575,8 +607,8 @@ func (a *Agent) needsPass() bool {
 	last, cfg, r := a.state, a.Config, a.wallFor
 	a.mu.Unlock()
 	if a.PauseFile != "" {
-		_, paused := ReadPause(a.PauseFile)
-		if paused != last.Paused {
+		p, paused := ReadPause(a.PauseFile)
+		if paused != last.Paused || paused && a.now().After(p.Until) {
 			return true
 		}
 	}
@@ -588,24 +620,33 @@ func (a *Agent) needsPass() bool {
 	return false
 }
 
-// preArm puts the kill switch in at once when a link went down or up (a
-// cable moved, Wi-Fi joined: a café can have the same gateway address as
-// home) or the default route moved (another interface or gateway, or
+// preArm puts the kill switch in at once when the default route's link went
+// down or up (a cable moved, Wi-Fi joined: a café can have the same gateway
+// address as home) or the default route moved (another interface or gateway, or
 // none): the full look (ARP, probes) takes a moment, and the new network
 // may already be carrying traffic. A trusted verdict takes it out again.
-func (a *Agent) preArm(c sys.Change) {
+func (a *Agent) preArm(c sys.Event) {
 	a.mu.Lock()
 	cfg, last := a.Config, a.state
 	a.mu.Unlock()
 	if !cfg.KillSwitch || last.Wall || a.DryRun {
 		return
 	}
-	if c&sys.ChangeLink == 0 {
+	linkMoved := false
+	for _, l := range c.Links {
+		linkMoved = linkMoved || l == last.Place.Iface
+	}
+	if !linkMoved {
 		iface, _, gw, ok, err := a.Sys.DefaultRoute()
 		if err == nil && ok && iface == last.Place.Iface && gw == last.Place.Gateway {
 			return
 		}
 	}
+	a.arm("the network changed; looking at it")
+}
+
+// arm puts the base kill switch in (no LAN, DHCP on any interface).
+func (a *Agent) arm(why string) {
 	r := a.Rules
 	if err := a.Wall.On(r); err != nil {
 		a.noteOnce(err.Error())
@@ -616,26 +657,35 @@ func (a *Agent) preArm(c sys.Change) {
 	a.state.Wall = true // until the next pass says otherwise
 	a.changes++
 	a.mu.Unlock()
-	a.logf("kill switch on: the network changed; looking at it")
+	a.logf("kill switch on: %s", why)
 }
 
 // noteOnce logs a problem when it is new.
 func (a *Agent) noteOnce(n string) {
 	a.mu.Lock()
-	seen := a.lastNote == n
-	a.lastNote = n
+	seen := a.notes[n]
+	if a.notes == nil {
+		a.notes = map[string]bool{}
+	}
+	a.notes[n] = true
 	a.mu.Unlock()
 	if !seen {
 		a.logf("note: %s", n)
 	}
 }
 
-// Stop removes the kill switch (a clean stop is the user's choice); the
-// exit node is left as it is.
+// Stop is a clean stop. On a trusted network nothing is left in place. On
+// any other the kill switch stays (a restart or an upgrade must not open a
+// gap); "tsroam cleanup" or "tsroam off" removes it. The exit node is left as
+// it is.
 func (a *Agent) Stop() error {
 	active, err := a.Wall.Active()
 	if err != nil || !active {
 		return err
+	}
+	if a.Last().Place.Kind != policy.Trusted {
+		a.logf("kill switch kept: not on a trusted network (tsroam cleanup removes it)")
+		return nil
 	}
 	if err := a.Wall.Off(); err != nil {
 		return err

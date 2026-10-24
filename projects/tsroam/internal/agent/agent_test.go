@@ -20,6 +20,7 @@ import (
 // machine is the network side: one interface on one network.
 type machine struct {
 	mu      sync.Mutex
+	onLook  func()
 	iface   string
 	net     netip.Prefix
 	gateway netip.Addr
@@ -35,6 +36,9 @@ func (m *machine) DefaultRoute() (string, int, netip.Addr, bool, error) {
 func (m *machine) Connected(p netip.Prefix) (string, int, netip.Prefix, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.onLook != nil {
+		m.onLook()
+	}
 	if m.iface == "" || !m.net.Contains(p.Addr()) || m.net.Bits() > p.Bits() {
 		return "", 0, netip.Prefix{}, nil
 	}
@@ -76,7 +80,7 @@ type tailnet struct {
 func (t *tailnet) Status(context.Context) (tailscale.Status, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return tailscale.Status{State: t.state, ExitNodeID: t.exit, Peers: []tailscale.Peer{
+	return tailscale.Status{State: t.state, ExitNodeID: t.exit, Suffix: "lab.example", Peers: []tailscale.Peer{
 		{ID: "1", HostName: "sr", DNSName: "sr.lab.example.", IPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}, ExitNodeOption: true, Online: true},
 	}}, nil
 }
@@ -299,14 +303,19 @@ func TestPreArm(t *testing.T) {
 	r := newRig(t, home(), conf)
 	r.pass()
 	// An event that did not move the default route (a DHCP renewal).
-	r.a.preArm(sys.ChangeRoute)
+	r.a.preArm(sys.Event{What: sys.ChangeRoute})
 	if r.w.on {
 		t.Fatal("armed without a move")
 	}
 	// A link went down and up (a cable moved): the café may use the same
 	// gateway address as home, so this arms too.
-	r.a.preArm(sys.ChangeLink)
-	r.a.preArm(sys.ChangeLink) // down, then up: armed once
+	// Another link (a container's veth) changing does not arm.
+	r.a.preArm(sys.Event{What: sys.ChangeLink, Links: []string{"veth1"}})
+	if r.w.on {
+		t.Fatal("armed for another link")
+	}
+	r.a.preArm(sys.Event{What: sys.ChangeLink, Links: []string{"wlan0"}})
+	r.a.preArm(sys.Event{What: sys.ChangeLink, Links: []string{"wlan0"}}) // down, then up: armed once
 	if !r.w.on || len(r.w.events) != 1 {
 		t.Fatalf("a link change: %v", r.w.events)
 	}
@@ -314,7 +323,7 @@ func TestPreArm(t *testing.T) {
 	r.pass()
 	// The default route moves to another gateway: armed before any look.
 	r.m.set(func(m *machine) { m.gateway = netip.MustParseAddr("192.168.1.254") })
-	r.a.preArm(sys.ChangeRoute)
+	r.a.preArm(sys.Event{What: sys.ChangeRoute})
 	if !r.w.on || !strings.Contains(r.log.String(), "kill switch on: the network changed") {
 		t.Fatalf("not armed:\n%s", r.log)
 	}
@@ -510,12 +519,64 @@ func TestLogsOncePerChange(t *testing.T) {
 }
 
 func TestStop(t *testing.T) {
+	// At the café a stop (a restart, an upgrade) keeps the kill switch.
 	r := newRig(t, cafe(), conf)
 	r.pass()
-	if err := r.a.Stop(); err != nil || r.w.on {
-		t.Fatalf("%v %v", err, r.w.on)
+	if err := r.a.Stop(); err != nil || !r.w.on || !strings.Contains(r.log.String(), "kill switch kept") {
+		t.Fatalf("%v %v\n%s", err, r.w.on, r.log)
 	}
 	if r.ts.exit != "1" {
 		t.Error("the exit node was changed on stop")
+	}
+}
+
+func TestStartArmsFirst(t *testing.T) {
+	r := newRig(t, cafe(), conf)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.a.Run(ctx, time.Hour, nil)
+	if len(r.w.events) == 0 || !strings.HasPrefix(r.log.String(), "kill switch on: starting") {
+		t.Errorf("%v\n%s", r.w.events, r.log)
+	}
+}
+
+func TestAStaleTrustedVerdictKeepsTheSwitch(t *testing.T) {
+	r := newRig(t, cafe(), conf)
+	r.pass()
+	// The machine is home, but the network changes again while the pass
+	// looks (the fake's Connected is the moment of the look).
+	r.m.set(func(m *machine) { m.mac = homeMAC })
+	r.m.onLook = func() { r.a.Touch() }
+	if st := r.pass(); !st.Wall {
+		t.Fatalf("a trusted verdict from a moving network removed the switch: %+v", st)
+	}
+	r.m.onLook = nil
+	if st := r.pass(); st.Wall {
+		t.Fatalf("a settled trusted verdict kept the switch: %+v", st)
+	}
+}
+
+func TestPauseExpiryIsNoticed(t *testing.T) {
+	r := newRig(t, cafe(), conf)
+	r.pass()
+	WritePause(r.a.PauseFile, Pause{Key: PauseKey(context.Background(), r.m, r.a.Last().Place), Until: r.now.Add(time.Minute)})
+	r.pass()
+	if r.a.needsPass() {
+		t.Fatal("a pass due while paused")
+	}
+	r.now = r.now.Add(2 * time.Minute)
+	if !r.a.needsPass() {
+		t.Fatal("the end of the pause goes unnoticed until the interval")
+	}
+}
+
+func TestNotesAreLoggedOnceEach(t *testing.T) {
+	r := newRig(t, cafe(), conf)
+	for range 3 {
+		r.a.noteOnce("a")
+		r.a.noteOnce("b")
+	}
+	if strings.Count(r.log.String(), "note: a") != 1 || strings.Count(r.log.String(), "note: b") != 1 {
+		t.Errorf("%s", r.log)
 	}
 }

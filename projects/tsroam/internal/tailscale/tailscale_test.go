@@ -11,6 +11,7 @@ import (
 // From tailscale 1.104.2 in the lab (trimmed).
 const status = `{
   "BackendState": "Running",
+  "MagicDNSSuffix": "lab.example",
   "ExitNodeStatus": {"ID": "1", "Online": true, "TailscaleIPs": ["100.64.0.1/32"]},
   "Peer": {
     "nodekey:aa": {"ID": "1", "HostName": "sr", "DNSName": "sr.lab.example.", "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"], "ExitNode": true, "ExitNodeOption": true, "Online": true},
@@ -29,13 +30,17 @@ func TestParseAndFind(t *testing.T) {
 			t.Errorf("%s: %+v %v, want %q", node, p, ok, id)
 		}
 	}
-	// Two peers with one name: ambiguous, as tailscale says too.
-	two, _ := parseStatus([]byte(`{"Peer": {"a": {"ID": "1", "DNSName": "exit.a.ts.net."}, "b": {"ID": "2", "DNSName": "exit.b.ts.net."}}}`))
-	if p, ok := two.Find("exit"); ok {
-		t.Errorf("an ambiguous name found %+v", p)
+	// An own "exit" and a shared-in "exit" from another tailnet: the short
+	// name is the own one, as tailscale has it.
+	two, _ := parseStatus([]byte(`{"MagicDNSSuffix": "a.ts.net", "Peer": {"a": {"ID": "1", "DNSName": "exit.a.ts.net."}, "b": {"ID": "2", "DNSName": "exit.b.ts.net."}}}`))
+	if p, ok := two.Find("exit"); !ok || p.ID != "1" {
+		t.Errorf("the own node: %+v %v", p, ok)
 	}
 	if p, ok := two.Find("exit.b.ts.net"); !ok || p.ID != "2" {
 		t.Errorf("the full name: %+v %v", p, ok)
+	}
+	if p, ok := two.Find("exit.b"); ok {
+		t.Errorf("a partial name found %+v", p)
 	}
 	if s, _ := parseStatus([]byte(`{"BackendState":"Stopped"}`)); s.Running() || s.ExitNodeID != "" {
 		t.Errorf("%+v", s)

@@ -328,8 +328,8 @@ func isOwn(a netip.Addr) (bool, error) {
 // Watch sends on the channel when IPv4 addresses, main-table routes, links
 // or Tailscale's default route (the exit node) change, until ctx ends. If a subscription fails (the kernel dropped events), the
 // channel is closed: the caller can no longer rely on it.
-func (s *Linux) Watch(ctx context.Context) (<-chan Change, error) {
-	out := make(chan Change)
+func (s *Linux) Watch(ctx context.Context) (<-chan Event, error) {
+	out := make(chan Event)
 	// The subscriptions end with ctx, or on an error; either ends Watch.
 	sub, stop := context.WithCancel(ctx)
 	done := sub.Done()
@@ -366,18 +366,25 @@ func (s *Linux) Watch(ctx context.Context) (<-chan Change, error) {
 		defer close(out)
 		defer stop()
 		// Changes that happen while the reader is busy are merged into one.
-		var pending Change
+		var pending Event
+		// The links' states now, so the first event about each is not taken
+		// for a change.
 		oper := map[int]netlink.LinkOperState{}
+		if ls, err := netlink.LinkList(); err == nil {
+			for _, l := range ls {
+				oper[l.Attrs().Index] = l.Attrs().OperState
+			}
+		}
 		for {
-			var send chan<- Change
-			if pending != 0 {
+			var send chan<- Event
+			if pending.What != 0 {
 				send = out
 			}
 			select {
 			case <-done:
 				return
 			case send <- pending:
-				pending = 0
+				pending = Event{}
 			case u, ok := <-routes:
 				if !ok {
 					return
@@ -385,13 +392,13 @@ func (s *Linux) Watch(ctx context.Context) (<-chan Change, error) {
 				// The main table (networks), and Tailscale's default route
 				// in its table 52 (the exit node turned on or off).
 				if u.Table == unix.RT_TABLE_MAIN || u.Table == TailscaleTable && (u.Dst == nil || isDefault(u.Dst)) {
-					pending |= ChangeRoute
+					pending.What |= ChangeRoute
 				}
 			case _, ok := <-addrs:
 				if !ok {
 					return
 				}
-				pending |= ChangeAddr
+				pending.What |= ChangeAddr
 			case u, ok := <-links:
 				if !ok {
 					return
@@ -402,16 +409,36 @@ func (s *Linux) Watch(ctx context.Context) (<-chan Change, error) {
 				if a == nil || s.Skip != nil && s.Skip(a.Name) {
 					continue
 				}
-				if prev, seen := oper[a.Index]; !seen || prev != a.OperState {
-					oper[a.Index] = a.OperState
-					pending |= ChangeLink
+				if prev, seen := oper[a.Index]; seen && prev != a.OperState {
+					pending.What |= ChangeLink
+					pending.Links = appendOnce(pending.Links, a.Name)
 				} else {
-					pending |= ChangeAddr // another link attribute
+					pending.What |= ChangeAddr // a new link, or another attribute
 				}
+				oper[a.Index] = a.OperState
 			}
 		}
 	}()
 	return out, nil
+}
+
+// Event is what changed since the last one read: kinds, and the links whose
+// state changed.
+type Event struct {
+	What  Change
+	Links []string
+}
+
+// Has says whether the event includes the kind.
+func (e Event) Has(c Change) bool { return e.What&c != 0 }
+
+func appendOnce(s []string, v string) []string {
+	for _, x := range s {
+		if x == v {
+			return s
+		}
+	}
+	return append(s, v)
 }
 
 // Change says what changed (bits).

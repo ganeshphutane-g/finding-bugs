@@ -48,8 +48,9 @@ Tailscale has no automatic exit-node policy on Linux:
     sockets);
   - DHCP (`udp dport 67`).
 
-  It drops everything else. As built, after the first review, the chain is
-  on postrouting (forwarded traffic too) with policy drop. It also admits:
+  It drops everything else. As built, after two reviews, the chain is on
+  postrouting with policy drop: forwarded traffic may use only the tailnet,
+  and tailscaled's DNS to resolvers off the tailnet is dropped. It also admits:
   - DHCP only from the client ports, on the network's interface (and
     DHCPv6);
   - IPv6 router and neighbour discovery to link-local and link multicast
@@ -97,8 +98,9 @@ Failing safe:
 - An unknown network is untrusted.
 - If tsroam crashes, its nftables table stays, so the kill switch holds.
   `tsroam off`, or `tsroam cleanup`, removes it.
-- On a clean stop, tsroam removes the table and leaves the exit-node setting
-  as it is.
+- On a clean stop, tsroam removes the table only on a trusted network (as
+  built: a restart at a café must not open a gap). It leaves the exit-node
+  setting as it is.
 
 tsroam controls Tailscale through the `tailscale` CLI (`--socket` for a
 non-default tailscaled): `tailscale set` and `tailscale status --json` are

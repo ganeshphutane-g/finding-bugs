@@ -61,7 +61,7 @@ type tailnet struct {
 func (t *tailnet) Status(context.Context) (tailscale.Status, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return tailscale.Status{State: "Running", ExitNodeID: t.exit, Peers: []tailscale.Peer{{ID: "1", HostName: "sr", DNSName: "sr.lab.example.", IPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}, Online: true}}}, nil
+	return tailscale.Status{State: "Running", ExitNodeID: t.exit, Suffix: "lab.example", Peers: []tailscale.Peer{{ID: "1", HostName: "sr", DNSName: "sr.lab.example.", IPs: []netip.Addr{netip.MustParseAddr("100.64.0.1")}, Online: true}}}, nil
 }
 func (t *tailnet) SetExitNode(_ context.Context, node string, _ bool) error {
 	t.mu.Lock()
@@ -105,7 +105,7 @@ func (w *world) deps() Deps {
 		System:  func() policy.System { return w.m },
 		Tailnet: func(string, string) agent.Tailnet { return w.ts },
 		Wall:    func() agent.Wall { return w.w },
-		Watch:   func(ctx context.Context) (<-chan sys.Change, error) { return make(chan sys.Change), nil },
+		Watch:   func(ctx context.Context) (<-chan sys.Event, error) { return make(chan sys.Event), nil },
 		Signals: func(chan<- os.Signal) {},
 	}
 }
@@ -260,8 +260,8 @@ func TestRun(t *testing.T) {
 func TestRunStopsWhenEventsStop(t *testing.T) {
 	w := newWorld(t, conf)
 	d := w.deps()
-	events := make(chan sys.Change)
-	d.Watch = func(ctx context.Context) (<-chan sys.Change, error) { return events, nil }
+	events := make(chan sys.Event)
+	d.Watch = func(ctx context.Context) (<-chan sys.Event, error) { return events, nil }
 	var out, errb syncBuffer
 	done := make(chan int)
 	go func() { done <- Main([]string{"run", "--config", w.conf, "--state-dir", w.dir}, &out, &errb, d) }()

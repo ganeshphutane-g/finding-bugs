@@ -8,6 +8,9 @@
 package killswitch
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 
@@ -37,8 +40,10 @@ type Rules struct {
 	// it, under ProbeMask), so a trusted network can be recognised with the
 	// kill switch on.
 	ProbeMark uint32
-	// Iface, if set, is the only interface DHCP may use.
+	// Iface, if set, is the only interface DHCP may use, and Net the
+	// network on it (where a DHCP server is renewed with unicast).
 	Iface string
+	Net   netip.Prefix
 	// LAN, if valid, may also be reached directly (allow-lan).
 	LAN netip.Prefix
 }
@@ -82,8 +87,8 @@ func (s *Switch) On(r Rules) error {
 		Name: Chain, Table: t, Type: nftables.ChainTypeFilter,
 		Hooknum: nftables.ChainHookPostrouting, Priority: nftables.ChainPriorityFilter, Policy: &drop,
 	})
-	for _, e := range ruleset(r) {
-		c.AddRule(&nftables.Rule{Table: t, Chain: ch, Exprs: e})
+	for i, e := range ruleset(r) {
+		c.AddRule(&nftables.Rule{Table: t, Chain: ch, Exprs: e, UserData: tag(r, i)})
 	}
 	if err := c.Flush(); err != nil {
 		return fmt.Errorf("installing the kill switch: %w", err)
@@ -142,7 +147,23 @@ func (s *Switch) Intact(r Rules) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return len(rules) == len(ruleset(r)), nil
+	if len(rules) != len(ruleset(r)) {
+		return false, nil
+	}
+	// Each rule carries a tag of what it was made from: one replaced or
+	// edited by hand has none (or another).
+	for i, rule := range rules {
+		if !bytes.Equal(rule.UserData, tag(r, i)) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// tag is what rule i of r's ruleset carries in its user data.
+func tag(r Rules, i int) []byte {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%d %+v", i, r)))
+	return []byte("tsroam " + hex.EncodeToString(h[:8]))
 }
 
 func ifname(n string) []byte {
@@ -200,35 +221,87 @@ func cat(parts ...[]expr.Any) []expr.Any {
 	return out
 }
 
+func l4(proto byte) []expr.Any {
+	return []expr.Any{&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}}}
+}
+
+func dport(port uint16) []expr.Any {
+	return []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
+	}
+}
+
+// ip4DaddrIn matches an IPv4 destination inside p.
+func ip4DaddrIn(p netip.Prefix) []expr.Any {
+	p = p.Masked()
+	a := p.Addr().As4()
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: maskBytes(p.Bits()), Xor: []byte{0, 0, 0, 0}},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: a[:]},
+	}
+}
+
 // ruleset is the chain's rules, in order:
 //
 //	oifname "lo" accept
 //	oifname TUN accept
+//	meta mark & MASK == MARK udp dport 53 drop           (tailscaled's DNS forwarder
+//	meta mark & MASK == MARK tcp dport 53 drop            asking resolvers off the
+//	meta mark & MASK == MARK tcp dport 853 drop           tailnet)
 //	meta mark & MASK == MARK accept                      (tailscaled)
 //	meta mark & 0xff000000 == PROBEMARK accept           (tsroam's probes)
-//	[oifname IFACE] udp sport 68 dport 67 accept         (DHCP client)
-//	[oifname IFACE] udp sport 546 dport 547 accept       (DHCPv6 client)
+//	meta iif != 0 counter drop                           (forwarded: containers, VMs)
+//	[oifname IFACE] udp sport 68 dport 67 ip daddr 255.255.255.255 accept   (DHCP client)
+//	[oifname IFACE] udp sport 68 dport 67 ip daddr NET accept               (renewals)
+//	[oifname IFACE] udp sport 546 dport 547 ip6 daddr ff02::/16 accept      (DHCPv6 client)
+//	[oifname IFACE] udp sport 546 dport 547 ip6 daddr fe80::/10 accept
 //	icmpv6 type 133-136 ip6 daddr fe80::/10 accept       (router and neighbour
 //	icmpv6 type 133-136 ip6 daddr ff02::/16 accept        discovery, on the link)
 //	ip daddr LAN accept                                  (allow-lan only)
 //	counter drop
+//
+// The forwarded rule relies on postrouting: a forwarded packet has an
+// input interface there, the machine's own packets have none (the
+// expression does not match them).
 func ruleset(r Rules) [][]expr.Any {
 	out := [][]expr.Any{
 		cat(oif("lo"), []expr.Any{accept()}),
 		cat(oif(r.Tun), []expr.Any{accept()}),
-		cat(markIs(r.Mark, r.Mask), []expr.Any{accept()}),
 	}
+	drop := []expr.Any{&expr.Verdict{Kind: expr.VerdictDrop}}
+	for _, d := range []struct {
+		proto byte
+		port  uint16
+	}{{unix.IPPROTO_UDP, 53}, {unix.IPPROTO_TCP, 53}, {unix.IPPROTO_TCP, 853}} {
+		out = append(out, cat(markIs(r.Mark, r.Mask), l4(d.proto), dport(d.port), drop))
+	}
+	out = append(out, cat(markIs(r.Mark, r.Mask), []expr.Any{accept()}))
 	if r.ProbeMark != 0 {
 		out = append(out, cat(markIs(r.ProbeMark, ProbeMask), []expr.Any{accept()}))
 	}
+	out = append(out, []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIF, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+		&expr.Counter{}, &expr.Verdict{Kind: expr.VerdictDrop},
+	})
 	var dhcpIf []expr.Any
 	if r.Iface != "" {
 		dhcpIf = oif(r.Iface)
 	}
-	out = append(out,
-		cat(dhcpIf, udpPorts(68, 67), []expr.Any{accept()}),
-		cat(dhcpIf, udpPorts(546, 547), []expr.Any{accept()}),
-	)
+	v4 := []netip.Prefix{netip.MustParsePrefix("255.255.255.255/32")}
+	if r.Net.IsValid() && r.Net.Addr().Is4() {
+		v4 = append(v4, r.Net)
+	}
+	for _, p := range v4 {
+		out = append(out, cat(dhcpIf, udpPorts(68, 67), ip4DaddrIn(p), []expr.Any{accept()}))
+	}
+	for _, p := range []string{"ff02::/16", "fe80::/10"} {
+		out = append(out, cat(dhcpIf, udpPorts(546, 547), ip6DaddrIn(netip.MustParsePrefix(p)), []expr.Any{accept()}))
+	}
 	nd := []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_ICMPV6}},
@@ -239,16 +312,7 @@ func ruleset(r Rules) [][]expr.Any {
 		out = append(out, cat(nd, ip6DaddrIn(netip.MustParsePrefix(p)), []expr.Any{accept()}))
 	}
 	if r.LAN.IsValid() && r.LAN.Addr().Is4() {
-		lan := r.LAN.Masked()
-		a := lan.Addr().As4()
-		out = append(out, []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.NFPROTO_IPV4}},
-			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: 4},
-			&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: maskBytes(lan.Bits()), Xor: []byte{0, 0, 0, 0}},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: a[:]},
-			accept(),
-		})
+		out = append(out, cat(ip4DaddrIn(r.LAN), []expr.Any{accept()}))
 	}
 	out = append(out, []expr.Any{&expr.Counter{}, &expr.Verdict{Kind: expr.VerdictDrop}})
 	return out

@@ -12,10 +12,15 @@ First release.
   gateway's MAC by a fresh ARP request, a TCP probe bound to the interface,
   or both) on the interface the default route leaves on. They fail closed.
 - `kill-switch on`: an nftables table (`inet tsroam`, the only table tsroam
-  touches) lets only tailnet traffic, tailscaled's own packets, loopback,
-  DHCP and IPv6 router/neighbour discovery leave the machine (and the LAN
-  with `allow-lan on`). It holds while tailscaled is killed, restarting or
-  down, and stays if tsroam crashes. A clean stop removes it.
+  touches; postrouting, policy drop) lets only tailnet traffic, tailscaled's
+  own packets (but not its DNS to resolvers off the tailnet), tsroam's
+  probes, loopback, the machine's DHCP client and IPv6 router/neighbour
+  discovery on the link leave (and a private LAN with `allow-lan on`).
+  Routed containers and VMs may use only the tailnet. It holds while
+  tailscaled is killed, restarting or down. It goes in at start, on link
+  changes and while offline, before the network is looked at. It stays if
+  tsroam crashes or stops on an untrusted network, and it is checked every
+  2 s and repaired if flushed or edited.
 - `tsroam off` stands down for a captive portal until the network changes or
   `--for` runs out. `tsroam check` (exit 4 on an untrusted network),
   `tsroam learn`, `tsroam cleanup`.

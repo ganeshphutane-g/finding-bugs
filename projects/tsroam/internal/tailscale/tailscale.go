@@ -77,16 +77,20 @@ type Status struct {
 	State string
 	// ExitNodeID is the exit node in use ("" none).
 	ExitNodeID string
-	Peers      []Peer
+	// Suffix is the tailnet's MagicDNS suffix ("tail1234.ts.net").
+	Suffix string
+	Peers  []Peer
 }
 
 // Running says whether tailscaled is up and connected.
 func (s Status) Running() bool { return s.State == "Running" }
 
 // Find is the peer that node names, matched the way "tailscale set
-// --exit-node" matches it: one of its IPs, or its DNS name, with or without
-// the tailnet's domain (not its host name, which tailscale does not use).
-// A name that fits several peers is an error there, and not found here.
+// --exit-node" matches it: one of its IPs, or its DNS name, in full or
+// without the tailnet's MagicDNS suffix (so a node shared in from another
+// tailnet is named in full). Not its host name, which tailscale does not
+// use. A name that fits several peers is an error there, and not found
+// here.
 func (s Status) Find(node string) (Peer, bool) {
 	if ip, err := netip.ParseAddr(node); err == nil {
 		for _, p := range s.Peers {
@@ -102,8 +106,14 @@ func (s Status) Find(node string) (Peer, bool) {
 	var found []Peer
 	for _, p := range s.Peers {
 		dns := strings.ToLower(strings.TrimSuffix(p.DNSName, "."))
-		short, _, _ := strings.Cut(dns, ".")
-		if dns == n || short == n {
+		short := ""
+		if s.Suffix != "" {
+			short = strings.TrimSuffix(dns, "."+s.Suffix)
+			if short == dns {
+				short = "" // not in this tailnet's domain
+			}
+		}
+		if dns == n || short != "" && short == n {
 			found = append(found, p)
 		}
 	}
@@ -125,6 +135,7 @@ func (c *CLI) Status(ctx context.Context) (Status, error) {
 func parseStatus(b []byte) (Status, error) {
 	var raw struct {
 		BackendState   string
+		MagicDNSSuffix string
 		ExitNodeStatus *struct{ ID string }
 		Peer           map[string]struct {
 			ID             string
@@ -138,7 +149,7 @@ func parseStatus(b []byte) (Status, error) {
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return Status{}, fmt.Errorf("reading tailscale status: %w", err)
 	}
-	s := Status{State: raw.BackendState}
+	s := Status{State: raw.BackendState, Suffix: strings.ToLower(strings.Trim(raw.MagicDNSSuffix, "."))}
 	if raw.ExitNodeStatus != nil {
 		s.ExitNodeID = raw.ExitNodeStatus.ID
 	}

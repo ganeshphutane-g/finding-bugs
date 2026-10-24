@@ -495,22 +495,40 @@ func (l *lab) ts(args ...string) (string, error) {
 	return l.try(l.cl, append([]string{l.tailscale, "--socket=" + filepath.Join(l.clDir, "sock")}, args...)...)
 }
 
-// exitNode says whether the client uses an exit node now.
-func (l *lab) exitNode() bool {
+// exitNodeIs says whether the client's exit node is in use (on) or not
+// (!on); false too if that cannot be told (tailscale fails).
+func (l *lab) exitNodeIs(on bool) bool {
 	out, err := l.ts("status", "--json")
 	if err != nil {
 		return false
 	}
 	var st struct{ ExitNodeStatus *struct{ ID string } }
-	json.Unmarshal([]byte(out), &st)
-	return st.ExitNodeStatus != nil && st.ExitNodeStatus.ID != ""
+	if json.Unmarshal([]byte(out), &st) != nil {
+		return false
+	}
+	return (st.ExitNodeStatus != nil && st.ExitNodeStatus.ID != "") == on
 }
 
-// killSwitch says whether tsroam's table is in place.
-func (l *lab) killSwitch() bool {
-	out, _ := l.try(l.cl, "nft", "list", "tables")
-	return strings.Contains(out, "table inet tsroam")
+func (l *lab) exitNode() bool   { return l.exitNodeIs(true) }
+func (l *lab) noExitNode() bool { return l.exitNodeIs(false) }
+
+// killSwitchIs says whether tsroam's table is in place with its chain (on)
+// or absent (!on); false too if nft fails.
+func (l *lab) killSwitchIs(on bool) bool {
+	out, err := l.try(l.cl, "nft", "list", "ruleset")
+	if err != nil {
+		return false
+	}
+	present := strings.Contains(out, "table inet tsroam") && strings.Contains(out, "hook postrouting priority filter; policy drop;") && strings.Contains(out, "counter packets")
+	absent := !strings.Contains(out, "table inet tsroam")
+	if on {
+		return present
+	}
+	return absent
 }
+
+func (l *lab) killSwitch() bool   { return l.killSwitchIs(true) }
+func (l *lab) noKillSwitch() bool { return l.killSwitchIs(false) }
 
 func (l *lab) tsroam(args ...string) *proc {
 	return l.start(l.cl, nil, append([]string{tsroam(l.t)}, args...)...)
@@ -544,8 +562,8 @@ func TestTailscaleLab(t *testing.T) {
 
 	t.Run("home: no exit node, no kill switch", func(t *testing.T) {
 		wait(t, "the first pass", func() bool { return strings.Contains(td.out.String(), "trusted:") })
-		if l.exitNode() || l.killSwitch() {
-			t.Errorf("exit node %v, kill switch %v at home", l.exitNode(), l.killSwitch())
+		if !l.noExitNode() || !l.noKillSwitch() {
+			t.Errorf("at home: no exit node %v, no kill switch %v", l.noExitNode(), l.noKillSwitch())
 		}
 		if s := l.seen("9.9.9.2"); s != viaHome {
 			t.Errorf("the web host sees %q", s)
@@ -608,14 +626,27 @@ func TestTailscaleLab(t *testing.T) {
 		wait(t, "the exit node back", l.exitNode)
 	})
 
+	t.Run("café: a flushed ruleset comes back", func(t *testing.T) {
+		if _, err := l.try(l.cl, "nft", "flush", "ruleset"); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "the kill switch back", 6*time.Second, l.killSwitch)
+		// The flush took the container's NAT too; put it back.
+		for _, c := range []string{"add table ip ctrnat",
+			"add chain ip ctrnat post { type nat hook postrouting priority 100 ; }",
+			"add rule ip ctrnat post ip saddr 10.88.0.0/24 oifname lan0 masquerade"} {
+			l.in(l.cl, append([]string{"nft"}, strings.Fields(c)...)...)
+		}
+	})
+
 	t.Run("café: tsroam off", func(t *testing.T) {
 		if out, err := l.tsroamCmd(append([]string{"off"}, common...)...); err != nil {
 			t.Fatalf("off: %v %s", err, out)
 		}
 		wait(t, "direct traffic", func() bool { return l.seen("9.9.9.2") == viaCafe })
-		time.Sleep(2 * time.Second)
-		if l.exitNode() || l.killSwitch() {
-			t.Errorf("run forced them during the pause: exit node %v, kill switch %v", l.exitNode(), l.killSwitch())
+		time.Sleep(3 * time.Second)
+		if !l.noExitNode() || !l.noKillSwitch() {
+			t.Errorf("run forced them during the pause: no exit node %v, no kill switch %v", l.noExitNode(), l.noKillSwitch())
 		}
 	})
 
@@ -630,15 +661,15 @@ func TestTailscaleLab(t *testing.T) {
 		wait(t, "the exit node", l.exitNode)
 		wait(t, "the kill switch", l.killSwitch)
 		l.moveClient(false)
-		wait(t, "the exit node off", func() bool { return !l.exitNode() })
-		wait(t, "the kill switch off", func() bool { return !l.killSwitch() })
+		wait(t, "the exit node off", l.noExitNode)
+		wait(t, "the kill switch off", l.noKillSwitch)
 		for _, want := range []string{"kill switch off\n", "exit node off\n"} {
 			if !strings.Contains(td.out.String(), want) {
 				t.Errorf("the log lacks %q:\n%s", want, td.out)
 			}
 		}
-		if l.exitNode() || l.killSwitch() {
-			t.Errorf("exit node %v, kill switch %v", l.exitNode(), l.killSwitch())
+		if !l.noExitNode() || !l.noKillSwitch() {
+			t.Errorf("no exit node %v, no kill switch %v", l.noExitNode(), l.noKillSwitch())
 		}
 		if s := l.seen("9.9.9.2"); s != viaHome {
 			t.Errorf("the web host sees %q", s)
@@ -654,20 +685,27 @@ func TestTailscaleLab(t *testing.T) {
 		if !l.killSwitch() {
 			t.Fatal("the kill switch went with tsroam")
 		}
-		if out, err := l.tsroamCmd("cleanup", "--state-dir", filepath.Join(l.dir, "run")); err != nil || l.killSwitch() {
+		if out, err := l.tsroamCmd("cleanup", "--state-dir", filepath.Join(l.dir, "run")); err != nil || !l.noKillSwitch() {
 			t.Errorf("cleanup: %v %s", err, out)
 		}
 	})
 
-	t.Run("a clean stop removes the kill switch", func(t *testing.T) {
+	t.Run("a clean stop at the café keeps the kill switch; at home it leaves nothing", func(t *testing.T) {
 		l.moveClient(true)
 		td = l.tsroam(append([]string{"run", "--interval", "10m"}, common...)...)
 		wait(t, "the kill switch", l.killSwitch)
+		wait(t, "the exit node", l.exitNode)
 		td.stop(syscall.SIGTERM)
-		if l.killSwitch() || !strings.Contains(td.out.String(), "stopped") {
+		if !l.killSwitch() || !strings.Contains(td.out.String(), "kill switch kept") {
 			t.Errorf("kill switch %v; log:\n%s", l.killSwitch(), td.out)
 		}
 		l.moveClient(false)
+		td = l.tsroam(append([]string{"run", "--interval", "10m"}, common...)...)
+		wait(t, "home", l.noKillSwitch)
+		td.stop(syscall.SIGTERM)
+		if !l.noKillSwitch() || !strings.Contains(td.out.String(), "stopped") {
+			t.Errorf("no kill switch %v; log:\n%s", l.noKillSwitch(), td.out)
+		}
 	})
 }
 
