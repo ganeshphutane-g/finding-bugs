@@ -288,8 +288,8 @@ func isOwn(a netip.Addr) (bool, error) {
 	return false, nil
 }
 
-// Watch sends on the channel when IPv4 addresses, routes or links change,
-// until ctx ends. If a subscription fails (the kernel dropped events), the
+// Watch sends on the channel when IPv4 addresses, main-table routes, links
+// or Tailscale's default route (the exit node) change, until ctx ends. If a subscription fails (the kernel dropped events), the
 // channel is closed: the caller can no longer rely on it.
 func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
 	out := make(chan struct{}, 1)
@@ -342,7 +342,9 @@ func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
 				if !ok {
 					return
 				}
-				if u.Table == unix.RT_TABLE_MAIN {
+				// The main table (networks), and Tailscale's default route
+				// in its table 52 (the exit node turned on or off).
+				if u.Table == unix.RT_TABLE_MAIN || u.Table == TailscaleTable && (u.Dst == nil || isDefault(u.Dst)) {
 					poke()
 				}
 			case _, ok := <-addrs:
@@ -359,6 +361,14 @@ func (s *Linux) Watch(ctx context.Context) (<-chan struct{}, error) {
 		}
 	}()
 	return out, nil
+}
+
+// TailscaleTable is the routing table tailscaled uses on Linux.
+const TailscaleTable = 52
+
+func isDefault(n *net.IPNet) bool {
+	ones, _ := n.Mask.Size()
+	return ones == 0
 }
 
 // IsTailscale is the default Skip: Tailscale's interface names.

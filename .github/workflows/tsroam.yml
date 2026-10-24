@@ -1,0 +1,58 @@
+name: tsroam
+
+on:
+  push:
+    paths: ["projects/tsroam/**", ".github/workflows/tsroam.yml"]
+  pull_request:
+    paths: ["projects/tsroam/**", ".github/workflows/tsroam.yml"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: projects/tsroam
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/tsroam/go.mod
+          cache-dependency-path: projects/tsroam/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: cross-builds
+        run: |
+          for target in linux/amd64 linux/arm64 linux/arm/7 linux/386 linux/mips/softfloat linux/riscv64; do
+            IFS=/ read -r os arch arm <<< "$target"
+            if [ "$arch" = mips ]; then GOMIPS=$arm; arm=; fi
+            GOOS=$os GOARCH=$arch GOARM=$arm GOMIPS=${GOMIPS:-} go build -o /dev/null . || exit 1
+          done
+      - name: unit tests
+        run: go test -race -count=1 ./...
+      - name: kill-switch tests in network namespaces (root)
+        run: |
+          go test -c -o /tmp/killswitch.test ./internal/killswitch
+          sudo /tmp/killswitch.test -test.v
+      - name: unit tests on a big-endian CPU (mips, under qemu)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q qemu-user
+          GOARCH=mips GOMIPS=softfloat go test -count=1 -exec qemu-mips ./internal/config ./internal/netid ./internal/policy ./internal/sys ./internal/tailscale ./internal/agent
+      - name: Tailscale and headscale for the end-to-end tests
+        # tailscale 1.104 needs a newer Go than tsroam; GOTOOLCHAIN=auto
+        # fetches it.
+        run: |
+          sudo apt-get install -y -q nftables
+          GOTOOLCHAIN=auto GOBIN=/tmp/ts-bin go install tailscale.com/cmd/tailscale@v1.104.2 tailscale.com/cmd/tailscaled@v1.104.2
+          GOTOOLCHAIN=auto GOBIN=/tmp/ts-bin go install github.com/juanfont/headscale/cmd/headscale@v0.29.5
+          /tmp/ts-bin/tailscale version
+      - name: end to end with headscale and tailscaled in network namespaces
+        run: |
+          go build -o /tmp/tsroam .
+          go test -c -race -o /tmp/e2e.test ./internal/e2e
+          cd internal/e2e && sudo PATH=/tmp/ts-bin:$PATH TSROAM_INTEGRATION=1 TSROAM_BIN=/tmp/tsroam /tmp/e2e.test -test.v -test.timeout 15m
