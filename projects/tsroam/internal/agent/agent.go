@@ -126,7 +126,10 @@ func WritePause(path string, p Pause) error {
 
 // Pass looks once and acts.
 func (a *Agent) Pass(ctx context.Context) State {
-	place := policy.Look(ctx, a.Sys, a.Config.Trusted)
+	a.mu.Lock()
+	cfg := a.Config
+	a.mu.Unlock()
+	place := policy.Look(ctx, a.Sys, cfg.Trusted)
 	key := place.Key()
 	st := State{Place: place, At: a.now()}
 	var notes []string
@@ -170,13 +173,13 @@ func (a *Agent) Pass(ctx context.Context) State {
 		// No traffic leaves anyway; keep what is in place for when it is
 		// back (the next network decides).
 		st.Wall, _ = a.Wall.Active()
-		st.ExitNode = a.exitNodeOn(ctx)
+		st.ExitNode = a.exitNodeOn(ctx, cfg)
 	case place.Kind == policy.Trusted:
 		st.Wall, err = a.wallOff()
 		if err != nil {
 			notes = append(notes, err.Error())
 		}
-		st.ExitNode, err = a.exitOffOnArrival(ctx, moved)
+		st.ExitNode, err = a.exitOffOnArrival(ctx, cfg, moved)
 		if err != nil {
 			notes = append(notes, err.Error())
 		}
@@ -185,15 +188,15 @@ func (a *Agent) Pass(ctx context.Context) State {
 		a.offPending = false
 		a.mu.Unlock()
 		// Protect first, then route.
-		if a.Config.KillSwitch {
-			st.Wall, err = a.wallOn(place)
+		if cfg.KillSwitch {
+			st.Wall, err = a.wallOn(cfg, place)
 		} else {
 			st.Wall, err = a.wallOff()
 		}
 		if err != nil {
 			notes = append(notes, err.Error())
 		}
-		st.ExitNode, err = a.exitOn(ctx)
+		st.ExitNode, err = a.exitOn(ctx, cfg)
 		if err != nil {
 			notes = append(notes, err.Error())
 		}
@@ -238,9 +241,9 @@ func (a *Agent) removePause() {
 // wallOn puts the kill switch in place, or replaces it when its rules
 // change (another LAN with allow-lan); it also restores a table someone
 // removed.
-func (a *Agent) wallOn(place policy.Place) (bool, error) {
+func (a *Agent) wallOn(cfg config.Config, place policy.Place) (bool, error) {
 	r := a.Rules
-	if a.Config.AllowLAN && place.Gateway.IsValid() {
+	if cfg.AllowLAN && place.Gateway.IsValid() {
 		if _, _, lan, err := a.Sys.Connected(netip.PrefixFrom(place.Gateway, 32)); err == nil && lan.IsValid() {
 			r.LAN = lan
 		}
@@ -298,7 +301,7 @@ func (a *Agent) wallOff() (bool, error) {
 
 // exitOn makes the configured exit node the one in use, every pass: if
 // anything turned it off on an untrusted network, it comes back.
-func (a *Agent) exitOn(ctx context.Context) (bool, error) {
+func (a *Agent) exitOn(ctx context.Context, cfg config.Config) (bool, error) {
 	s, err := a.TS.Status(ctx)
 	if err != nil {
 		return false, err
@@ -306,9 +309,9 @@ func (a *Agent) exitOn(ctx context.Context) (bool, error) {
 	if !s.Running() {
 		return false, fmt.Errorf("tailscaled is %s; the exit node is set when it runs", stateName(s.State))
 	}
-	p, ok := s.Find(a.Config.ExitNode)
+	p, ok := s.Find(cfg.ExitNode)
 	if !ok {
-		return false, fmt.Errorf("exit node %q is not in the tailnet (tailscale status)", a.Config.ExitNode)
+		return false, fmt.Errorf("exit node %q is not in the tailnet (tailscale status)", cfg.ExitNode)
 	}
 	if s.ExitNodeID == p.ID {
 		return true, nil
@@ -316,7 +319,7 @@ func (a *Agent) exitOn(ctx context.Context) (bool, error) {
 	if a.DryRun {
 		return false, nil
 	}
-	if err := a.TS.SetExitNode(ctx, a.Config.ExitNode, a.Config.AllowLAN); err != nil {
+	if err := a.TS.SetExitNode(ctx, cfg.ExitNode, cfg.AllowLAN); err != nil {
 		return false, err
 	}
 	a.mu.Lock()
@@ -326,7 +329,7 @@ func (a *Agent) exitOn(ctx context.Context) (bool, error) {
 	if !p.Online {
 		note = " (it is offline now: traffic waits for it)"
 	}
-	a.logf("exit node on: %s%s", a.Config.ExitNode, note)
+	a.logf("exit node on: %s%s", cfg.ExitNode, note)
 	return true, nil
 }
 
@@ -334,7 +337,7 @@ func (a *Agent) exitOn(ctx context.Context) (bool, error) {
 // trusted network (or tsroam starts on one), as soon as tailscaled runs.
 // It is not forced after that: on a trusted network, the user may choose an
 // exit node.
-func (a *Agent) exitOffOnArrival(ctx context.Context, arrived bool) (bool, error) {
+func (a *Agent) exitOffOnArrival(ctx context.Context, cfg config.Config, arrived bool) (bool, error) {
 	a.mu.Lock()
 	if arrived {
 		a.offPending = true
@@ -345,7 +348,7 @@ func (a *Agent) exitOffOnArrival(ctx context.Context, arrived bool) (bool, error
 	if err != nil {
 		return false, err
 	}
-	p, ok := s.Find(a.Config.ExitNode)
+	p, ok := s.Find(cfg.ExitNode)
 	ours := ok && s.ExitNodeID == p.ID
 	if !pending || !s.Running() {
 		return ours, nil
@@ -370,12 +373,12 @@ func (a *Agent) exitOffOnArrival(ctx context.Context, arrived bool) (bool, error
 	return false, nil
 }
 
-func (a *Agent) exitNodeOn(ctx context.Context) bool {
+func (a *Agent) exitNodeOn(ctx context.Context, cfg config.Config) bool {
 	s, err := a.TS.Status(ctx)
 	if err != nil {
 		return false
 	}
-	p, ok := s.Find(a.Config.ExitNode)
+	p, ok := s.Find(cfg.ExitNode)
 	return ok && s.ExitNodeID == p.ID
 }
 
@@ -459,6 +462,13 @@ func (a *Agent) Stop() error {
 	}
 	a.logf("kill switch off: tsroam is stopping")
 	return nil
+}
+
+// SetConfig replaces the config (a reload) for the next pass.
+func (a *Agent) SetConfig(c config.Config) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Config = c
 }
 
 // Last is the last pass.

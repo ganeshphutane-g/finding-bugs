@@ -372,7 +372,6 @@ func TestLogsOncePerChange(t *testing.T) {
 	}
 }
 
-
 func TestStop(t *testing.T) {
 	r := newRig(t, cafe(), conf)
 	r.pass()

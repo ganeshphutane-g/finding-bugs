@@ -90,7 +90,7 @@ func Look(ctx context.Context, s System, trusted []config.Network) Place {
 		case v.On && o.Iface == iface:
 			if p.Network == nil {
 				p.Kind, p.Network = Trusted, n
-				p.Reason = fmt.Sprintf("trusted network %s (%s): %s", n.Prefix, n.Source, v.Reason)
+				p.Reason = fmt.Sprintf("the trusted network %s (%s)", n.Prefix, n.Source)
 			}
 		case o.Iface != "" && o.Iface != iface && elsewhere == "":
 			elsewhere = fmt.Sprintf(" (trusted %s is on %s)", n.Prefix, o.Iface)
