@@ -20,7 +20,34 @@ Not scanned:
 "verified" means read from a GitHub search result on 2026-10-24. "web" means
 a web-search summary only.
 
-### Chosen (provisional): tsexit, Tailscale exit-node policy for Linux (project #15)
+### Chosen: tsroam (was "tsexit"), Tailscale exit-node policy for Linux (project #15)
+
+**Checks done 2026-10-25 (run 14), in a lab with headscale and tailscaled
+1.104.2:**
+- **Competitors:** kafu-densha/tsexit is an fzf exit-node picker (manual, not
+  network-aware), so it does not compete. `tsroam` is free. No Linux tool
+  and no upstream PR for an automatic exit node or a kill switch were found.
+- **`tailscale set --exit-node=IP`:** returns in about 20 ms. Table 52 gets
+  `default dev tailscale0` and also the LAN prefix; the LAN is reachable
+  again only with `--exit-node-allow-lan-access`.
+- **Exit nodes forward only to public addresses.** A 10.x "internet" host
+  is rejected with "acl". Lab hosts on the far side need public-range
+  addresses.
+- **Leaks:**
+  - `kill -9` of tailscaled leaves its ip rules but removes the tun
+    routes, so traffic goes straight out of the LAN interface;
+  - `tailscale down` leaks by design;
+  - a restart restores the exit route in about 1 s.
+- **Kill switch:** an nftables output chain that accepts lo, tailscale0,
+  mark 0x80000/0xff0000 (tailscaled's own sockets), DHCP (and the LAN when
+  allowed), and drops the rest. It blocked the leak with tailscaled killed
+  and with `tailscale down`. A restarted tailscaled reconnected through it.
+- **PR #18695** (configurable Linux packet marks): still open, last updated
+  2026-06-16, so the mark must be configurable.
+- **Decision:** a separate tool, with tsdirect's fingerprint code copied in
+  and adapted (the same author's code, in this repo).
+
+#### Original notes (provisional pick, round 16)
 
 A daemon that turns the exit node on automatically on networks that are not
 one of yours, and off on trusted ones. Trusted networks are recognised by the

@@ -1,22 +1,22 @@
 # State
 
-Current project: none (tsdirect, #14, is finished; see Finished projects).
-Phase: research (round 16 recorded; checks before the spec next).
+Current project: #15, tsroam (Tailscale exit node on untrusted networks, with a
+kill switch; Linux). Phase: build. Spec: projects/tsroam/SPEC.md.
 
 ## Next step
 
-Research round 16 is recorded in autopilot/IDEAS.md. The provisional pick
-for project #15 is an exit-node policy for Tailscale on Linux: turn the exit
-node on automatically off trusted networks, using tsdirect's fingerprints;
-tailscale#3302 has 127 👍. Before the spec, do the checks listed under
-"Check before the spec" there:
-- read kafu-densha/tsexit, which has the same name and may compete;
-- `tailscale set --exit-node` behaviour on Linux;
-- the kill-switch mechanism, and PR #18695;
-- separate tool or tsdirect mode.
+Build tsroam, milestone by milestone, as in its SPEC:
+1. config, identity (copied from tsdirect) and the decision;
+2. the tailscale CLI driver and the nftables kill switch, plus run, check,
+   learn, off and cleanup;
+3. e2e with home and café LANs, the exit node, and a public web host;
+   then CI;
+4. docs and two reviews.
 
-Then write SPEC.md and build. The runner-up, composeremote, needs
-compose#11867's thread read first.
+The exit-node lab facts are in IDEAS round 16 ("Checks done"). Remember:
+exit nodes forward only to public addresses. The quick lab script used
+this run was /tmp/claude-0/x/lab.sh; it is not kept, and the e2e harness
+replaces it.
 
 Lab facts (2026-10-24):
 - `GOBIN=/tmp/ts-bin GOTOOLCHAIN=auto go install
