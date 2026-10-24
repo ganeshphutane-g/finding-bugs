@@ -5,23 +5,23 @@ kill switch; Linux). Phase: build. Spec: projects/tsroam/SPEC.md.
 
 ## Next step
 
-tsroam milestones 1–3 are done:
-- config, identity and decision;
-- the tailscale driver and the nftables kill switch, plus run, check,
-  learn, off and cleanup;
-- e2e with headscale and real tailscaled: 9 scenarios passing locally, run
-  with `--interval 10m`; CI workflow .github/workflows/tsroam.yml.
+tsroam milestones 1–3 are done, and most of 4:
+- README, CHANGELOG and the systemd unit are written; the unit was
+  verified with only CAP_NET_ADMIN and CAP_NET_RAW;
+- review 1 found 13 issues, all fixed. The worst were forwarded traffic not
+  covered and a leak window on network moves;
+- CI is green through run 4.
 
-Next, milestone 4:
-- check that CI is green;
-- the README with real runs, CHANGELOG, a systemd unit (root with
-  CAP_NET_ADMIN/CAP_NET_RAW; tailscaled's socket needs root, so no
-  DynamicUser);
-- two full reviews, with fixes.
+Remaining:
+- review 2 (it was running at the end of run 14's last push), and fix its
+  findings;
+- confirm CI is green;
+- set tsroam to finished in STATE (tag `tsroam/v1.0.0` is an owner step);
+- research round 17.
 
 Run the tsroam e2e with `PATH=/tmp/ts-bin:$PATH TSROAM_INTEGRATION=1
-TSROAM_BIN=/tmp/tsroam`. `tailscale up` with any flag fails once an exit node
-is set (it must mention every setting): use a bare `tailscale up`.
+TSROAM_BIN=/tmp/tsroam` (9 scenarios, about 45 s). `tailscale up` with any
+flag fails once an exit node is set: use a bare `tailscale up`.
 
 Lab facts (2026-10-24):
 - `GOBIN=/tmp/ts-bin GOTOOLCHAIN=auto go install
