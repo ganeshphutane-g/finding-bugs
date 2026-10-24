@@ -65,7 +65,8 @@ Usage:
 
 Run "tsroam run -h" for the flags.
 
-Exit codes: 0 fine, 1 error, 2 bad usage, 4 (check) on an untrusted network.
+Exit codes: 0 fine, 1 error (check: also when tsroam could not do all it
+wanted), 2 bad usage, 4 (check) on an untrusted network.
 `
 
 // Deps are what the commands use from outside; tests replace them.
@@ -276,7 +277,7 @@ func check(a *agent.Agent, stdout io.Writer) int {
 		fmt.Fprintf(stdout, "note:        %s\n", st.Note)
 	}
 	switch {
-	case p.Err != nil:
+	case p.Err != nil, st.Note != "":
 		return exitError
 	case p.Kind == policy.Untrusted:
 		return exitUntrusted

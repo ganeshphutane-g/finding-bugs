@@ -1,0 +1,39 @@
+[Unit]
+Description=tsroam: Tailscale exit node on untrusted networks, with a kill switch
+Documentation=https://github.com/ganeshphutane-g/finding-bugs/tree/main/projects/tsroam
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+# Settings go in /etc/tsroam.conf ("tsroam learn" prints a "trusted" line);
+# flags in /etc/default/tsroam, e.g. TSROAM_OPTS="--listen 127.0.0.1:9588"
+EnvironmentFile=-/etc/default/tsroam
+ExecStart=/usr/local/bin/tsroam run $TSROAM_OPTS
+# Re-reads /etc/tsroam.conf.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+# Root, for tailscaled's socket (tailscale set needs root or the operator),
+# but only able to change nftables (CAP_NET_ADMIN) and send ARP requests and
+# bound probes (CAP_NET_RAW). "tsroam off" writes its pause to /run/tsroam.
+RuntimeDirectory=tsroam
+RuntimeDirectoryPreserve=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

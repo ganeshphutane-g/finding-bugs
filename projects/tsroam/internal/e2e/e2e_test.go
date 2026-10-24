@@ -593,6 +593,18 @@ func TestTailscaleLab(t *testing.T) {
 	t.Run("home: both off", func(t *testing.T) {
 		l.moveClient(false)
 		wait(t, "trusted", func() bool { return strings.Count(td.out.String(), "trusted: the trusted network") >= 2 })
+		// Once more, from the café with both on, home again.
+		l.moveClient(true)
+		wait(t, "the exit node", l.exitNode)
+		wait(t, "the kill switch", l.killSwitch)
+		l.moveClient(false)
+		wait(t, "the exit node off", func() bool { return !l.exitNode() })
+		wait(t, "the kill switch off", func() bool { return !l.killSwitch() })
+		for _, want := range []string{"kill switch off\n", "exit node off\n"} {
+			if !strings.Contains(td.out.String(), want) {
+				t.Errorf("the log lacks %q:\n%s", want, td.out)
+			}
+		}
 		if l.exitNode() || l.killSwitch() {
 			t.Errorf("exit node %v, kill switch %v", l.exitNode(), l.killSwitch())
 		}
