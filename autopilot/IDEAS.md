@@ -3,6 +3,75 @@
 Researched candidates, with evidence. Newest research first.
 Scores are 1–5 (higher is better): demand, gap, feasibility, maintenance (5 = light), audience fit.
 
+## Research round 18 — 2026-10-28 IST
+
+Trackers mined this time: moby, docker/cli, syncthing, traefik, plus
+quick looks at AdGuardHome, headscale, caddy, rclone and nginx-proxy-manager.
+podman and gluetun could not be searched (422). "verified" means seen in a
+GitHub search result on 2026-10-28; issue bodies of outside repos could not
+be read (the session's GitHub access refuses them), so maintainer positions
+are "web" or unverified.
+
+### Provisional pick: stseed, shared ignore patterns for Syncthing (project #17)
+
+A small daemon (or one-shot CLI) that talks to Syncthing's REST API:
+- when a folder is added, it ignores everything except the shared ignore
+  file (for example `.stignore-shared`) until that file has arrived, then
+  switches the folder's `.stignore` to `#include` it;
+- it can push one ignore policy to many devices.
+
+**Demand (verified, 👍 at 2026-10-28):**
+- syncthing#2491 "Next Gen Ignores: Requirements": 116, open since
+  2015-11 (an umbrella issue);
+- #7311 ".stsharedignore that gets synchronized between all the devices":
+  36, open since 2021-01;
+- #9352 "Auto-sync included ignore file": 23, open since 2024-01 (its body
+  describes the manual bootstrap, per the researcher);
+- #10078 sync common settings across devices: 17, open;
+- #837 ignore some files by default: 45, open;
+- forum.syncthing.net threads on pre-seeding ignores (web). A maintainer
+  said there is no priority mechanism and no one is working on it (web).
+
+**Existing tools:** only local `.stignore` editors (find-stignore 4★,
+particle 3★, stignore 2★, stselect 2★, stignore-manager 1★). None syncs
+patterns between devices.
+
+**Scores:** 3/3/5/4/4 = 19.
+
+**Check first (next run):**
+- whether Syncthing reloads a changed `#include`d file on its own, or
+  needs a rescan or a config touch;
+- whether a folder can be added paused and receive only one file (the
+  bootstrap), with three Syncthing containers;
+- re-read #7311 and #9352 on the web for a maintainer "no".
+
+### Runners-up
+
+- **Traefik HA certificate sidecar** (external ACME for several replicas):
+  traefik#3749 52 👍, #4756 52 👍, #3652 55 👍 (verified). Distributed ACME
+  is a paid Traefik Enterprise feature (web). Multi-replica Traefik is a
+  minority setup. 17.
+- **whoamid** (a container's own metadata without the Docker socket):
+  moby#3778 118 👍, #8427 28 👍 (verified). Niche use. 17.
+- **stackcompat** (modern Compose files for `docker stack deploy`):
+  docker/cli#2527 79 👍, #3880 51 👍 (verified). Swarm is shrinking. 16.
+
+### Rejected in round 18
+
+- **idmapvol** (a volume plugin with idmapped mounts; moby#2259, 938 👍,
+  verified): **being done upstream.** moby#53368 "Add
+  BindOptions.IDMapping for id-mapped bind mounts" is an open PR from
+  2026-08-13 that follows the maintainers' discussion on #2259 (verified).
+  Docker 29.8.2's CLI has no idmap mount option yet (tested here).
+- **Syncthing event hooks:** stfed (36★, maintained), syncthing-hooks
+  (36★), syncthing-hook (17★) cover it.
+- **Already covered:** auto-restart of unhealthy containers (autoheal,
+  2015★), Docker bypassing the firewall (ufw-docker, 6840★), Traefik caching
+  (souin, 1013★), Nginx Proxy Manager config as code (a Terraform provider).
+- **Too close to earlier projects:** port changes on a running container
+  (docker-edit), image last-used (docker-mop), rclone watch-and-sync
+  (pushdir).
+
 ## Research round 17 — 2026-10-25 IST
 
 One research pass covering two things:
