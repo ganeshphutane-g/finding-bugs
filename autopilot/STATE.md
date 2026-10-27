@@ -10,9 +10,8 @@ containers on one Docker network, paired over REST). If they hold, write
 projects/stseed/SPEC.md and build. If they fail, take the next runner-up
 (the Traefik HA certificate sidecar or whoamid) after re-checking it.
 
-composehost (#16) is finished (see Finished projects). CI was green at
-29796a2; the runs for 1920424 and 68ded98 were still going at the last
-push (check them first).
+composehost (#16) is finished (see Finished projects); CI is green at
+68ded98, the v1.0.0 commit.
 
 Lab facts for composehost (2026-10-28): `-p NAME` without `-f` skips
 providers on stop/down (with -f it works); with `env`, every up recreates

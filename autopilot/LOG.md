@@ -33,8 +33,7 @@ Newest first.
     - Docker CLI flags before `compose`, the logical `$PWD`, env-file
       variables;
     - system directories, 32-bit ids, umask.
-  - CI was green at every commit up to 29796a2; the runs for 1920424 and
-    68ded98 were still going when this entry was written.
+  - CI is green at every commit, the last at 68ded98 (1.0.0).
 - **Research round 18:**
   - idmapvol (moby#2259, 938 👍) is rejected: moby#53368 is an open
     upstream PR for id-mapped bind mounts.
