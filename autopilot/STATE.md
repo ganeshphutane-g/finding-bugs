@@ -1,18 +1,18 @@
 # State
 
-Current project: #16, composehost (host-side steps for Compose projects
-through Compose's provider services). Phase: build. Spec:
-projects/composehost/SPEC.md (with what the lab verified).
+Current project: #17, stseed (shared ignore patterns for Syncthing),
+provisional. Phase: research checks. See autopilot/IDEAS.md round 18.
 
 ## Next step
 
-composehost: milestones 1–3 are done, and two full reviews were made with
-their findings fixed (c27fabb, 29796a2). The big finding: Compose runs
-providers in its caller's directory, so composehost finds the project
-directory from the parent Compose process (/proc). A third, narrow review
-of 29796a2 is under way. Left: fix what it finds, CI green, then mark
-composehost finished (owner tag `composehost/v1.0.0`) and start project
-#17: stseed, provisional, with the checks listed in IDEAS.md round 18.
+Run the stseed checks listed in IDEAS.md round 18 (three Syncthing
+containers on one Docker network, paired over REST). If they hold, write
+projects/stseed/SPEC.md and build. If they fail, take the next runner-up
+(the Traefik HA certificate sidecar or whoamid) after re-checking it.
+
+composehost (#16) is finished (see Finished projects). CI was green at
+29796a2; the runs for 1920424 and 68ded98 were still going at the last
+push (check them first).
 
 Lab facts for composehost (2026-10-28): `-p NAME` without `-f` skips
 providers on stop/down (with -f it works); with `env`, every up recreates
@@ -449,6 +449,37 @@ Actions as codeberg.org/forgejo/forgejo:16.
         service with `kill-switch on` for a few days;
       - `tsroam off` behind a real captive portal.
 
+16. **composehost** (projects/composehost, v1.0.0 at commit 68ded98).
+    Host-side steps for Docker Compose projects, run by plain `docker
+    compose up` through Compose's provider services (compose#6736, 225 👍;
+    #1341, 90 👍). The steps: `mkdir` with `owner`/`mode`; `wait-mount`,
+    `wait-path` and `wait-tcp`; `run`; `env` (values into the dependent
+    services); and `stop`/`down` commands. Plus `composehost check`.
+    - **How:**
+      - Compose runs providers in its caller's directory, so composehost
+        finds the project directory from the parent Compose process
+        (/proc: its flags, including the Docker CLI's, its logical $PWD,
+        and env files), and fails rather than guess;
+      - mkdir walks paths with openat and O_NOFOLLOW, as root safely;
+      - commands are shown by their first word only, `env` output never;
+      - composehost dies with Compose, and so do its commands.
+    - **Reviews:** three, 37 findings, all fixed except two kept as
+      documented limits: a CI matrix of older Composes, and background
+      children surviving when Compose SIGKILLs composehost. The worst: the
+      steps ran in the caller's directory; a symlink swap let a container
+      user make root chown anything; Docker CLI flags before `compose`
+      broke the directory detection; secrets in shown commands and env
+      errors.
+    - **Tests:** unit (also as root and as uid 1000); end to end with
+      dockerd and Compose v5.6.0 in CI (15 scenarios, including a tmpfs
+      mounted during the wait, Compose run from elsewhere, from a
+      subdirectory, with `docker --context`, killed with SIGTERM and
+      SIGKILL, and the CLI plugin install).
+    - **Owner checks before going public:** the README; on a machine with
+      a NAS mount, a compose file with `mkdir`/`owner` and `wait-mount`,
+      `docker compose up` from the project directory and from elsewhere
+      with `-f`.
+
 ## Blockers for the owner
 
 - The finding-bugs repo itself is PUBLIC (seen 2026-10-15). Everything in it
@@ -476,6 +507,7 @@ Actions as codeberg.org/forgejo/forgejo:16.
   `docker-edit/v1.0.0` (cdc7019), `pushprobe/v1.0.0` (0e881d2),
   `alertlines/v1.0.0` (5e2f87c), `xffdns/v1.0.0` (e52932e), `pullwhy/v1.0.0`
   (90c49bd), `packparity/v1.0.0` (89cf92f), `wgresolve/v1.0.0` (27e1655)
-  `tsdirect/v1.0.0` (b56a34c) and `tsroam/v1.0.0` (3905284),
+  `tsdirect/v1.0.0` (b56a34c), `tsroam/v1.0.0` (3905284) and
+  `composehost/v1.0.0` (68ded98),
   plus `docker-mop/v1.0.0`
   (50c1a1e) if not yet done.

@@ -2,6 +2,47 @@
 
 Newest first.
 
+## 2026-10-28 (IST) — run 15
+
+- **Scheduling:** the runs due on 2026-10-26 and 2026-10-27 IST did not
+  happen. Their three queued triggers fired together on 2026-10-28 and were
+  handled as this one run.
+- **Project #16 composehost: from the lab to finished in this run.**
+  - **Lab:** a probe provider characterised Compose's provider calls
+    (metadata, up/stop/down, JSON messages, `rawsetenv`, option filtering,
+    the `-p` without `-f` limit).
+  - **Built:**
+    - the options and the protocol;
+    - `check` (through `docker compose config`, catching options Compose
+      drops silently);
+    - the Docker CLI plugin mode;
+    - end-to-end tests with real dockerd and Compose v5.6.0, in CI from
+      the first push;
+    - README with real runs, and the CHANGELOG.
+  - **Three reviews** (two full, one of the second round's fixes), 37
+    findings. The big one: Compose runs providers in its caller's working
+    directory, not the project's. The first lab runs hid this because they
+    were all made from the project directory. composehost now finds the
+    directory from the parent Compose process (/proc) and fails rather
+    than guess. Also fixed:
+    - a symlink swap that let a container user make root chown anything:
+      mkdir now walks with openat and O_NOFOLLOW;
+    - secrets in shown commands and env errors;
+    - process handling: background jobs, timeouts, Compose killed;
+    - mounts: autofs placeholders, and directories inside a mount;
+    - Docker CLI flags before `compose`, the logical `$PWD`, env-file
+      variables;
+    - system directories, 32-bit ids, umask.
+  - CI was green at every commit up to 29796a2; the runs for 1920424 and
+    68ded98 were still going when this entry was written.
+- **Research round 18:**
+  - idmapvol (moby#2259, 938 👍) is rejected: moby#53368 is an open
+    upstream PR for id-mapped bind mounts.
+  - **Provisional pick:** stseed, shared ignore patterns for Syncthing
+    (syncthing#7311, #9352, #2491), with checks to run first.
+- **Owner:** tag `composehost/v1.0.0` at 68ded98 (with the earlier tags in
+  STATE.md); the repo is still public.
+
 ## 2026-10-25 (IST) — run 14
 
 - **Project #15 tsroam: from research checks to finished in this run.**
