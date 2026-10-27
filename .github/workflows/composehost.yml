@@ -1,0 +1,54 @@
+name: composehost
+
+on:
+  push:
+    paths: ["projects/composehost/**", ".github/workflows/composehost.yml"]
+  pull_request:
+    paths: ["projects/composehost/**", ".github/workflows/composehost.yml"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: projects/composehost
+
+env:
+  # The Compose release the end-to-end tests run against (provider services
+  # need 2.36.1 or later).
+  COMPOSE_VERSION: v5.6.0
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: projects/composehost/go.mod
+          cache-dependency-path: projects/composehost/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - name: cross-builds
+        run: |
+          for target in linux/amd64 linux/arm64 linux/arm linux/386 linux/riscv64 darwin/arm64 freebsd/amd64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null . || exit 1
+          done
+      - name: unit tests
+        run: go test -race -count=1 ./...
+      - name: Docker Compose ${{ env.COMPOSE_VERSION }}
+        run: |
+          docker compose version || true
+          sudo mkdir -p /usr/local/lib/docker/cli-plugins
+          sudo curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+            "https://github.com/docker/compose/releases/download/$COMPOSE_VERSION/docker-compose-linux-x86_64"
+          sudo chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+          sudo docker compose version
+          docker version --format 'Docker {{.Server.Version}}'
+      - name: end to end with dockerd and Compose (root)
+        run: |
+          go build -o /tmp/composehost .
+          go test -c -race -o /tmp/e2e.test ./internal/e2e
+          sudo COMPOSEHOST_INTEGRATION=1 COMPOSEHOST_BIN=/tmp/composehost /tmp/e2e.test -test.v -test.timeout 10m

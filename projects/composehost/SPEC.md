@@ -68,8 +68,13 @@ found.
 - `up` is called on every `docker compose up`.
 - `stop` is called only if metadata declares a `stop` block. `restart`
   calls nothing.
-- `down` and `stop` reach the provider only when Compose has the compose
-  file. `docker compose -p NAME down` without it skips provider teardown.
+- `down` and `stop` reach the provider only when Compose reads the compose
+  file: with `-p NAME` and no `-f`, they work from the containers alone and
+  skip providers, even in the project directory. `-p NAME -f FILE`,
+  `COMPOSE_PROJECT_NAME` and `name:` in the file all work (checked
+  2026-10-28).
+- With `env`, every `up` recreates the dependent containers (the injected
+  values count as a change); without it, running dependents are left alone.
 
 **Messages and options:**
 - A provider that prints nothing is accepted.
@@ -143,7 +148,7 @@ Also:
   - `run` fails `up` and the message is shown;
   - `down` and `stop` run their commands;
   - a second `up` is idempotent;
-  - `-p NAME down` without the file is the documented limit.
+  - `-p NAME stop` and `down` without `-f` are the documented limit.
 
 ## Milestones
 
