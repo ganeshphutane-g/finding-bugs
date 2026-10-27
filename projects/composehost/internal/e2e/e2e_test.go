@@ -1,4 +1,6 @@
-// End-to-end tests with real dockerd and Docker Compose (v2.36.1 or later).
+//go:build linux
+
+// End-to-end tests with real dockerd and Docker Compose (tested with v5.6.0).
 // They run as root when COMPOSEHOST_INTEGRATION=1: they mount a tmpfs and
 // chown directories. COMPOSEHOST_BIN is the binary to test (else it is
 // built); COMPOSEHOST_IMAGE is the image for the dependent services

@@ -34,7 +34,8 @@ var valueFlags = map[string]bool{
 var boolFlags = map[string]bool{
 	"--all-resources": true, "--compatibility": true, "--dry-run": true,
 	"--verbose": true, "--no-ansi": true, "-D": true, "--debug": true,
-	"--tls": true, "--tlsverify": true,
+	"--tls": true, "--tlsverify": true, "-v": true, "--version": true,
+	"-h": true, "--help": true,
 }
 
 // Flags are the global flags that decide the directory.
@@ -60,12 +61,34 @@ func ParseFlags(args []string) (Flags, []string, error) {
 		if a == "--" || !strings.HasPrefix(a, "-") || a == "-" {
 			return f, args[i:], nil
 		}
-		name, value, hasValue := strings.Cut(a, "=")
-		if !hasValue && len(a) > 2 && a[1] != '-' && valueFlags[a[:2]] {
-			name, value, hasValue = a[:2], a[2:], true // -fFILE
-		}
-		if boolFlags[name] {
-			continue
+		var name, value string
+		var hasValue bool
+		if strings.HasPrefix(a, "--") {
+			name, value, hasValue = strings.Cut(a, "=")
+			if boolFlags[name] {
+				continue
+			}
+		} else {
+			// Short flags, as pflag reads them: grouped (-Dl info),
+			// with the value attached (-fFILE, -f=FILE) or next.
+			name = ""
+			for j := 1; j < len(a); j++ {
+				n := "-" + a[j:j+1]
+				if boolFlags[n] {
+					continue
+				}
+				if !valueFlags[n] {
+					return f, nil, fmt.Errorf("unknown flag %q in %q", n, a)
+				}
+				name = n
+				if rest := strings.TrimPrefix(a[j+1:], "="); a[j+1:] != "" {
+					value, hasValue = rest, true
+				}
+				break
+			}
+			if name == "" {
+				continue // only bool flags
+			}
 		}
 		if !valueFlags[name] {
 			return f, nil, fmt.Errorf("unknown flag %q", name)
@@ -109,6 +132,7 @@ func Dir(f Flags, getenv func(string) string, cwd string) (string, error) {
 	if len(files) == 0 {
 		cf := getenv("COMPOSE_FILE")
 		sep := getenv("COMPOSE_PATH_SEPARATOR")
+		fileSep := ""
 		if cf == "" {
 			// Compose also reads these from the .env file: the
 			// --env-file ones, else COMPOSE_ENV_FILES, else the working
@@ -125,9 +149,12 @@ func Dir(f Flags, getenv func(string) string, cwd string) (string, error) {
 				if v := vars["COMPOSE_FILE"]; v != "" {
 					cf = v
 				}
-				if v := vars["COMPOSE_PATH_SEPARATOR"]; v != "" && sep == "" {
-					sep = v
+				if v := vars["COMPOSE_PATH_SEPARATOR"]; v != "" {
+					fileSep = v // the last file wins
 				}
+			}
+			if sep == "" {
+				sep = fileSep
 			}
 		}
 		if cf != "" {
@@ -232,7 +259,7 @@ func FromParent() (string, error) {
 	// a link), the kernel gives the physical one: take $PWD when it is the
 	// same directory.
 	if pwd := env["PWD"]; filepath.IsAbs(pwd) && sameFile(pwd, filepath.Join(Proc, pid, "cwd")) {
-		cwd = pwd
+		cwd = filepath.Clean(pwd)
 	}
 	f, _, err := ParseFlags(args)
 	if err != nil {
@@ -245,5 +272,8 @@ func FromParent() (string, error) {
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return "", errors.New("the project directory " + dir + " is not a directory")
 	}
-	return dir, nil
+	// The steps work in the physical directory: the logical one may go
+	// through links that mkdir, as root, rightly refuses to follow in
+	// directories other users own.
+	return filepath.EvalSymlinks(dir)
 }

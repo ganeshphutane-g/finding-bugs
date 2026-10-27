@@ -126,8 +126,12 @@ func TestMkdir(t *testing.T) {
 			t.Errorf("%s: %v", p, err)
 		}
 	}
-	// Never the owner or mode of / (an unset ${DATA}/) or a system directory.
-	for _, p := range []string{"/", "//", "/etc/", "/usr/../var"} {
+	// Never the owner or mode of / (an unset ${DATA}/) or a system
+	// directory, even through a link; unless nothing would change.
+	if err := Mkdir(r, dir, []string{"/"}, &Owner{0, 0}, nil); err != nil {
+		t.Errorf("no change to /: %v", err)
+	}
+	for _, p := range []string{"/", "//", "/etc/", "/usr/../var", "/proc/self/root", "/proc/self/root/var/tmp"} {
 		if err := Mkdir(r, dir, []string{p}, &Owner{1000, 1000}, nil); err == nil || !strings.Contains(err.Error(), "does not change") {
 			t.Errorf("%s: %v", p, err)
 		}
@@ -287,11 +291,18 @@ func TestRun(t *testing.T) {
 		"curl&& x":                      "curl …",
 		"'quoted secret' x":             "…",
 		"FOO=bar":                       "…",
+		"PASS='correct horse' restic x": "…",
+		`PASS=abc\ def ./x`:             "…",
 		"   ":                           "…",
 	} {
 		if got := short(cmd); got != want {
 			t.Errorf("short(%q) = %q, want %q", cmd, got, want)
 		}
+	}
+	// The error shows the last lines, even past the cap.
+	err = Run(context.Background(), r, dir, "run", "yes progress | head -c 5000000 >&2; echo REAL ERROR >&2; exit 3", 5*time.Second, nil)
+	if err == nil || !strings.Contains(err.Error(), "REAL ERROR") {
+		t.Errorf("%v", err)
 	}
 	// Output past the cap is dropped; for env that is an error.
 	if _, err := Output(context.Background(), r, dir, "env", "head -c 5000000 /dev/zero", 5*time.Second, nil); err == nil || !strings.Contains(err.Error(), "more than 4 MiB") {

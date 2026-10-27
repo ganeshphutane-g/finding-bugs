@@ -33,26 +33,29 @@ func Mkdir(r Report, dir string, paths []string, owner *Owner, mode *fs.FileMode
 		if !filepath.IsAbs(full) {
 			full = filepath.Join(dir, p)
 		}
-		full = filepath.Clean(full)
-		if (owner != nil || mode != nil) && system[full] {
-			// An unset variable (${DATA}/) can make a path /.
-			return fmt.Errorf("mkdir %s: composehost does not change the owner or mode of %s", p, full)
-		}
-		if err := mkdirOne(r, p, full, owner, mode); err != nil {
+		if err := mkdirOne(r, p, filepath.Clean(full), owner, mode); err != nil {
 			return fmt.Errorf("mkdir %s: %w", p, err)
 		}
 	}
 	return nil
 }
 
-// system are directories whose owner and mode composehost never changes.
-var system = map[string]bool{}
+// system are directories whose owner and mode composehost never changes
+// (an unset variable can make a path /), by device and inode: a path may
+// reach one through links.
+var system = map[[2]uint64]string{}
 
 func init() {
-	for _, d := range []string{"/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib32", "/lib64",
-		"/media", "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/tmp", "/usr", "/var",
-		"/usr/bin", "/usr/lib", "/usr/local", "/usr/sbin", "/var/lib", "/var/log", "/var/run"} {
-		system[d] = true
+	for _, d := range []string{"/", "/bin", "/boot", "/dev", "/dev/shm", "/etc", "/home", "/lib", "/lib32",
+		"/lib64", "/media", "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/tmp", "/usr",
+		"/usr/bin", "/usr/include", "/usr/lib", "/usr/lib32", "/usr/lib64", "/usr/libexec", "/usr/local",
+		"/usr/local/bin", "/usr/local/lib", "/usr/local/sbin", "/usr/sbin", "/usr/share", "/usr/src", "/var",
+		"/var/cache", "/var/lib", "/var/lib/docker", "/var/log", "/var/mail", "/var/run", "/var/spool",
+		"/var/tmp", "/etc/ssh", "/etc/systemd", "/etc/sudoers.d", "/etc/cron.d"} {
+		var st unix.Stat_t
+		if unix.Stat(d, &st) == nil {
+			system[[2]uint64{uint64(st.Dev), st.Ino}] = d
+		}
 	}
 }
 
@@ -144,6 +147,9 @@ func mkdirOne(r Report, p, full string, owner *Owner, mode *fs.FileMode) error {
 	if err := syscall.Fstat(fd, &st); err != nil {
 		return err
 	}
+	if d, ok := system[[2]uint64{uint64(st.Dev), st.Ino}]; ok && changes(&st, owner, mode) {
+		return fmt.Errorf("composehost does not change the owner or mode of %s", d)
+	}
 	if owner != nil {
 		uid, gid := int(st.Uid), int(st.Gid)
 		want := *owner
@@ -179,6 +185,14 @@ func readlinkat(fd int, c string) (string, error) {
 		return "", errors.New(c + ": the link is too long")
 	}
 	return string(buf[:n]), nil
+}
+
+// changes says whether the owner or mode would change.
+func changes(st *syscall.Stat_t, owner *Owner, mode *fs.FileMode) bool {
+	if owner != nil && (owner.UID != -1 && owner.UID != int(st.Uid) || owner.GID != -1 && owner.GID != int(st.Gid)) {
+		return true
+	}
+	return mode != nil && st.Mode&0o7777 != uint32(*mode)
 }
 
 // openDir opens the directory c in fd, refusing a link swapped in.

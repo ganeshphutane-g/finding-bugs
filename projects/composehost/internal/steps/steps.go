@@ -297,7 +297,7 @@ func run(ctx context.Context, r Report, dir, what, command string, timeout time.
 	}
 	if err != nil {
 		msg := fmt.Sprintf("%s: %s failed: %v", what, name, err)
-		if tail := lastLines(stderr.Bytes(), 5); tail != "" {
+		if tail := lastLines(stderr.Tail(), 5); tail != "" {
 			msg += ": " + tail
 		}
 		return nil, errors.New(msg)
@@ -354,15 +354,23 @@ func lastLines(b []byte, n int) string {
 // maxOutput is the most of a command's output kept, for each stream.
 const maxOutput = 4 << 20
 
-// capped keeps the first max bytes written to it. (Not an embedded
-// bytes.Buffer: io.Copy would use its ReadFrom, past the cap.)
+// capped keeps the first max bytes written to it, and the last 64 KiB
+// (for the error lines at the end). (Not an embedded bytes.Buffer: io.Copy
+// would use its ReadFrom, past the cap.)
 type capped struct {
 	buf  bytes.Buffer
+	tail []byte
 	max  int
 	over bool
 }
 
+const tailSize = 64 << 10
+
 func (c *capped) Write(b []byte) (int, error) {
+	c.tail = append(c.tail, b...)
+	if len(c.tail) > tailSize {
+		c.tail = append(c.tail[:0], c.tail[len(c.tail)-tailSize:]...)
+	}
 	if room := c.max - c.buf.Len(); len(b) > room {
 		c.over = true
 		c.buf.Write(b[:max(room, 0)])
@@ -371,6 +379,9 @@ func (c *capped) Write(b []byte) (int, error) {
 	return c.buf.Write(b)
 }
 
+// Tail is the end of what was written.
+func (c *capped) Tail() []byte { return c.tail }
+
 func (c *capped) Bytes() []byte { return c.buf.Bytes() }
 
 // short is a command's first word (after any NAME=value ones: values may
@@ -378,6 +389,10 @@ func (c *capped) Bytes() []byte { return c.buf.Bytes() }
 func short(command string) string {
 	f := strings.Fields(command)
 	for len(f) > 0 && assignment.MatchString(f[0]) {
+		if strings.ContainsAny(f[0], "'\"\\$`") {
+			// A quoted or escaped value can span words: show nothing.
+			return "…"
+		}
 		f = f[1:]
 	}
 	if len(f) == 0 {

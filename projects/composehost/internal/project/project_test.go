@@ -21,11 +21,16 @@ func TestParseFlags(t *testing.T) {
 		{"-c", "x", "--log-level", "info", "-H", "unix:///s", "--tlsverify", "compose", "--file", "/p/c.yaml", "up"},
 		{"--context=x", "-f", "/p/c.yaml", "up"}, // docker-compose on its own
 		{"compose", "--workdir", "/p", "up"},
+		{"-Dl", "info", "compose", "-v", "--version", "-f/p/c.yaml", "up"},
+		{"-Dcdefault", "compose", "-f=/p/c.yaml", "up"},
 	} {
 		f, rest, err := ParseFlags(args)
 		if err != nil || rest[0] != "up" || (f.Files == nil && f.ProjectDirectory != "/p") || (f.Files != nil && f.Files[0] != "/p/c.yaml") {
 			t.Errorf("%v: %+v %v %v", args, f, rest, err)
 		}
+	}
+	if f, _, err := ParseFlags([]string{"-fa=b.yaml", "up"}); err != nil || f.Files[0] != "a=b.yaml" {
+		t.Errorf("%+v %v", f, err)
 	}
 	// A flag it does not know could take a value: an error, not a guess.
 	for _, args := range [][]string{{"-f"}, {"--frobnicate", "x", "-f", "c.yaml", "up"}, {"-x", "up"}} {
@@ -82,6 +87,12 @@ func TestDir(t *testing.T) {
 		t.Fatal(d)
 	}
 	os.WriteFile(filepath.Join(sub, "other.env"), []byte("COMPOSE_FILE=/opt/other/c.yaml\n"), 0o644)
+	// The last env file's separator wins.
+	os.WriteFile(filepath.Join(sub, "a.env"), []byte("COMPOSE_FILE=/opt/x:y/c.yaml;z\nCOMPOSE_PATH_SEPARATOR=,\n"), 0o644)
+	os.WriteFile(filepath.Join(sub, "b.env"), []byte("COMPOSE_PATH_SEPARATOR=;\n"), 0o644)
+	if d := dir(Flags{EnvFiles: []string{"a.env", "b.env"}}, sub); d != "/opt/x:y" {
+		t.Fatal(d)
+	}
 	if d := dir(Flags{EnvFiles: []string{"other.env"}}, sub); d != "/opt/other" {
 		t.Fatal(d)
 	}
@@ -145,6 +156,12 @@ func TestFromParent(t *testing.T) {
 	os.WriteFile(filepath.Join(pid, "environ"), []byte("PWD="+filepath.Join(base, "logical", "here")+"\x00"), 0o644)
 	cmdline("docker-compose", "-f", "../proj/compose.yaml", "up")
 	if d, err := FromParent(); err != nil || d != filepath.Join(base, "logical", "proj") {
+		t.Fatalf("%q %v", d, err)
+	}
+	// Found through a link, it is given as the real directory.
+	os.Rename(filepath.Join(base, "logical", "proj"), filepath.Join(base, "realproj"))
+	os.Symlink(filepath.Join(base, "realproj"), filepath.Join(base, "logical", "proj"))
+	if d, err := FromParent(); err != nil || d != filepath.Join(base, "realproj") {
 		t.Fatalf("%q %v", d, err)
 	}
 	// A $PWD that is not the working directory is ignored.
