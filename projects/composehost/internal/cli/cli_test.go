@@ -136,4 +136,14 @@ func TestMain(t *testing.T) {
 	if code := Main([]string{"compose"}, &out, &errb); code != 1 || !strings.Contains(errb.String(), "no command") {
 		t.Errorf("%d %q", code, errb.String())
 	}
+	// As a Docker CLI plugin.
+	out.Reset()
+	var meta struct{ SchemaVersion, ShortDescription string }
+	if code := Main([]string{"docker-cli-plugin-metadata"}, &out, &errb); code != 0 || json.Unmarshal(out.Bytes(), &meta) != nil || meta.SchemaVersion != "0.1.0" {
+		t.Errorf("%d %q", code, out.String())
+	}
+	out.Reset()
+	if code := Main([]string{"composehost", "version"}, &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "composehost ") {
+		t.Errorf("%d %q", code, out.String())
+	}
 }

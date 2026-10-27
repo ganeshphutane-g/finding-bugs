@@ -88,7 +88,21 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
+	// As a Docker CLI plugin (docker-composehost), "docker composehost
+	// check" calls it with its own name first.
+	if args[0] == "composehost" && len(args) > 1 {
+		args = args[1:]
+	}
 	switch args[0] {
+	case "docker-cli-plugin-metadata":
+		b, _ := json.Marshal(map[string]string{
+			"SchemaVersion":    "0.1.0",
+			"Vendor":           "Ganesh Phutane",
+			"Version":          version(),
+			"ShortDescription": "Host-side steps for Docker Compose projects",
+		})
+		fmt.Fprintf(stdout, "%s\n", b)
+		return 0
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0

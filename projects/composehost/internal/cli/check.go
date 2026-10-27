@@ -135,7 +135,7 @@ func Check(args []string, stdout, stderr io.Writer, pending func(dir string, w s
 			call := protocol.Call{Project: m.Name, Command: cmd, Service: name, Options: map[string][]string{}}
 			for opt, v := range s.Provider.Options {
 				if known[cmd][opt] {
-					call.Options[opt] = v
+					call.Options[opt] = unescape(v)
 				}
 			}
 			p, err := planOf(call)
@@ -165,6 +165,16 @@ func Check(args []string, stdout, stderr io.Writer, pending func(dir string, w s
 		}
 	}
 	return code
+}
+
+// unescape undoes the $$ that "docker compose config" writes for a literal
+// $: the provider gets $.
+func unescape(v []string) []string {
+	out := make([]string, len(v))
+	for i, s := range v {
+		out[i] = strings.ReplaceAll(s, "$$", "$")
+	}
+	return out
 }
 
 // composeFiles are the names Compose looks for, in its order.

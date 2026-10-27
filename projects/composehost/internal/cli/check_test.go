@@ -22,7 +22,7 @@ const config = `{
     "host": {"provider": {"type": "composehost", "options": {
       "mkdir": ["./data", "./config"], "owner": ["1000:1000"], "mode": ["0750"],
       "wait-mount": ["/mnt/nas"], "wait-timeout": ["20s"],
-      "run": ["./prepare.sh"], "down": ["./teardown.sh"]}}},
+      "run": ["./prepare.sh $$HOME"], "down": ["./teardown.sh"]}}},
     "other": {"provider": {"type": "model", "options": {"model": ["ai/smollm2"]}}}
   }
 }`
@@ -55,7 +55,7 @@ func TestCheck(t *testing.T) {
   before:    app
   on up:     mkdir ./data ./config (owner 1000:1000, mode 0750)
   on up:     wait until /mnt/nas mounted (at most 20s)
-  on up:     run ./prepare.sh
+  on up:     run ./prepare.sh $HOME
   now:       the waits are met
   on down:   ./teardown.sh
 `
