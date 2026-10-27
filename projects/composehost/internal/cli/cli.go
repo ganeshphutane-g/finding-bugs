@@ -50,8 +50,11 @@ depend on the provider service start once all of them succeed; if one fails,
 "docker compose up" fails with its message.
 
 Usage:
+  composehost check [-f FILE]  show a project's steps, and whether its waits are met now
   composehost compose ...      what Compose calls (up, down, stop, metadata)
   composehost version
+
+check exit codes: 0 fine, 1 error (bad options), 3 a wait is not met yet.
 `
 
 // Metadata declares composehost's options to Compose (it passes only these).
@@ -96,6 +99,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
 		return Provider(ctx, args, stdout, stderr)
+	case "check":
+		return Check(args[1:], stdout, stderr, nil)
 	}
 	fmt.Fprintf(stderr, "composehost: unknown command %q\n\n%s", args[0], usage)
 	return 2
@@ -145,72 +150,98 @@ func printMetadata(w io.Writer) int {
 	return 0
 }
 
+// plan is a call's steps, checked.
+type plan struct {
+	mkdir          []string
+	owner          *steps.Owner
+	mode           *fs.FileMode
+	waits          steps.Waits
+	run, env, down string
+	stop           string
+	timeout        time.Duration
+}
+
+// planOf checks a call's options and turns them into steps.
+func planOf(call protocol.Call) (plan, error) {
+	var p plan
+	var err error
+	if p.timeout, err = duration(call, "timeout", 5*time.Minute); err != nil {
+		return p, err
+	}
+	switch call.Command {
+	case "down":
+		p.down, err = call.One("down")
+		return p, err
+	case "stop":
+		p.stop, err = call.One("stop")
+		return p, err
+	}
+	if v, err := call.One("owner"); err != nil {
+		return p, err
+	} else if v != "" {
+		o, err := steps.ParseOwner(v)
+		if err != nil {
+			return p, err
+		}
+		p.owner = &o
+	}
+	if v, err := call.One("mode"); err != nil {
+		return p, err
+	} else if v != "" {
+		m, err := steps.ParseMode(v)
+		if err != nil {
+			return p, err
+		}
+		p.mode = &m
+	}
+	p.mkdir = call.Options["mkdir"]
+	if (p.owner != nil || p.mode != nil) && len(p.mkdir) == 0 {
+		return p, fmt.Errorf("owner and mode apply to mkdir directories, and there are none")
+	}
+	p.waits = steps.Waits{Mounts: call.Options["wait-mount"], Paths: call.Options["wait-path"], TCP: call.Options["wait-tcp"]}
+	if p.waits.Timeout, err = duration(call, "wait-timeout", 60*time.Second); err != nil {
+		return p, err
+	}
+	if p.run, err = call.One("run"); err != nil {
+		return p, err
+	}
+	p.env, err = call.One("env")
+	return p, err
+}
+
 // do runs the call's steps.
 func do(ctx context.Context, out *protocol.Out, dir string, call protocol.Call) error {
-	timeout, err := duration(call, "timeout", 5*time.Minute)
+	p, err := planOf(call)
 	if err != nil {
 		return err
 	}
 	env := []string{"COMPOSEHOST_SERVICE=" + call.Service, "COMPOSE_PROJECT_NAME=" + call.Project}
 	switch call.Command {
 	case "down", "stop":
-		cmd, err := call.One(call.Command)
-		if err != nil || cmd == "" {
-			return err
+		cmd := p.down
+		if call.Command == "stop" {
+			cmd = p.stop
 		}
-		_, err = steps.Run(ctx, out, dir, call.Command, cmd, timeout, env)
+		if cmd == "" {
+			return nil
+		}
+		_, err := steps.Run(ctx, out, dir, call.Command, cmd, p.timeout, env)
 		return err
 	}
 	// up: mkdir, waits, run, env.
-	var owner *steps.Owner
-	if v, err := call.One("owner"); err != nil {
-		return err
-	} else if v != "" {
-		o, err := steps.ParseOwner(v)
-		if err != nil {
-			return err
-		}
-		owner = &o
-	}
-	var mode *fs.FileMode
-	if v, err := call.One("mode"); err != nil {
-		return err
-	} else if v != "" {
-		m, err := steps.ParseMode(v)
-		if err != nil {
-			return err
-		}
-		mode = &m
-	}
-	if (owner != nil || mode != nil) && len(call.Options["mkdir"]) == 0 {
-		return fmt.Errorf("owner and mode apply to mkdir directories, and there are none")
-	}
-	waitTimeout, err := duration(call, "wait-timeout", 60*time.Second)
-	if err != nil {
+	if err := steps.Mkdir(out, dir, p.mkdir, p.owner, p.mode); err != nil {
 		return err
 	}
-	run, err := call.One("run")
-	if err != nil {
+	if err := steps.Wait(ctx, out, dir, p.waits); err != nil {
 		return err
 	}
-	envCmd, err := call.One("env")
-	if err != nil {
-		return err
-	}
-	if err := steps.Mkdir(out, dir, call.Options["mkdir"], owner, mode); err != nil {
-		return err
-	}
-	w := steps.Waits{Mounts: call.Options["wait-mount"], Paths: call.Options["wait-path"], TCP: call.Options["wait-tcp"], Timeout: waitTimeout}
-	if err := steps.Wait(ctx, out, dir, w); err != nil {
-		return err
-	}
-	if run != "" {
-		if _, err := steps.Run(ctx, out, dir, "run", run, timeout, env); err != nil {
+	if p.run != "" {
+		if _, err := steps.Run(ctx, out, dir, "run", p.run, p.timeout, env); err != nil {
 			return err
 		}
 	}
-	if envCmd != "" {
-		b, err := steps.Run(ctx, out, dir, "env", envCmd, timeout, env)
+	if p.env != "" {
+		b, err := steps.Run(ctx, out, dir, "env", p.env, p.timeout, env)
 		if err != nil {
 			return err
 		}

@@ -166,37 +166,11 @@ func Wait(ctx context.Context, r Report, dir string, w Waits) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, w.Timeout)
 	defer cancel()
-	abs := func(p string) string {
-		if filepath.IsAbs(p) {
-			return p
-		}
-		return filepath.Join(dir, p)
-	}
 	told := map[string]bool{}
 	for {
-		var pending []string
-		for _, m := range w.Mounts {
-			ok, err := IsMountPoint(abs(m))
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("wait-mount %s: %w", m, err)
-			}
-			if !ok {
-				pending = append(pending, m+" to be mounted")
-			}
-		}
-		for _, p := range w.Paths {
-			if _, err := os.Stat(abs(p)); err != nil {
-				pending = append(pending, p+" to exist")
-			}
-		}
-		for _, a := range w.TCP {
-			d := net.Dialer{Timeout: min(2*time.Second, poll*4)}
-			c, err := d.DialContext(ctx, "tcp", a)
-			if err != nil {
-				pending = append(pending, a+" to accept connections")
-				continue
-			}
-			c.Close()
+		pending, err := Pending(ctx, dir, w)
+		if err != nil {
+			return err
 		}
 		if len(pending) == 0 {
 			return nil
@@ -213,6 +187,45 @@ func Wait(ctx context.Context, r Report, dir string, w Waits) error {
 		case <-time.After(poll):
 		}
 	}
+}
+
+// Pending looks once and says which conditions do not hold yet.
+func Pending(ctx context.Context, dir string, w Waits) ([]string, error) {
+	abs := func(p string) string {
+		if filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Join(dir, p)
+	}
+	poll := w.Poll
+	if poll == 0 {
+		poll = 500 * time.Millisecond
+	}
+	var pending []string
+	for _, m := range w.Mounts {
+		ok, err := IsMountPoint(abs(m))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("wait-mount %s: %w", m, err)
+		}
+		if !ok {
+			pending = append(pending, m+" to be mounted")
+		}
+	}
+	for _, p := range w.Paths {
+		if _, err := os.Stat(abs(p)); err != nil {
+			pending = append(pending, p+" to exist")
+		}
+	}
+	for _, a := range w.TCP {
+		d := net.Dialer{Timeout: min(2*time.Second, poll*4)}
+		c, err := d.DialContext(ctx, "tcp", a)
+		if err != nil {
+			pending = append(pending, a+" to accept connections")
+			continue
+		}
+		c.Close()
+	}
+	return pending, nil
 }
 
 // IsMountPoint says whether path (symbolic links resolved) is where a
