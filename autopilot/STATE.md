@@ -6,11 +6,13 @@ projects/composehost/SPEC.md (with what the lab verified).
 
 ## Next step
 
-composehost milestones 1 and 2 are done (CI green at 2be3510, e2e with real
-dockerd and Compose v5.6.0 run in CI). Milestone 3: README (real runs) and
-CHANGELOG are in (240a1e9). Left: two full reviews with their findings
-fixed, then CI green, then mark it finished and ask the owner for the tag
-`composehost/v1.0.0`. Then research project #17.
+composehost: milestones 1–3 are done, and two full reviews were made with
+their findings fixed (c27fabb, 29796a2). The big finding: Compose runs
+providers in its caller's directory, so composehost finds the project
+directory from the parent Compose process (/proc). A third, narrow review
+of 29796a2 is under way. Left: fix what it finds, CI green, then mark
+composehost finished (owner tag `composehost/v1.0.0`) and start project
+#17: stseed, provisional, with the checks listed in IDEAS.md round 18.
 
 Lab facts for composehost (2026-10-28): `-p NAME` without `-f` skips
 providers on stop/down (with -f it works); with `env`, every up recreates
