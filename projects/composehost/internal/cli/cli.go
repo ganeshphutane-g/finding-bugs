@@ -239,7 +239,7 @@ func do(ctx context.Context, out *protocol.Out, dir string, call protocol.Call) 
 		if cmd == "" {
 			return nil
 		}
-		_, err := steps.Run(ctx, out, dir, call.Command, cmd, p.timeout, env)
+		err := steps.Run(ctx, out, dir, call.Command, cmd, p.timeout, env)
 		return err
 	}
 	// up: mkdir, waits, run, env.
@@ -250,12 +250,13 @@ func do(ctx context.Context, out *protocol.Out, dir string, call protocol.Call) 
 		return err
 	}
 	if p.run != "" {
-		if _, err := steps.Run(ctx, out, dir, "run", p.run, p.timeout, env); err != nil {
+		if err := steps.Run(ctx, out, dir, "run", p.run, p.timeout, env); err != nil {
 			return err
 		}
 	}
 	if p.env != "" {
-		b, err := steps.Run(ctx, out, dir, "env", p.env, p.timeout, env)
+		// Its output is often secrets: never logged, even with --verbose.
+		b, err := steps.Output(ctx, out, dir, "env", p.env, p.timeout, env)
 		if err != nil {
 			return err
 		}

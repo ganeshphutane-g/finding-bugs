@@ -273,8 +273,19 @@ func unescape(s string) string {
 }
 
 // Run runs a host command with sh -c in dir. Its output goes to Debug; a
-// failure carries the last lines of its error output. It returns stdout.
-func Run(ctx context.Context, r Report, dir, what, command string, timeout time.Duration, env []string) ([]byte, error) {
+// failure carries the last lines of its error output.
+func Run(ctx context.Context, r Report, dir, what, command string, timeout time.Duration, env []string) error {
+	_, err := run(ctx, r, dir, what, command, timeout, env, true)
+	return err
+}
+
+// Output is Run for a command whose output is the result, such as
+// secrets: it returns stdout, and only stderr goes to Debug.
+func Output(ctx context.Context, r Report, dir, what, command string, timeout time.Duration, env []string) ([]byte, error) {
+	return run(ctx, r, dir, what, command, timeout, env, false)
+}
+
+func run(ctx context.Context, r Report, dir, what, command string, timeout time.Duration, env []string, showStdout bool) ([]byte, error) {
 	if strings.TrimSpace(command) == "" {
 		return nil, fmt.Errorf("%s: an empty command", what)
 	}
@@ -288,8 +299,10 @@ func Run(ctx context.Context, r Report, dir, what, command string, timeout time.
 	cmd.WaitDelay = 2 * time.Second // a child holding the pipes open does not hang Compose
 	r.Info("%s: %s", what, oneLine(command))
 	err := cmd.Run()
-	for _, l := range lines(stdout.Bytes()) {
-		r.Debug("%s: %s", what, l)
+	if showStdout {
+		for _, l := range lines(stdout.Bytes()) {
+			r.Debug("%s: %s", what, l)
+		}
 	}
 	for _, l := range lines(stderr.Bytes()) {
 		r.Debug("%s (stderr): %s", what, l)

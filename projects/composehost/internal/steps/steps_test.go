@@ -14,8 +14,8 @@ import (
 )
 
 type rec struct {
-	mu   sync.Mutex
-	info []string
+	mu          sync.Mutex
+	info, debug []string
 }
 
 func (r *rec) Info(f string, a ...any) {
@@ -23,7 +23,11 @@ func (r *rec) Info(f string, a ...any) {
 	defer r.mu.Unlock()
 	r.info = append(r.info, fmt.Sprintf(f, a...))
 }
-func (r *rec) Debug(string, ...any) {}
+func (r *rec) Debug(f string, a ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.debug = append(r.debug, fmt.Sprintf(f, a...))
+}
 func (r *rec) has(s string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -168,16 +172,22 @@ func TestWait(t *testing.T) {
 func TestRun(t *testing.T) {
 	dir := t.TempDir()
 	r := &rec{}
-	out, err := Run(context.Background(), r, dir, "run", "pwd; echo $COMPOSEHOST_SERVICE", time.Second, []string{"COMPOSEHOST_SERVICE=prep"})
-	if err != nil || strings.TrimSpace(string(out)) != dir+"\nprep" {
-		t.Fatalf("%q %v", out, err)
+	err := Run(context.Background(), r, dir, "run", "pwd; echo $COMPOSEHOST_SERVICE; echo oops >&2", time.Second, []string{"COMPOSEHOST_SERVICE=prep"})
+	if err != nil || strings.Join(r.debug, "|") != "run: "+dir+"|run: prep|run (stderr): oops" {
+		t.Fatalf("%q %v", r.debug, err)
 	}
-	_, err = Run(context.Background(), r, dir, "run", "echo one >&2; echo two >&2; exit 3", time.Second, nil)
+	// Output returns stdout, and does not log it (it may be secrets).
+	r.debug = nil
+	out, err := Output(context.Background(), r, dir, "env", "echo TOKEN=s3cret; echo note >&2", time.Second, nil)
+	if err != nil || string(out) != "TOKEN=s3cret\n" || strings.Join(r.debug, "|") != "env (stderr): note" {
+		t.Fatalf("%q %q %v", out, r.debug, err)
+	}
+	err = Run(context.Background(), r, dir, "run", "echo one >&2; echo two >&2; exit 3", time.Second, nil)
 	if err == nil || !strings.Contains(err.Error(), "exit status 3: one / two") {
 		t.Errorf("%v", err)
 	}
 	start := time.Now()
-	_, err = Run(context.Background(), r, dir, "run", "sleep 10", 200*time.Millisecond, nil)
+	err = Run(context.Background(), r, dir, "run", "sleep 10", 200*time.Millisecond, nil)
 	if err == nil || !strings.Contains(err.Error(), "took longer than 200ms") || time.Since(start) > 5*time.Second {
 		t.Errorf("%v after %s", err, time.Since(start))
 	}
@@ -187,7 +197,7 @@ func TestRun(t *testing.T) {
 	if time.Since(start) > 6*time.Second {
 		t.Errorf("hung %s", time.Since(start))
 	}
-	if _, err := Run(context.Background(), r, dir, "run", "  ", time.Second, nil); err == nil {
+	if err := Run(context.Background(), r, dir, "run", "  ", time.Second, nil); err == nil {
 		t.Error("an empty command")
 	}
 }
