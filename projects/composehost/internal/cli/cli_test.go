@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ganeshphutane-g/composehost/internal/steps"
 )
 
 type msg struct{ Type, Message string }
@@ -97,6 +99,33 @@ func TestUpMountPoint(t *testing.T) {
 	}
 	if st, _ := os.Stat(filepath.Join(dir, "data")); st.Mode().Perm() != 0o700 {
 		t.Errorf("data: %v", st.Mode())
+	}
+}
+
+// Paths are compared from the project directory; one inside a wait-mount
+// is made only once the mount is there.
+func TestUpInsideMount(t *testing.T) {
+	dir := t.TempDir()
+	code, msgs, _ := call(t, dir, "up", "--mkdir="+filepath.Join(dir, "nas"), "--mkdir=nas/media", "--mode=0700",
+		"--wait-mount=./nas", "--wait-timeout=50ms", "host")
+	if code != 1 || !find(msgs, "error", "gave up") {
+		t.Fatalf("%d %v", code, msgs)
+	}
+	if st, _ := os.Stat(filepath.Join(dir, "nas")); st == nil || st.Mode().Perm() != 0o755 {
+		t.Errorf("nas: %v", st)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "nas", "media")); err == nil {
+		t.Error("nas/media made before the mount")
+	}
+	// Mounted: now it is made.
+	mi := filepath.Join(t.TempDir(), "mountinfo")
+	os.WriteFile(mi, []byte("99 22 0:50 / "+filepath.Join(dir, "nas")+" rw - nfs nas:/x rw\n"), 0o644)
+	old := steps.MountInfo
+	steps.MountInfo = mi
+	defer func() { steps.MountInfo = old }()
+	code, msgs, _ = call(t, dir, "up", "--mkdir=nas/media", "--mode=0700", "--wait-mount=./nas", "host")
+	if st, _ := os.Stat(filepath.Join(dir, "nas", "media")); code != 0 || st == nil || st.Mode().Perm() != 0o700 {
+		t.Fatalf("%d %v %v", code, msgs, st)
 	}
 }
 

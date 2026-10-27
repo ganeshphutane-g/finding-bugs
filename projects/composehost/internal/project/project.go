@@ -18,11 +18,23 @@ import (
 // Files are the names Compose looks for, in its order.
 var Files = []string{"compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"}
 
-// valueFlags are Compose's global flags that take a value.
+// valueFlags are the global flags that take a value: Compose's, and the
+// Docker CLI's, which come before "compose" when Compose runs as its plugin
+// (docker --context X compose ...).
 var valueFlags = map[string]bool{
 	"-f": true, "--file": true, "-p": true, "--project-name": true,
-	"--project-directory": true, "--env-file": true, "--profile": true,
-	"--ansi": true, "--progress": true, "--parallel": true,
+	"--project-directory": true, "--workdir": true, "--env-file": true,
+	"--profile": true, "--ansi": true, "--progress": true, "--parallel": true,
+	"-c": true, "--context": true, "-H": true, "--host": true, "--config": true,
+	"-l": true, "--log-level": true, "--tlscacert": true, "--tlscert": true,
+	"--tlskey": true,
+}
+
+// boolFlags are the global flags without a value.
+var boolFlags = map[string]bool{
+	"--all-resources": true, "--compatibility": true, "--dry-run": true,
+	"--verbose": true, "--no-ansi": true, "-D": true, "--debug": true,
+	"--tls": true, "--tlsverify": true,
 }
 
 // Flags are the global flags that decide the directory.
@@ -32,24 +44,35 @@ type Flags struct {
 	EnvFiles         []string
 }
 
-// ParseFlags reads Compose's global flags, up to the subcommand (or the end).
-func ParseFlags(args []string) (Flags, []string) {
+// ParseFlags reads the global flags, up to the subcommand (or the end),
+// passing over a "compose" between the Docker CLI's flags and Compose's. A
+// flag it does not know is an error: guessing whether it takes a value
+// could mean missing -f, and the wrong directory.
+func ParseFlags(args []string) (Flags, []string, error) {
 	var f Flags
+	sawCompose := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if a == "compose" && !sawCompose {
+			sawCompose = true
+			continue
+		}
 		if a == "--" || !strings.HasPrefix(a, "-") || a == "-" {
-			return f, args[i:]
+			return f, args[i:], nil
 		}
 		name, value, hasValue := strings.Cut(a, "=")
-		if !hasValue && strings.HasPrefix(a, "-f") && len(a) > 2 {
-			name, value, hasValue = "-f", a[2:], true // -fFILE
+		if !hasValue && len(a) > 2 && a[1] != '-' && valueFlags[a[:2]] {
+			name, value, hasValue = a[:2], a[2:], true // -fFILE
+		}
+		if boolFlags[name] {
+			continue
 		}
 		if !valueFlags[name] {
-			continue // a boolean flag
+			return f, nil, fmt.Errorf("unknown flag %q", name)
 		}
 		if !hasValue {
 			if i+1 >= len(args) {
-				break
+				return f, nil, fmt.Errorf("flag %s needs a value", name)
 			}
 			i++
 			value = args[i]
@@ -57,13 +80,13 @@ func ParseFlags(args []string) (Flags, []string) {
 		switch name {
 		case "-f", "--file":
 			f.Files = append(f.Files, value)
-		case "--project-directory":
+		case "--project-directory", "--workdir":
 			f.ProjectDirectory = value
 		case "--env-file":
 			f.EnvFiles = append(f.EnvFiles, value)
 		}
 	}
-	return f, nil
+	return f, nil, nil
 }
 
 // Dir is the project directory for these flags, environment and working
@@ -87,10 +110,14 @@ func Dir(f Flags, getenv func(string) string, cwd string) (string, error) {
 		cf := getenv("COMPOSE_FILE")
 		sep := getenv("COMPOSE_PATH_SEPARATOR")
 		if cf == "" {
-			// Compose also reads these from the .env file (the
-			// --env-file ones, else the working directory's).
+			// Compose also reads these from the .env file: the
+			// --env-file ones, else COMPOSE_ENV_FILES, else the working
+			// directory's, unless COMPOSE_DISABLE_ENV_FILE.
 			envFiles := f.EnvFiles
-			if len(envFiles) == 0 {
+			if len(envFiles) == 0 && getenv("COMPOSE_ENV_FILES") != "" {
+				envFiles = strings.Split(getenv("COMPOSE_ENV_FILES"), ",")
+			}
+			if len(envFiles) == 0 && !truthy(getenv("COMPOSE_DISABLE_ENV_FILE")) {
 				envFiles = []string{".env"}
 			}
 			for _, ef := range envFiles {
@@ -128,6 +155,11 @@ func Dir(f Flags, getenv func(string) string, cwd string) (string, error) {
 	}
 }
 
+func truthy(s string) bool {
+	b, err := strconv.ParseBool(s)
+	return err == nil && b
+}
+
 // dotenv reads KEY=VALUE lines from a .env file (missing: none).
 func dotenv(path string) map[string]string {
 	vars := map[string]string{}
@@ -155,6 +187,15 @@ func dotenv(path string) map[string]string {
 	return vars
 }
 
+func sameFile(a, b string) bool {
+	sa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	sb, err := os.Stat(b)
+	return err == nil && os.SameFile(sa, sb)
+}
+
 // Proc is /proc (a variable for tests).
 var Proc = "/proc"
 
@@ -173,9 +214,6 @@ func FromParent() (string, error) {
 		return "", fmt.Errorf("composehost was not started by Docker Compose (but by %q)", args[0])
 	}
 	args = args[1:]
-	if len(args) > 0 && args[0] == "compose" {
-		args = args[1:]
-	}
 	cwd, err := os.Readlink(filepath.Join(Proc, pid, "cwd"))
 	if err != nil {
 		return "", fmt.Errorf("reading the Compose process's directory: %w", err)
@@ -190,7 +228,16 @@ func FromParent() (string, error) {
 			env[k] = v
 		}
 	}
-	f, _ := ParseFlags(args)
+	// Compose works from the logical directory ($PWD, which may go through
+	// a link), the kernel gives the physical one: take $PWD when it is the
+	// same directory.
+	if pwd := env["PWD"]; filepath.IsAbs(pwd) && sameFile(pwd, filepath.Join(Proc, pid, "cwd")) {
+		cwd = pwd
+	}
+	f, _, err := ParseFlags(args)
+	if err != nil {
+		return "", fmt.Errorf("reading the Compose command line: %w", err)
+	}
 	dir, err := Dir(f, func(k string) string { return env[k] }, cwd)
 	if err != nil {
 		return "", err

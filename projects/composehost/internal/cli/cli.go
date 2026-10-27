@@ -58,7 +58,7 @@ Usage:
   composehost compose ...      what Compose calls (up, down, stop, metadata)
   composehost version
 
-check exit codes: 0 fine, 1 error (bad options), 3 a wait is not met yet.
+check exit codes: 0 fine, 1 error (bad options), 2 usage, 3 a wait is not met yet.
 `
 
 // Metadata declares composehost's options to Compose (it passes only these).
@@ -116,6 +116,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	case "compose":
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
+		dieWithParent()
 		return Provider(ctx, args, stdout, stderr)
 	case "check":
 		return Check(args[1:], stdout, stderr, nil)
@@ -254,23 +255,39 @@ func do(ctx context.Context, out *protocol.Out, dir string, call protocol.Call) 
 	if m, ok := os.LookupEnv("COMPOSE_PROVIDER_MESSAGES"); ok && p.env != "" && !slices.Contains(strings.Split(m, ","), "rawsetenv") {
 		return fmt.Errorf("env: this Compose does not take environment values from providers (rawsetenv); it needs a newer Compose")
 	}
-	// up: mkdir, waits, run, env. A mount point is only created: its owner
-	// and mode would be the mounted filesystem's once it is there.
-	var mkdir, mountPoints []string
+	// up: mkdir, waits, run, env. Paths are compared from the project
+	// directory:
+	//   - a wait-mount path is only created (its owner and mode would be
+	//     the mounted filesystem's);
+	//   - a path inside one is made after the waits, on the mounted
+	//     filesystem, not on the one beneath that the mount then hides.
+	abs := func(x string) string {
+		if filepath.IsAbs(x) {
+			return filepath.Clean(x)
+		}
+		return filepath.Join(dir, x)
+	}
+	var before, mountPoints, after []string
 	for _, d := range p.mkdir {
-		if slices.ContainsFunc(p.waits.Mounts, func(m string) bool { return filepath.Clean(m) == filepath.Clean(d) }) {
+		switch a := abs(d); {
+		case slices.ContainsFunc(p.waits.Mounts, func(m string) bool { return abs(m) == a }):
 			mountPoints = append(mountPoints, d)
-		} else {
-			mkdir = append(mkdir, d)
+		case slices.ContainsFunc(p.waits.Mounts, func(m string) bool { return strings.HasPrefix(a, abs(m)+string(filepath.Separator)) }):
+			after = append(after, d)
+		default:
+			before = append(before, d)
 		}
 	}
-	if err := steps.Mkdir(out, dir, mkdir, p.owner, p.mode); err != nil {
+	if err := steps.Mkdir(out, dir, before, p.owner, p.mode); err != nil {
 		return err
 	}
 	if err := steps.Mkdir(out, dir, mountPoints, nil, nil); err != nil {
 		return err
 	}
 	if err := steps.Wait(ctx, out, dir, p.waits); err != nil {
+		return err
+	}
+	if err := steps.Mkdir(out, dir, after, p.owner, p.mode); err != nil {
 		return err
 	}
 	if p.run != "" {

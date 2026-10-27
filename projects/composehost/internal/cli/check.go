@@ -61,9 +61,12 @@ func Check(args []string, stdout, stderr io.Writer, pending func(dir string, w s
 		}
 	}
 	// Compose's own global flags, passed on to it.
-	flags, rest := project.ParseFlags(args)
-	if len(rest) > 0 {
-		fmt.Fprintf(stderr, "composehost check: unexpected %q (it takes Compose's flags: -f FILE, -p NAME, --project-directory DIR, --env-file FILE, --profile NAME)\n", rest[0])
+	flags, rest, err := project.ParseFlags(args)
+	if err == nil && len(rest) > 0 {
+		err = fmt.Errorf("unexpected %q", rest[0])
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "composehost check: %v (it takes Compose's flags: -f FILE, -p NAME, --project-directory DIR, --env-file FILE, --profile NAME)\n", err)
 		return 2
 	}
 	cwd, err := os.Getwd()

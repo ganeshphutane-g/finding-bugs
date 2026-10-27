@@ -33,11 +33,27 @@ func Mkdir(r Report, dir string, paths []string, owner *Owner, mode *fs.FileMode
 		if !filepath.IsAbs(full) {
 			full = filepath.Join(dir, p)
 		}
-		if err := mkdirOne(r, p, filepath.Clean(full), owner, mode); err != nil {
+		full = filepath.Clean(full)
+		if (owner != nil || mode != nil) && system[full] {
+			// An unset variable (${DATA}/) can make a path /.
+			return fmt.Errorf("mkdir %s: composehost does not change the owner or mode of %s", p, full)
+		}
+		if err := mkdirOne(r, p, full, owner, mode); err != nil {
 			return fmt.Errorf("mkdir %s: %w", p, err)
 		}
 	}
 	return nil
+}
+
+// system are directories whose owner and mode composehost never changes.
+var system = map[string]bool{}
+
+func init() {
+	for _, d := range []string{"/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib32", "/lib64",
+		"/media", "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/tmp", "/usr", "/var",
+		"/usr/bin", "/usr/lib", "/usr/local", "/usr/sbin", "/var/lib", "/var/log", "/var/run"} {
+		system[d] = true
+	}
 }
 
 const dirFlags = syscall.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC

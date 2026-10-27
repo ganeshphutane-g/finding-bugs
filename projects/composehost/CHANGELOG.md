@@ -9,13 +9,17 @@ First release.
   the services that depend on it, and fails `up` with the step's message
   when one fails. The steps happen in the project directory, found from the
   Compose process's own arguments (Compose runs providers in its caller's
-  directory):
+  directory; Docker CLI flags before `compose`, the logical `$PWD` and
+  Compose's env-file variables are handled, and an unknown flag is an
+  error, not a guess):
   - `mkdir`, with `owner` and `mode`: bind-mount directories created if
     missing, and their owner and mode set on every `up` when they differ.
     Paths are walked with openat and O_NOFOLLOW; a symbolic link is
     followed only in a directory that only root (or composehost's user)
     can change. Created directories get exact modes (parents 0755),
-    whatever the umask. A `wait-mount` path is only created.
+    whatever the umask. A `wait-mount` path is only created; paths inside
+    one are made after the waits. `/` and system directories are never
+    given an owner or mode. Numeric owners are checked to 32 bits.
   - `wait-mount` (a real mount point, by /proc/self/mountinfo; an
     automount point not mounted yet does not count), `wait-path` and
     `wait-tcp`, within `wait-timeout`.
@@ -24,9 +28,10 @@ First release.
     variables of the dependent services. Its output is never shown, not
     even in errors. It fails clearly on a Compose that does not take
     `rawsetenv`.
-  - Commands are shown by their first word only; on a timeout, their whole
-    process group is killed; background processes they start may keep
-    running.
+  - Commands are shown by their first word only (after any `NAME=value`);
+    on a timeout, or when Compose dies, their whole process group is
+    killed; when Compose stops composehost, the command's shell dies with
+    it. Output is kept up to 4 MiB per stream.
 - `stop` and `down`: host commands on `docker compose stop` and `down`.
 - `composehost check`: shows a project's steps (read through `docker
   compose config`, with Compose's global flags), catches options Compose

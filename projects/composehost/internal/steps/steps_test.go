@@ -55,6 +55,15 @@ func TestOwnerAndMode(t *testing.T) {
 			t.Errorf("%q accepted", bad)
 		}
 	}
+	// 32 bits, and not -1 (a value the kernel would cut down to another).
+	for _, bad := range []string{"4294968296:1000", "1000:4294967296", "4294967295", "-1"} {
+		if _, err := ParseOwner(bad); err == nil {
+			t.Errorf("owner %q accepted", bad)
+		}
+	}
+	if o, err := ParseOwner("4294967294:0"); err != nil || o.UID != 4294967294 {
+		t.Errorf("%v %v", o, err)
+	}
 	if m, err := ParseMode("0750"); err != nil || m != 0o750 {
 		t.Errorf("%v %v", m, err)
 	}
@@ -114,6 +123,12 @@ func TestMkdir(t *testing.T) {
 	os.Symlink(filepath.Join(dir, "real"), filepath.Join(shared, "link"))
 	for _, p := range []string{"shared/link", "shared/link/sub", shared + "/link/"} {
 		if err := Mkdir(r, dir, []string{p}, &Owner{-1, -1}, nil); err == nil || !strings.Contains(err.Error(), "symbolic link in a directory that other users can change") {
+			t.Errorf("%s: %v", p, err)
+		}
+	}
+	// Never the owner or mode of / (an unset ${DATA}/) or a system directory.
+	for _, p := range []string{"/", "//", "/etc/", "/usr/../var"} {
+		if err := Mkdir(r, dir, []string{p}, &Owner{1000, 1000}, nil); err == nil || !strings.Contains(err.Error(), "does not change") {
 			t.Errorf("%s: %v", p, err)
 		}
 	}
@@ -263,6 +278,24 @@ func TestRun(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	if _, serr := os.Stat(filepath.Join(dir, "late")); err == nil || serr == nil {
 		t.Errorf("%v; the child ran on", err)
+	}
+	for cmd, want := range map[string]string{
+		"./prepare.sh":                  "./prepare.sh",
+		"echo hi; exit 1":               "echo …",
+		"API_TOKEN=s3cret ./deploy --x": "./deploy …",
+		"A=1 B=2":                       "…",
+		"curl&& x":                      "curl …",
+		"'quoted secret' x":             "…",
+		"FOO=bar":                       "…",
+		"   ":                           "…",
+	} {
+		if got := short(cmd); got != want {
+			t.Errorf("short(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+	// Output past the cap is dropped; for env that is an error.
+	if _, err := Output(context.Background(), r, dir, "env", "head -c 5000000 /dev/zero", 5*time.Second, nil); err == nil || !strings.Contains(err.Error(), "more than 4 MiB") {
+		t.Errorf("%v", err)
 	}
 	// Only the command's first word is shown: the rest may hold secrets.
 	r = &rec{}

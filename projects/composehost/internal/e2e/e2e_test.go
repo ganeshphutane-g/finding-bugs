@@ -220,9 +220,14 @@ services:
 		{"from a subdirectory", sub, nil, []string{"-p", p.name}},
 		{"--project-directory", elsewhere, nil, []string{"-p", p.name, "-f", file, "--project-directory", p.dir}},
 		{"COMPOSE_FILE", elsewhere, []string{"COMPOSE_FILE=" + file, "COMPOSE_PROJECT_NAME=" + p.name}, nil},
+		{"docker --context", elsewhere, nil, []string{"-p", p.name, "-f", file}},
 	} {
 		os.RemoveAll(filepath.Join(p.dir, "data"))
-		if out, err := composeIn(t, c.dir, c.env, append(c.args, "up", "-d")...); err != nil {
+		up := composeIn
+		if c.name == "docker --context" {
+			up = dockerContext
+		}
+		if out, err := up(t, c.dir, c.env, append(c.args, "up", "-d")...); err != nil {
 			t.Fatalf("%s: %v: %s", c.name, err, out)
 		}
 		b, err := os.ReadFile(filepath.Join(p.dir, "data", "where"))
@@ -233,6 +238,62 @@ services:
 			t.Errorf("%s: data created where Compose was run", c.name)
 		}
 		composeIn(t, c.dir, c.env, append(c.args, "down", "-t", "0")...)
+	}
+}
+
+// dockerContext is composeIn with a Docker CLI flag before "compose" (it
+// reaches Compose's command line before "compose").
+func dockerContext(t *testing.T, dir string, env []string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("docker", append([]string{"--context", "default", "compose", "--progress", "plain"}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	t.Logf("in %s: docker --context default compose %s:\n%s", dir, strings.Join(args, " "), out)
+	return string(out), err
+}
+
+// When Compose is stopped (SIGTERM: it SIGKILLs composehost, and the
+// kernel kills the command's shell) or killed (SIGKILL: composehost is
+// told its parent died, and stops the command's whole group), the command
+// stops. After a SIGKILL of composehost, a process the command put in the
+// background can no longer be reached: that one may finish (documented).
+func TestComposeKilled(t *testing.T) {
+	for _, sig := range []string{"TERM", "KILL"} {
+		t.Run(sig, func(t *testing.T) { composeKilled(t, sig) })
+	}
+}
+
+func composeKilled(t *testing.T, sig string) {
+	p := newProject(t, `
+services:
+  host:
+    provider:
+      type: composehost
+      options:
+        run: "(sleep 4; touch late-child) & sleep 4; touch late"
+  app:
+    image: IMAGE
+    command: ["true"]
+    depends_on: [host]
+`)
+	cmd := exec.Command("docker", "compose", "-p", p.name, "-f", "compose.yaml", "up", "-d")
+	cmd.Dir = p.dir
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	// docker compose is the docker CLI's child: signal it.
+	if out, err := exec.Command("pkill", "-"+sig, "-f", "[d]ocker-compose compose -p "+p.name).CombinedOutput(); err != nil {
+		t.Fatalf("pkill: %v %s", err, out)
+	}
+	cmd.Wait()
+	time.Sleep(4 * time.Second)
+	if p.exists("late") {
+		t.Fatal("the command ran on after Compose was stopped")
+	}
+	if sig == "KILL" && p.exists("late-child") {
+		t.Fatal("what the command started ran on after Compose was killed")
 	}
 }
 
@@ -322,12 +383,13 @@ services:
     provider:
       type: composehost
       options:
-        mkdir: ./nas
+        mkdir: [./nas, ./nas/media]
+        owner: "1000:1000"
         wait-mount: ./nas
         wait-timeout: 60s
   app:
     image: IMAGE
-    command: ["cat", "/nas/hello"]
+    command: ["sh", "-c", "cat /nas/hello; stat -c '%n %u:%g' /nas /nas/media"]
     volumes: [./nas:/nas]
     depends_on: [host]
 `)
@@ -362,7 +424,9 @@ services:
 	if time.Since(start) < 3*time.Second {
 		t.Fatal("up was too quick")
 	}
-	mustContain(t, p.logs("app"), "from the mount")
+	// The mount point's owner is left alone (it is the mounted
+	// filesystem's); the directory inside is made on the mount, after it.
+	mustContain(t, p.logs("app"), "from the mount", "/nas 0:0", "/nas/media 1000:1000")
 }
 
 // The waits give up after wait-timeout, and up fails before the dependent

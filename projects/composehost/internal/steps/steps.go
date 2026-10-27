@@ -39,8 +39,10 @@ func ParseOwner(s string) (Owner, error) {
 	if u == "" {
 		return o, fmt.Errorf("owner %q: no user", s)
 	}
-	if n, err := strconv.Atoi(u); err == nil && n >= 0 {
+	if n, err := id(u); err == nil {
 		o.UID = n
+	} else if isNumber(u) {
+		return o, fmt.Errorf("owner %q: %v", s, err)
 	} else {
 		pu, err := user.Lookup(u)
 		if err != nil {
@@ -52,8 +54,10 @@ func ParseOwner(s string) (Owner, error) {
 		}
 	}
 	if hasGroup {
-		if n, err := strconv.Atoi(g); err == nil && n >= 0 {
+		if n, err := id(g); err == nil {
 			o.GID = n
+		} else if isNumber(g) {
+			return o, fmt.Errorf("owner %q: %v", s, err)
 		} else {
 			pg, err := user.LookupGroup(g)
 			if err != nil {
@@ -64,6 +68,18 @@ func ParseOwner(s string) (Owner, error) {
 	}
 	return o, nil
 }
+
+// id reads a numeric uid or gid: 32 bits, and not 4294967295 (-1 to the
+// kernel: "leave it").
+func id(s string) (int, error) {
+	n, err := strconv.ParseUint(s, 10, 32)
+	if err != nil || n == 1<<32-1 {
+		return 0, fmt.Errorf("%s is not a valid user or group number", s)
+	}
+	return int(n), nil
+}
+
+func isNumber(s string) bool { return s != "" && strings.Trim(s, "0123456789") == "" }
 
 // ParseMode reads an octal permission mode such as 0750 or 750 (no setuid,
 // setgid or sticky bits).
@@ -249,8 +265,8 @@ func run(ctx context.Context, r Report, dir, what, command string, timeout time.
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	stdout, stderr := &capped{max: maxOutput}, &capped{max: maxOutput}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	// A child left running in the background (and holding the pipes open)
 	// does not hang Compose; on a timeout, the whole group is killed.
 	cmd.WaitDelay = 2 * time.Second
@@ -275,6 +291,9 @@ func run(ctx context.Context, r Report, dir, what, command string, timeout time.
 	}
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("%s: %s took longer than %s", what, name, timeout)
+	}
+	if err == nil && stdout.over && !showStdout {
+		return nil, fmt.Errorf("%s: %s printed more than %d MiB", what, name, maxOutput>>20)
 	}
 	if err != nil {
 		msg := fmt.Sprintf("%s: %s failed: %v", what, name, err)
@@ -332,23 +351,46 @@ func lastLines(b []byte, n int) string {
 	return strings.Join(l, " / ")
 }
 
-// short is a command's first word, and "…" if there is more.
+// maxOutput is the most of a command's output kept, for each stream.
+const maxOutput = 4 << 20
+
+// capped keeps the first max bytes written to it. (Not an embedded
+// bytes.Buffer: io.Copy would use its ReadFrom, past the cap.)
+type capped struct {
+	buf  bytes.Buffer
+	max  int
+	over bool
+}
+
+func (c *capped) Write(b []byte) (int, error) {
+	if room := c.max - c.buf.Len(); len(b) > room {
+		c.over = true
+		c.buf.Write(b[:max(room, 0)])
+		return len(b), nil
+	}
+	return c.buf.Write(b)
+}
+
+func (c *capped) Bytes() []byte { return c.buf.Bytes() }
+
+// short is a command's first word (after any NAME=value ones: values may
+// be secrets), and "…" if there is more.
 func short(command string) string {
 	f := strings.Fields(command)
+	for len(f) > 0 && assignment.MatchString(f[0]) {
+		f = f[1:]
+	}
 	if len(f) == 0 {
-		return ""
+		return "…"
 	}
 	w := strings.TrimRight(f[0], ";&|")
-	if len(f) > 1 || w != f[0] {
+	if strings.ContainsAny(w, "=$`'\"") {
+		return "…"
+	}
+	if len(f) > 1 || w != f[0] || len(f) < len(strings.Fields(command)) {
 		w += " …"
 	}
 	return w
 }
 
-func oneLine(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > 120 {
-		s = s[:117] + "..."
-	}
-	return s
-}
+var assignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)

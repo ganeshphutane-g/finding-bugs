@@ -7,8 +7,10 @@ LDFLAGS := -s -w -X github.com/ganeshphutane-g/composehost/internal/cli.Version=
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o composehost .
 
-# Compose looks for providers on PATH.
-install: build
+# Compose looks for providers on PATH. Run "make build" first, as yourself;
+# then "sudo make install" only copies.
+install:
+	@test -x composehost || { echo 'run "make build" first'; exit 1; }
 	install -m 0755 composehost /usr/local/bin/composehost
 
 test:

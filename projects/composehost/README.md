@@ -74,7 +74,7 @@ announces the message types it takes. With Go 1.24 or newer:
 git clone https://github.com/ganeshphutane-g/finding-bugs
 cd finding-bugs/projects/composehost
 make build                     # ./composehost, a static binary
-sudo make install              # /usr/local/bin/composehost
+sudo make install              # copies it to /usr/local/bin
 ```
 
 Compose looks for the provider on the PATH of the `docker compose` command.
@@ -169,8 +169,8 @@ On `up` the steps run in this order: `mkdir`, the waits, `run`, `env`.
 
 | Option | |
 |---|---|
-| `mkdir: PATH` (or a list) | Create the directory, with its parents, if missing. Relative paths are from the project directory. Parents get mode 0755. A path that is also a `wait-mount` is only created: its owner and mode would be the mounted filesystem's. |
-| `owner: UID:GID` | The owner of the `mkdir` directories, set on every `up` when it differs. Also `USER:GROUP`, `USER` (its primary group) or `UID`. |
+| `mkdir: PATH` (or a list) | Create the directory, with its parents, if missing. Relative paths are from the project directory. Parents get mode 0755. A path that is also a `wait-mount` is only created: its owner and mode would be the mounted filesystem's. A path inside a `wait-mount` is made after the waits, on the mounted filesystem. |
+| `owner: UID:GID` | The owner of the `mkdir` directories, set on every `up` when it differs. Also `USER:GROUP`, `USER` (its primary group) or `UID`. Names are looked up in /etc/passwd and /etc/group only (the binary is static): give numbers for LDAP or SSSD users. Never applied to `/` or system directories such as `/etc` or `/var`. |
 | `mode: "0750"` | Their mode, set on every `up` when it differs (up to 0777). Quote it: YAML reads an unquoted 0750 as the number 488. |
 | `wait-mount: PATH` (or a list) | Wait until PATH is a mount point, not just the empty directory beneath (nor an automount point not mounted yet). |
 | `wait-path: PATH` (or a list) | Wait until PATH exists. |
@@ -186,14 +186,19 @@ On `up` the steps run in this order: `mkdir`, the waits, `run`, `env`.
 - In the project directory, with `sh -c`. They get `COMPOSE_PROJECT_NAME`,
   `COMPOSEHOST_PROJECT_DIR`, and `COMPOSEHOST_SERVICE` (the provider
   service's name).
-- Only a command's first word is shown (`run: curl …`): Compose has already
-  put variables' values into it, so the rest may hold secrets.
-- `docker compose --verbose` shows their whole output, except the standard
-  output of `env`: that is the values, often secrets, so it is never shown,
-  not even when a line of it is malformed.
+- Only a command's first word is shown (`run: curl …`), after any
+  `NAME=value` words: Compose has already put variables' values into it, so
+  the rest may hold secrets.
+- `docker compose --verbose` shows their whole output once they exit (up to
+  4 MiB of each stream), except the standard output of `env`: that is the
+  values, often secrets, so it is never shown, not even when a line of it is
+  malformed.
 - A process they start in the background (`./helper &`) keeps running.
   Redirect its output: once the command exits, nobody reads it.
-- On a `timeout`, the command and everything it started are killed.
+- On a `timeout`, the command and everything it started are killed; also
+  when Compose dies (`kill -9`). When Compose is stopped with SIGTERM or
+  Ctrl-C, it kills composehost at once, and the command's shell dies with
+  it; a process the command put in the background may then finish.
 - Compose interpolates `$VAR` in the compose file from *its* environment
   when it reads the file. Write `$$VAR` for a variable the command should
   expand itself, as in `$$(git ...)` above.
@@ -232,14 +237,17 @@ Compose runs it in its caller's working directory, which need not be the
 project's (`docker compose -f /srv/app/compose.yaml up` from anywhere), and
 does not say which directory the project is in. So composehost reads the
 arguments, environment and directory of the Compose process that started it
-(from /proc) and applies Compose's own rules:
+(from /proc), skipping the Docker CLI's flags (`docker --context X
+compose ...`), from its logical working directory (`$PWD`), and applies
+Compose's own rules:
 1. `--project-directory`;
 2. else the first compose file's directory (`-f`, else `COMPOSE_FILE`
-   from the environment or the `.env` file);
+   from the environment or the env file: `--env-file`, `COMPOSE_ENV_FILES`,
+   or `.env` unless `COMPOSE_DISABLE_ENV_FILE`);
 3. else the nearest directory, from the working directory up, with a
    compose file.
 
-If it cannot tell, it fails rather than guess.
+If it cannot tell (an unknown flag, say), it fails rather than guess.
 
 **The progress messages:**
 - composehost reports progress and errors as JSON lines on its standard
@@ -284,8 +292,9 @@ These are from Compose's provider design, and were checked with Compose
 
 `make test` runs the unit tests.
 
-`make test` also covers, as root, links swapped into a directory that a
-container user owns, and creating directories under a strict umask.
+`make test` covers links in directories others can change, and creating
+directories under a strict umask. Run as root (as CI does), it also covers
+a link in a directory a container user owns, and real owners.
 
 `make test-compose` (root, with dockerd running) runs the end-to-end tests
 against real dockerd and Compose. They check:
@@ -294,12 +303,15 @@ against real dockerd and Compose. They check:
   directory keeps 0755;
 - `--verbose` does not show `env` values;
 - the steps happen in the project directory when Compose is run from
-  elsewhere with `-f`, from a subdirectory, with `--project-directory`, or
-  with `COMPOSE_FILE`;
+  elsewhere with `-f`, from a subdirectory, with `--project-directory`,
+  with `COMPOSE_FILE`, or as `docker --context default compose`;
+- when Compose is stopped (SIGTERM) or killed (SIGKILL) during a command,
+  the command does not run on;
 - a second `up` changes nothing, and leaves the running dependent alone; a
   wrong mode or owner is repaired;
-- `wait-mount` holds the dependent until a tmpfs is mounted, and the
-  container sees the mounted filesystem;
+- `wait-mount` holds the dependent until a tmpfs is mounted, the container
+  sees the mounted filesystem, and a directory inside it is made on the
+  mount, with its owner;
 - the waits time out with a clear message, before the dependent is created;
 - a failing `run` fails `up` with its error output;
 - `stop` and `down` run their commands, and `-p NAME` without `-f` does not

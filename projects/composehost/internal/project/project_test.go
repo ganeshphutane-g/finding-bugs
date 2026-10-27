@@ -9,14 +9,29 @@ import (
 )
 
 func TestParseFlags(t *testing.T) {
-	f, rest := ParseFlags([]string{"--progress", "plain", "-p", "up", "--dry-run", "-f", "a.yaml", "--file=b.yaml", "-fc.yaml",
+	f, rest, err := ParseFlags([]string{"--progress", "plain", "-p", "up", "--dry-run", "-f", "a.yaml", "--file=b.yaml", "-fc.yaml",
 		"--project-directory=/srv", "--env-file", "x.env", "up", "-d", "-f", "not-a-global"})
 	want := Flags{Files: []string{"a.yaml", "b.yaml", "c.yaml"}, ProjectDirectory: "/srv", EnvFiles: []string{"x.env"}}
-	if !reflect.DeepEqual(f, want) || !reflect.DeepEqual(rest, []string{"up", "-d", "-f", "not-a-global"}) {
-		t.Fatalf("%+v %v", f, rest)
+	if err != nil || !reflect.DeepEqual(f, want) || !reflect.DeepEqual(rest, []string{"up", "-d", "-f", "not-a-global"}) {
+		t.Fatalf("%+v %v %v", f, rest, err)
 	}
-	if _, rest := ParseFlags([]string{"-f"}); rest != nil {
-		t.Fatal(rest)
+	// The Docker CLI's flags come first when Compose is its plugin.
+	for _, args := range [][]string{
+		{"--context", "default", "-D", "compose", "-f", "/p/c.yaml", "up"},
+		{"-c", "x", "--log-level", "info", "-H", "unix:///s", "--tlsverify", "compose", "--file", "/p/c.yaml", "up"},
+		{"--context=x", "-f", "/p/c.yaml", "up"}, // docker-compose on its own
+		{"compose", "--workdir", "/p", "up"},
+	} {
+		f, rest, err := ParseFlags(args)
+		if err != nil || rest[0] != "up" || (f.Files == nil && f.ProjectDirectory != "/p") || (f.Files != nil && f.Files[0] != "/p/c.yaml") {
+			t.Errorf("%v: %+v %v %v", args, f, rest, err)
+		}
+	}
+	// A flag it does not know could take a value: an error, not a guess.
+	for _, args := range [][]string{{"-f"}, {"--frobnicate", "x", "-f", "c.yaml", "up"}, {"-x", "up"}} {
+		if _, _, err := ParseFlags(args); err == nil {
+			t.Errorf("%v: no error", args)
+		}
 	}
 }
 
@@ -70,6 +85,16 @@ func TestDir(t *testing.T) {
 	if d := dir(Flags{EnvFiles: []string{"other.env"}}, sub); d != "/opt/other" {
 		t.Fatal(d)
 	}
+	env["COMPOSE_ENV_FILES"] = "none.env,other.env"
+	if d := dir(Flags{}, sub); d != "/opt/other" {
+		t.Fatal(d)
+	}
+	delete(env, "COMPOSE_ENV_FILES")
+	env["COMPOSE_DISABLE_ENV_FILE"] = "true"
+	if d := dir(Flags{}, sub); d != root {
+		t.Fatal(d)
+	}
+	delete(env, "COMPOSE_DISABLE_ENV_FILE")
 	os.Remove(filepath.Join(sub, ".env"))
 
 	os.Remove(filepath.Join(root, "compose.yaml"))
@@ -104,6 +129,35 @@ func TestFromParent(t *testing.T) {
 	if d, err := FromParent(); err != nil || d != proj {
 		t.Fatalf("%q %v", d, err)
 	}
+	cmdline("/usr/libexec/docker/cli-plugins/docker-compose", "--context", "default", "compose", "-f", proj+"/compose.yaml", "up")
+	if d, err := FromParent(); err != nil || d != proj {
+		t.Fatalf("%q %v", d, err)
+	}
+	// Relative to the logical working directory ($PWD through a link), as
+	// Compose sees it, not the physical one.
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	os.MkdirAll(filepath.Join(base, "real", "deep", "here"), 0o755)
+	os.MkdirAll(filepath.Join(base, "logical", "proj"), 0o755)
+	os.WriteFile(filepath.Join(base, "logical", "proj", "compose.yaml"), nil, 0o644)
+	os.Symlink(filepath.Join(base, "real", "deep", "here"), filepath.Join(base, "logical", "here"))
+	os.Remove(filepath.Join(pid, "cwd"))
+	os.Symlink(filepath.Join(base, "real", "deep", "here"), filepath.Join(pid, "cwd"))
+	os.WriteFile(filepath.Join(pid, "environ"), []byte("PWD="+filepath.Join(base, "logical", "here")+"\x00"), 0o644)
+	cmdline("docker-compose", "-f", "../proj/compose.yaml", "up")
+	if d, err := FromParent(); err != nil || d != filepath.Join(base, "logical", "proj") {
+		t.Fatalf("%q %v", d, err)
+	}
+	// A $PWD that is not the working directory is ignored.
+	os.WriteFile(filepath.Join(pid, "environ"), []byte("PWD=/\x00"), 0o644)
+	if _, err := FromParent(); err == nil {
+		t.Fatal("used a stale $PWD")
+	}
+	cmdline("docker-compose", "--frob", "x", "-f", proj+"/compose.yaml", "up")
+	if _, err := FromParent(); err == nil {
+		t.Fatal("an unknown flag, no error")
+	}
+	os.Remove(filepath.Join(pid, "cwd"))
+	os.Symlink("/", filepath.Join(pid, "cwd"))
 	cmdline("/usr/bin/bash", "-c", "composehost compose up x")
 	if _, err := FromParent(); err == nil {
 		t.Fatal("not Compose, no error")
