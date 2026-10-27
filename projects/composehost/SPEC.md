@@ -62,7 +62,19 @@ found.
 
 **Calls:**
 - Compose runs `composehost compose metadata`, then `composehost compose
-  --project-name=P up --opt=v ... SERVICE`, in the project directory.
+  --project-name=P up --opt=v ... SERVICE`.
+- **Correction (2026-10-28, found in review):** it runs them in its
+  caller's working directory, not the project's, and passes no project
+  directory (only `COMPOSE_PROJECT_NAME`). The first lab runs were all made
+  from the project directory, which hid this. composehost reads the parent
+  Compose process's arguments and environment from /proc and applies
+  Compose's rules (`--project-directory`, the first `-f` or `COMPOSE_FILE`,
+  else the nearest compose file up from the working directory); if it
+  cannot tell, it fails.
+- Compose sets `COMPOSE_PROVIDER_MESSAGES` (5.6.0:
+  `error,info,setenv,rawsetenv,debug,...`). Compose v2.36.1's source knows
+  only error, info, setenv and debug, and has no `stop` (read by the
+  reviewer, not tested).
 - Dependents start after `up` exits 0. A non-zero exit, with an `error` JSON
   line, fails `up` and shows the message.
 - `up` is called on every `docker compose up`.
@@ -93,7 +105,7 @@ The options of one provider service, run in this order on `up`:
 |---|---|
 | `mkdir: PATH` (repeat) | Create the directory (and parents) if missing. Relative paths are from the project directory. |
 | `owner: UID:GID` | Owner of the `mkdir` directories, set on every `up` when different (needs root). |
-| `mode: 0750` | Their mode, likewise. |
+| `mode: "0750"` | Their mode, likewise (quoted: YAML reads 0750 as 488). |
 | `wait-mount: PATH` (repeat) | Until PATH is a mount point (not the empty directory beneath). |
 | `wait-path: PATH` (repeat) | Until PATH exists. |
 | `wait-tcp: HOST:PORT` (repeat) | Until a TCP connection succeeds. |
@@ -129,8 +141,8 @@ Also:
 
 ## Tech
 
-- Go, one static binary, no dependencies beyond the standard library (and
-  x/sys for mount detection).
+- Go, one static binary, no dependencies beyond the standard library and
+  x/sys (openat-based mkdir).
 - Installed on PATH as `composehost`, or as a Docker CLI plugin
   (`docker-composehost`, which Compose also finds).
 

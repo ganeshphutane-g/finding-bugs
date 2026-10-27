@@ -13,18 +13,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ganeshphutane-g/composehost/internal/project"
 	"github.com/ganeshphutane-g/composehost/internal/protocol"
 	"github.com/ganeshphutane-g/composehost/internal/steps"
 )
 
-// ComposeConfig runs "docker compose [-f FILE]... config --format json"
-// (a variable for tests).
-var ComposeConfig = func(files []string) ([]byte, error) {
-	args := []string{"compose"}
-	for _, f := range files {
-		args = append(args, "-f", f)
-	}
-	args = append(args, "config", "--format", "json")
+// ComposeConfig runs "docker compose FLAGS... config --format json" (a
+// variable for tests).
+var ComposeConfig = func(flags []string) ([]byte, error) {
+	args := append(append([]string{"compose"}, flags...), "config", "--format", "json")
 	var out, errb bytes.Buffer
 	cmd := exec.Command("docker", args...)
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -63,25 +60,23 @@ func Check(args []string, stdout, stderr io.Writer, pending func(dir string, w s
 			return steps.Pending(ctx, dir, w)
 		}
 	}
-	var files []string
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case (a == "-f" || a == "--file") && i+1 < len(args):
-			files = append(files, args[i+1])
-			i++
-		case strings.HasPrefix(a, "--file="):
-			files = append(files, strings.TrimPrefix(a, "--file="))
-		default:
-			fmt.Fprintf(stderr, "composehost check: unexpected %q (use -f FILE)\n", a)
-			return 2
-		}
+	// Compose's own global flags, passed on to it.
+	flags, rest := project.ParseFlags(args)
+	if len(rest) > 0 {
+		fmt.Fprintf(stderr, "composehost check: unexpected %q (it takes Compose's flags: -f FILE, -p NAME, --project-directory DIR, --env-file FILE, --profile NAME)\n", rest[0])
+		return 2
 	}
-	dir, err := projectDir(files)
+	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintln(stderr, "composehost:", err)
 		return 1
 	}
-	b, err := ComposeConfig(files)
+	dir, err := project.Dir(flags, os.Getenv, cwd)
+	if err != nil {
+		fmt.Fprintln(stderr, "composehost:", err)
+		return 1
+	}
+	b, err := ComposeConfig(args)
 	if err != nil {
 		fmt.Fprintln(stderr, "composehost:", err)
 		return 1
@@ -177,43 +172,6 @@ func unescape(v []string) []string {
 	return out
 }
 
-// composeFiles are the names Compose looks for, in its order.
-var composeFiles = []string{"compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"}
-
-// projectDir is where Compose runs the provider: the first file's
-// directory (from -f, else COMPOSE_FILE), else the nearest directory, from
-// here up, holding a compose file.
-func projectDir(files []string) (string, error) {
-	if len(files) == 0 && os.Getenv("COMPOSE_FILE") != "" {
-		sep := os.Getenv("COMPOSE_PATH_SEPARATOR")
-		if sep == "" {
-			sep = string(os.PathListSeparator)
-		}
-		files = strings.Split(os.Getenv("COMPOSE_FILE"), sep)
-	}
-	if len(files) > 0 {
-		if files[0] == "-" {
-			return os.Getwd()
-		}
-		return filepath.Abs(filepath.Dir(files[0]))
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for d := wd; ; d = filepath.Dir(d) {
-		for _, n := range composeFiles {
-			if _, err := os.Stat(filepath.Join(d, n)); err == nil {
-				return d, nil
-			}
-		}
-		if filepath.Dir(d) == d {
-			// Compose itself will say there is no file.
-			return wd, nil
-		}
-	}
-}
-
 // describe is a plan's steps, as label and text.
 func describe(cmd string, p plan) [][2]string {
 	var out [][2]string
@@ -234,7 +192,11 @@ func describe(cmd string, p plan) [][2]string {
 		t := "mkdir " + strings.Join(p.mkdir, " ")
 		var with []string
 		if p.owner != nil {
-			with = append(with, fmt.Sprintf("owner %d:%d", p.owner.UID, p.owner.GID))
+			o := fmt.Sprint(p.owner.UID)
+			if p.owner.GID >= 0 {
+				o += fmt.Sprintf(":%d", p.owner.GID)
+			}
+			with = append(with, "owner "+o)
 		}
 		if p.mode != nil {
 			with = append(with, fmt.Sprintf("mode %04o", uint32(*p.mode)))

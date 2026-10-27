@@ -10,10 +10,14 @@ import (
 	"io/fs"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/ganeshphutane-g/composehost/internal/project"
 	"github.com/ganeshphutane-g/composehost/internal/protocol"
 	"github.com/ganeshphutane-g/composehost/internal/steps"
 )
@@ -130,6 +134,9 @@ func version() string {
 	return Version
 }
 
+// ProjectDir finds the project directory (a variable for tests).
+var ProjectDir = project.FromParent
+
 // Provider answers one call from Compose.
 func Provider(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	out := &protocol.Out{W: stdout}
@@ -143,9 +150,10 @@ func Provider(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if call.Command == "metadata" {
 		return printMetadata(stdout)
 	}
-	dir, err := os.Getwd()
+	// Compose runs providers in its caller's directory, not the project's.
+	dir, err := ProjectDir()
 	if err != nil {
-		out.Error(err.Error())
+		out.Error("cannot tell the project directory: " + err.Error())
 		return 1
 	}
 	if err := do(ctx, out, dir, call); err != nil {
@@ -229,7 +237,7 @@ func do(ctx context.Context, out *protocol.Out, dir string, call protocol.Call) 
 	if err != nil {
 		return err
 	}
-	env := []string{"COMPOSEHOST_SERVICE=" + call.Service, "COMPOSE_PROJECT_NAME=" + call.Project}
+	env := []string{"COMPOSEHOST_SERVICE=" + call.Service, "COMPOSE_PROJECT_NAME=" + call.Project, "COMPOSEHOST_PROJECT_DIR=" + dir}
 	switch call.Command {
 	case "down", "stop":
 		cmd := p.down
@@ -242,8 +250,24 @@ func do(ctx context.Context, out *protocol.Out, dir string, call protocol.Call) 
 		err := steps.Run(ctx, out, dir, call.Command, cmd, p.timeout, env)
 		return err
 	}
-	// up: mkdir, waits, run, env.
-	if err := steps.Mkdir(out, dir, p.mkdir, p.owner, p.mode); err != nil {
+	// Compose announces the message types it takes (newer ones do).
+	if m, ok := os.LookupEnv("COMPOSE_PROVIDER_MESSAGES"); ok && p.env != "" && !slices.Contains(strings.Split(m, ","), "rawsetenv") {
+		return fmt.Errorf("env: this Compose does not take environment values from providers (rawsetenv); it needs a newer Compose")
+	}
+	// up: mkdir, waits, run, env. A mount point is only created: its owner
+	// and mode would be the mounted filesystem's once it is there.
+	var mkdir, mountPoints []string
+	for _, d := range p.mkdir {
+		if slices.ContainsFunc(p.waits.Mounts, func(m string) bool { return filepath.Clean(m) == filepath.Clean(d) }) {
+			mountPoints = append(mountPoints, d)
+		} else {
+			mkdir = append(mkdir, d)
+		}
+	}
+	if err := steps.Mkdir(out, dir, mkdir, p.owner, p.mode); err != nil {
+		return err
+	}
+	if err := steps.Mkdir(out, dir, mountPoints, nil, nil); err != nil {
 		return err
 	}
 	if err := steps.Wait(ctx, out, dir, p.waits); err != nil {

@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: projects/composehost/go.mod
-          cache-dependency-path: projects/composehost/go.mod
+          cache-dependency-path: projects/composehost/go.sum
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
@@ -38,13 +38,19 @@ jobs:
           done
       - name: unit tests
         run: go test -race -count=1 ./...
+      - name: unit tests as root (chown, and links in directories others own)
+        run: |
+          go test -c -o /tmp/steps.test ./internal/steps
+          cd internal/steps && sudo /tmp/steps.test -test.count=1
       - name: Docker Compose ${{ env.COMPOSE_VERSION }}
         run: |
           docker compose version || true
-          sudo mkdir -p /usr/local/lib/docker/cli-plugins
-          sudo curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
-            "https://github.com/docker/compose/releases/download/$COMPOSE_VERSION/docker-compose-linux-x86_64"
-          sudo chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+          cd "$RUNNER_TEMP"
+          base="https://github.com/docker/compose/releases/download/$COMPOSE_VERSION"
+          curl -fsSLO "$base/docker-compose-linux-x86_64"
+          curl -fsSLO "$base/docker-compose-linux-x86_64.sha256"
+          sha256sum -c docker-compose-linux-x86_64.sha256
+          sudo install -D -m 0755 docker-compose-linux-x86_64 /usr/local/lib/docker/cli-plugins/docker-compose
           sudo docker compose version
           docker version --format 'Docker {{.Server.Version}}'
       - name: end to end with dockerd and Compose (root)

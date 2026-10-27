@@ -65,8 +65,10 @@ the host steps above.
 
 ## Install
 
-Docker Compose 2.36.1 or later (tested with 5.6.0) on Linux. With Go 1.24 or
-newer:
+Linux, with Docker Compose v5.6.0 (the version tested). Compose has had
+provider services since 2.36, but its early versions take neither the
+`rawsetenv` messages `env` needs nor `stop`. composehost says so when Compose
+announces the message types it takes. With Go 1.24 or newer:
 
 ```sh
 git clone https://github.com/ganeshphutane-g/finding-bugs
@@ -85,7 +87,7 @@ docker composehost check
 ```
 
 The steps run as the user running `docker compose`, on the machine where it
-runs. `owner` needs root, or that user owning the directories already.
+runs. `owner` needs root, unless that user owns the directories already.
 
 ## Quickstart
 
@@ -118,7 +120,7 @@ $ docker compose --progress plain up
  host ./config owned by 1000:1000
  host waiting for ./nas to be mounted
  host run: ./prepare.sh
- host env: echo BUILD_ID=$(git rev-parse --short HEAD 2>/dev/null || echo none)
+ host env: echo …
  host env: 1 value for the dependent services
  host Created
  Container demo-app-1 Creating
@@ -126,8 +128,8 @@ $ docker compose --progress plain up
 Attaching to app-1
  Container demo-app-1 Starting
  Container demo-app-1 Started
-app-1  | drwxr-x---    2 1000     1000          4096 Oct 27 19:31 config
-app-1  | drwxr-x---    2 1000     1000          4096 Oct 27 19:31 data
+app-1  | drwxr-x---    2 1000     1000          4096 Oct 27 19:51 config
+app-1  | drwxr-x---    2 1000     1000          4096 Oct 27 19:51 data
 app-1  | movie.mkv
 app-1  | BUILD_ID=none
 ```
@@ -139,7 +141,7 @@ On `docker compose down`:
 
 ```
  host Removing
- host down: rm -f ./data/ready
+ host down: rm …
  host Removed
 ```
 
@@ -167,25 +169,31 @@ On `up` the steps run in this order: `mkdir`, the waits, `run`, `env`.
 
 | Option | |
 |---|---|
-| `mkdir: PATH` (or a list) | Create the directory, with its parents, if missing. Relative paths are from the project directory. Parents get mode 0755. |
+| `mkdir: PATH` (or a list) | Create the directory, with its parents, if missing. Relative paths are from the project directory. Parents get mode 0755. A path that is also a `wait-mount` is only created: its owner and mode would be the mounted filesystem's. |
 | `owner: UID:GID` | The owner of the `mkdir` directories, set on every `up` when it differs. Also `USER:GROUP`, `USER` (its primary group) or `UID`. |
-| `mode: 0750` | Their mode, set on every `up` when it differs (up to 0777). |
-| `wait-mount: PATH` (or a list) | Wait until PATH is a mount point, not just the empty directory beneath. |
+| `mode: "0750"` | Their mode, set on every `up` when it differs (up to 0777). Quote it: YAML reads an unquoted 0750 as the number 488. |
+| `wait-mount: PATH` (or a list) | Wait until PATH is a mount point, not just the empty directory beneath (nor an automount point not mounted yet). |
 | `wait-path: PATH` (or a list) | Wait until PATH exists. |
 | `wait-tcp: HOST:PORT` (or a list) | Wait until a TCP connection to it succeeds. |
 | `wait-timeout: 60s` | How long the waits may take in all; then `up` fails. |
 | `run: COMMAND` | A host command (`sh -c`, in the project directory). `up` fails if it fails, with the last lines of its error output. |
-| `env: COMMAND` | A host command whose `KEY=VALUE` output lines become environment variables of the dependent services. `export`, blank lines, `#` comments and quotes around a value are allowed. |
+| `env: COMMAND` | A host command whose `KEY=VALUE` output lines become environment variables of the dependent services. `export`, blank lines and `#` comment lines are allowed, and matching quotes around a whole value are removed (no escapes, no comments after a value). |
 | `stop: COMMAND` | A host command on `docker compose stop`. |
 | `down: COMMAND` | A host command on `docker compose down`. |
 | `timeout: 5m` | The longest `run`, `env`, `stop` or `down` may take. |
 
 **How the commands run:**
-- They get `COMPOSE_PROJECT_NAME`, and `COMPOSEHOST_SERVICE` (the provider
+- In the project directory, with `sh -c`. They get `COMPOSE_PROJECT_NAME`,
+  `COMPOSEHOST_PROJECT_DIR`, and `COMPOSEHOST_SERVICE` (the provider
   service's name).
+- Only a command's first word is shown (`run: curl …`): Compose has already
+  put variables' values into it, so the rest may hold secrets.
 - `docker compose --verbose` shows their whole output, except the standard
-  output of `env`: that is the values, often secrets, so it is never
-  logged.
+  output of `env`: that is the values, often secrets, so it is never shown,
+  not even when a line of it is malformed.
+- A process they start in the background (`./helper &`) keeps running.
+  Redirect its output: once the command exits, nobody reads it.
+- On a `timeout`, the command and everything it started are killed.
 - Compose interpolates `$VAR` in the compose file from *its* environment
   when it reads the file. Write `$$VAR` for a variable the command should
   expand itself, as in `$$(git ...)` above.
@@ -203,21 +211,37 @@ composehost compose ...          what Compose calls (metadata, up, stop, down)
 composehost version
 ```
 
-`check` reads the project through `docker compose config`, so it sees what
-Compose sees: the same files, overrides, `.env` and profiles. Without `-f`,
-it uses `COMPOSE_FILE`, or the nearest compose file in this directory or
-above, as Compose does. It also catches a misspelled option (`mdoe:`).
-Compose passes only the options composehost declares, so it would drop such
-an option without a word. Exit codes:
+`check` takes Compose's own global flags (`-f`, `-p`, `--project-directory`,
+`--env-file`, `--profile`) and reads the project through `docker compose
+config` with them, so it sees what Compose sees. It also catches a
+misspelled option (`mdoe:`). Compose passes only the options composehost
+declares, so it would drop such an option without a word. Unlike the
+provider, it shows the commands in full. Exit codes:
 - 0: everything is fine;
 - 1: an error, such as a bad option or value;
+- 2: wrong usage;
 - 3: a wait is not met yet.
 
 ## How it works
 
 Compose runs `composehost compose metadata` to learn the options. Then, on
 `up`, it runs `composehost compose --project-name=P up --mkdir=./data ...
-host` in the project directory, before the dependent services.
+host`, before the dependent services.
+
+Compose runs it in its caller's working directory, which need not be the
+project's (`docker compose -f /srv/app/compose.yaml up` from anywhere), and
+does not say which directory the project is in. So composehost reads the
+arguments, environment and directory of the Compose process that started it
+(from /proc) and applies Compose's own rules:
+1. `--project-directory`;
+2. else the first compose file's directory (`-f`, else `COMPOSE_FILE`
+   from the environment or the `.env` file);
+3. else the nearest directory, from the working directory up, with a
+   compose file.
+
+If it cannot tell, it fails rather than guess.
+
+**The progress messages:**
 - composehost reports progress and errors as JSON lines on its standard
   output, which Compose shows in its own progress output.
 - The `env` values go back as `rawsetenv` messages, which Compose adds to
@@ -225,6 +249,15 @@ host` in the project directory, before the dependent services.
 - A non-zero exit fails `up`.
 
 `stop` and `down` are called the same way.
+
+**Directories, safely as root.** composehost often runs as root, on
+directories that containers, as other users, can change. So `mkdir` walks
+each path one directory at a time (openat with O_NOFOLLOW), and sets the
+owner and mode on the opened directory. A symbolic link is followed only
+where the directory holding it belongs to root, or to the user composehost
+runs as, and no one else can write to it. Elsewhere it is refused, so a
+container user cannot swap in a link to make root chown or chmod something
+else.
 
 ## Limits
 
@@ -244,18 +277,27 @@ These are from Compose's provider design, and were checked with Compose
   that bundles its own Compose inside a container (Dockge, Portainer) needs
   composehost in that container, and then acts there.
 - **`owner` needs root**, unless you already own the directories.
+- **Linux only** for the provider: finding the project directory needs
+  /proc.
 
 ## Testing
 
 `make test` runs the unit tests.
+
+`make test` also covers, as root, links swapped into a directory that a
+container user owns, and creating directories under a strict umask.
 
 `make test-compose` (root, with dockerd running) runs the end-to-end tests
 against real dockerd and Compose. They check:
 - `up` creates the directories with their owner and mode, runs `run`, and
   passes `env` values. The container sees all of them, and a parent
   directory keeps 0755;
+- `--verbose` does not show `env` values;
+- the steps happen in the project directory when Compose is run from
+  elsewhere with `-f`, from a subdirectory, with `--project-directory`, or
+  with `COMPOSE_FILE`;
 - a second `up` changes nothing, and leaves the running dependent alone; a
-  wrong mode is repaired;
+  wrong mode or owner is repaired;
 - `wait-mount` holds the dependent until a tmpfs is mounted, and the
   container sees the mounted filesystem;
 - the waits time out with a clear message, before the dependent is created;
@@ -263,7 +305,9 @@ against real dockerd and Compose. They check:
 - `stop` and `down` run their commands, and `-p NAME` without `-f` does not
   (the limit above; the test fails if Compose changes it);
 - `check` finds the project from a subdirectory, catches a misspelled
-  option, and reports unmet and met waits.
+  option, and reports unmet and met waits;
+- installed only as the Docker CLI plugin `docker-composehost`, Compose
+  finds and runs it, and `docker composehost` works.
 
 CI runs them on every change, with Compose v5.6.0.
 

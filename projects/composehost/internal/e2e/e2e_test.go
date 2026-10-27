@@ -97,6 +97,20 @@ func (p *project) compose(args ...string) (string, error) {
 	return out.String(), err
 }
 
+// composeIn runs docker compose ARGS in dir, with env added, as given (no
+// -p or -f of its own).
+func composeIn(t *testing.T, dir string, env []string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("docker", append([]string{"compose", "--progress", "plain"}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err := cmd.Run()
+	t.Logf("in %s: %s docker compose %s:\n%s", dir, strings.Join(env, " "), strings.Join(args, " "), out.String())
+	return out.String(), err
+}
+
 func (p *project) up(args ...string) string {
 	p.t.Helper()
 	out, err := p.compose(append([]string{"up", "-d"}, args...)...)
@@ -157,13 +171,111 @@ services:
     depends_on: [host]
 `)
 	out := p.up()
-	mustContain(t, out, "host created ./data", "host ./data owned by 1000:1000", "host run: echo preparing", "host env: 2 values")
+	mustContain(t, out, "host created ./data", "host ./data owned by 1000:1000", "host run: echo …", "host env: 2 values")
+	// Even with --verbose, env values are not shown.
+	verbose, err := p.compose("--verbose", "up", "-d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, verbose, "level=debug")
+	if strings.Contains(verbose, "abc def") {
+		t.Fatal("--verbose showed an env value")
+	}
 	logs := p.logs("app")
 	mustContain(t, logs, "/data 1000:1000 750", "/config/sub 1000:1000 750", "prepared", "GREETING=hello TOKEN=abc def")
 	// The parent of a nested directory gets the usual mode, not the
 	// directory's own.
 	if st, err := os.Stat(filepath.Join(p.dir, "config")); err != nil || st.Mode().Perm() != 0o755 {
 		t.Fatalf("config: %v %v", st.Mode(), err)
+	}
+}
+
+// Compose runs providers in its caller's directory: the steps still happen
+// in the project directory, however Compose was told where it is.
+func TestProjectDirectory(t *testing.T) {
+	p := newProject(t, `
+services:
+  host:
+    provider:
+      type: composehost
+      options:
+        mkdir: ./data
+        run: "pwd > ./data/where; echo $$COMPOSEHOST_PROJECT_DIR >> ./data/where"
+  app:
+    image: IMAGE
+    command: ["true"]
+    depends_on: [host]
+`)
+	elsewhere := t.TempDir()
+	sub := filepath.Join(p.dir, "sub")
+	os.Mkdir(sub, 0o755)
+	file := filepath.Join(p.dir, "compose.yaml")
+	for _, c := range []struct {
+		name string
+		dir  string
+		env  []string
+		args []string
+	}{
+		{"-f from elsewhere", elsewhere, nil, []string{"-p", p.name, "-f", file}},
+		{"from a subdirectory", sub, nil, []string{"-p", p.name}},
+		{"--project-directory", elsewhere, nil, []string{"-p", p.name, "-f", file, "--project-directory", p.dir}},
+		{"COMPOSE_FILE", elsewhere, []string{"COMPOSE_FILE=" + file, "COMPOSE_PROJECT_NAME=" + p.name}, nil},
+	} {
+		os.RemoveAll(filepath.Join(p.dir, "data"))
+		if out, err := composeIn(t, c.dir, c.env, append(c.args, "up", "-d")...); err != nil {
+			t.Fatalf("%s: %v: %s", c.name, err, out)
+		}
+		b, err := os.ReadFile(filepath.Join(p.dir, "data", "where"))
+		if want := p.dir + "\n" + p.dir + "\n"; err != nil || string(b) != want {
+			t.Errorf("%s: %q %v, want %q", c.name, b, err, want)
+		}
+		if _, err := os.Stat(filepath.Join(c.dir, "data")); c.dir != p.dir && err == nil {
+			t.Errorf("%s: data created where Compose was run", c.name)
+		}
+		composeIn(t, c.dir, c.env, append(c.args, "down", "-t", "0")...)
+	}
+}
+
+// Installed only as a Docker CLI plugin, Compose finds it too.
+func TestCLIPlugin(t *testing.T) {
+	p := newProject(t, `
+services:
+  host:
+    provider:
+      type: composehost
+      options:
+        run: "touch ran"
+  app:
+    image: IMAGE
+    command: ["true"]
+    depends_on: [host]
+`)
+	config := t.TempDir()
+	plugins := filepath.Join(config, "cli-plugins")
+	os.Mkdir(plugins, 0o755)
+	bin, _ := exec.LookPath("composehost")
+	real, _ := filepath.EvalSymlinks(bin)
+	if err := os.Symlink(real, filepath.Join(plugins, "docker-composehost")); err != nil {
+		t.Fatal(err)
+	}
+	// PATH without composehost.
+	var path []string
+	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
+		if d != filepath.Dir(bin) {
+			path = append(path, d)
+		}
+	}
+	env := []string{"DOCKER_CONFIG=" + config, "PATH=" + strings.Join(path, string(os.PathListSeparator))}
+	if out, err := composeIn(t, p.dir, env, "-p", p.name, "up", "-d"); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if !p.exists("ran") {
+		t.Fatal("the plugin did not run")
+	}
+	cmd := exec.Command("docker", "composehost", "version")
+	cmd.Env = append(os.Environ(), env...)
+	if b, err := cmd.CombinedOutput(); err != nil || !strings.HasPrefix(string(b), "composehost ") {
+		t.Errorf("docker composehost version: %v %s", err, b)
 	}
 }
 
@@ -191,6 +303,14 @@ services:
 	mustContain(t, out, "Container "+p.name+"-app-1 Running")
 	os.Chmod(filepath.Join(p.dir, "data"), 0o777)
 	mustContain(t, p.up(), "host ./data mode 0700")
+	os.Chown(filepath.Join(p.dir, "data"), 0, 0)
+	p.compose("down", "-t", "0")
+	os.WriteFile(filepath.Join(p.dir, "compose.yaml"), bytes.Replace(must(os.ReadFile(filepath.Join(p.dir, "compose.yaml"))), []byte(`mode: "0700"`), []byte(`mode: "0700"
+        owner: "1000:1000"`), 1), 0o644)
+	mustContain(t, p.up(), "host ./data owned by 1000:1000")
+	p.compose("down", "-t", "0")
+	os.Chown(filepath.Join(p.dir, "data"), 0, 0)
+	mustContain(t, p.up(), "host ./data owned by 1000:1000")
 }
 
 // The dependent waits until the mount appears; it sees the mounted

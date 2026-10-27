@@ -36,6 +36,12 @@ func check(t *testing.T, cfg string, cfgErr error, pending []string, args ...str
 		gotFiles = files
 		return []byte(cfg), cfgErr
 	}
+	// The project directory: here, with a compose file.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "compose.yaml"), nil, 0o644)
+	wd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(wd)
 	var out, errb bytes.Buffer
 	code := Check(args, &out, &errb, func(dir string, w steps.Waits) ([]string, error) {
 		return pending, nil
@@ -44,11 +50,11 @@ func check(t *testing.T, cfg string, cfgErr error, pending []string, args ...str
 }
 
 func TestCheck(t *testing.T) {
-	code, out, errs, files := check(t, config, nil, nil, "-f", "a.yaml", "--file=b.yaml")
+	code, out, errs, files := check(t, config, nil, nil, "-f", "a.yaml", "--file=b.yaml", "--profile", "x")
 	if code != 0 || errs != "" {
 		t.Fatalf("code %d: %s%s", code, out, errs)
 	}
-	if !reflect.DeepEqual(files, []string{"a.yaml", "b.yaml"}) {
+	if !reflect.DeepEqual(files, []string{"-f", "a.yaml", "--file=b.yaml", "--profile", "x"}) {
 		t.Fatalf("files %v", files)
 	}
 	want := `host:
@@ -121,34 +127,5 @@ func TestIsComposehost(t *testing.T) {
 		if isComposehost(typ) != want {
 			t.Errorf("%s: %v", typ, !want)
 		}
-	}
-}
-
-func TestProjectDir(t *testing.T) {
-	root := t.TempDir()
-	root, _ = filepath.EvalSymlinks(root)
-	sub := filepath.Join(root, "a", "b")
-	os.MkdirAll(sub, 0o755)
-	os.WriteFile(filepath.Join(root, "compose.yaml"), []byte("services: {}\n"), 0o644)
-	old, _ := os.Getwd()
-	defer os.Chdir(old)
-	os.Chdir(sub)
-	t.Setenv("COMPOSE_FILE", "")
-
-	// Like Compose: the nearest directory up with a compose file.
-	if d, err := projectDir(nil); err != nil || d != root {
-		t.Fatalf("%q %v", d, err)
-	}
-	if d, _ := projectDir([]string{"../x.yaml", "y.yaml"}); d != filepath.Join(root, "a") {
-		t.Fatalf("%q", d)
-	}
-	t.Setenv("COMPOSE_FILE", "/srv/app/compose.yaml:/srv/app/override.yaml")
-	if d, _ := projectDir(nil); d != "/srv/app" {
-		t.Fatalf("%q", d)
-	}
-	os.Remove(filepath.Join(root, "compose.yaml"))
-	t.Setenv("COMPOSE_FILE", "")
-	if d, _ := projectDir(nil); d != sub {
-		t.Fatalf("%q", d)
 	}
 }

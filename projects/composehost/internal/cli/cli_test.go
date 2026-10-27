@@ -15,9 +15,9 @@ type msg struct{ Type, Message string }
 // call runs composehost as Compose would, in dir, and returns its messages.
 func call(t *testing.T, dir string, args ...string) (int, []msg, string) {
 	t.Helper()
-	old, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(old)
+	old := ProjectDir
+	ProjectDir = func() (string, error) { return dir, nil }
+	defer func() { ProjectDir = old }()
 	var out, errb bytes.Buffer
 	code := Provider(context.Background(), append([]string{"compose", "--project-name=demo"}, args...), &out, &errb)
 	var msgs []msg
@@ -81,6 +81,39 @@ func TestUp(t *testing.T) {
 	}
 	if strings.Join(order, ",") != "created,run:,env:,env:" {
 		t.Errorf("order %v", order)
+	}
+}
+
+// A mount point is created, but its owner and mode are left: they would be
+// the mounted filesystem's.
+func TestUpMountPoint(t *testing.T) {
+	dir := t.TempDir()
+	code, msgs, _ := call(t, dir, "up", "--mkdir=./nas", "--mkdir=data", "--mode=0700", "--wait-mount=nas/", "--wait-timeout=50ms", "host")
+	if code != 1 || !find(msgs, "info", "created ./nas") || find(msgs, "info", "./nas mode") {
+		t.Fatalf("%d %v", code, msgs)
+	}
+	if st, _ := os.Stat(filepath.Join(dir, "nas")); st.Mode().Perm() != 0o755 {
+		t.Errorf("nas: %v", st.Mode())
+	}
+	if st, _ := os.Stat(filepath.Join(dir, "data")); st.Mode().Perm() != 0o700 {
+		t.Errorf("data: %v", st.Mode())
+	}
+}
+
+// env needs a Compose that takes rawsetenv (it says which types it takes).
+func TestUpEnvOldCompose(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("COMPOSE_PROVIDER_MESSAGES", "error,info,setenv,debug")
+	code, msgs, _ := call(t, dir, "up", "--mkdir=data", "--env=echo A=1", "host")
+	if code != 1 || !find(msgs, "error", "needs a newer Compose") {
+		t.Fatalf("%d %v", code, msgs)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data")); err == nil {
+		t.Error("it did steps before failing")
+	}
+	t.Setenv("COMPOSE_PROVIDER_MESSAGES", "error,info,setenv,rawsetenv,debug")
+	if code, msgs, _ := call(t, dir, "up", "--env=echo A=1", "host"); code != 0 || !find(msgs, "rawsetenv", "A=1") {
+		t.Fatalf("%d %v", code, msgs)
 	}
 }
 

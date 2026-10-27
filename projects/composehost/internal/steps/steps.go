@@ -70,74 +70,14 @@ func ParseOwner(s string) (Owner, error) {
 func ParseMode(s string) (fs.FileMode, error) {
 	n, err := strconv.ParseUint(s, 8, 32)
 	if err != nil || n > 0o777 {
-		return 0, fmt.Errorf("mode %q: an octal permission mode such as 0750 (up to 0777)", s)
+		hint := ""
+		// YAML reads an unquoted 0750 as octal, and Compose passes 488.
+		if d, err := strconv.ParseUint(s, 10, 32); err == nil && d <= 0o777 {
+			hint = fmt.Sprintf(" (an unquoted %04o in YAML becomes %d: quote it, mode: \"%04o\")", d, d, d)
+		}
+		return 0, fmt.Errorf("mode %q: an octal permission mode such as 0750 (up to 0777)%s", s, hint)
 	}
 	return fs.FileMode(n), nil
-}
-
-// Mkdir creates each directory (with parents) if missing, then gives it the
-// owner and mode, when set and different. Relative paths are from dir.
-func Mkdir(r Report, dir string, paths []string, owner *Owner, mode *fs.FileMode) error {
-	for _, p := range paths {
-		if p == "" {
-			return errors.New("mkdir: an empty path")
-		}
-		full := p
-		if !filepath.IsAbs(full) {
-			full = filepath.Join(dir, p)
-		}
-		st, err := os.Lstat(full)
-		switch {
-		case err == nil && st.Mode()&fs.ModeSymlink != 0:
-			// Never chown or chmod through a link: it may point anywhere.
-			return fmt.Errorf("mkdir %s: it is a symbolic link; give the real directory", p)
-		case err == nil && !st.IsDir():
-			return fmt.Errorf("mkdir %s: it exists and is not a directory", p)
-		case errors.Is(err, fs.ErrNotExist):
-			// Parents get the usual 0755; the owner and mode are the
-			// directory's own.
-			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-				return fmt.Errorf("mkdir %s: %w", p, err)
-			}
-			m := fs.FileMode(0o755)
-			if mode != nil {
-				m = *mode
-			}
-			if err := os.Mkdir(full, m); err != nil && !errors.Is(err, fs.ErrExist) {
-				return fmt.Errorf("mkdir %s: %w", p, err)
-			}
-			r.Info("created %s", p)
-			if st, err = os.Lstat(full); err != nil {
-				return err
-			}
-		case err != nil:
-			return fmt.Errorf("mkdir %s: %w", p, err)
-		}
-		if owner != nil {
-			uid, gid := ownerOf(st)
-			want := *owner
-			if want.UID == -1 {
-				want.UID = uid
-			}
-			if want.GID == -1 {
-				want.GID = gid
-			}
-			if uid != want.UID || gid != want.GID {
-				if err := os.Lchown(full, want.UID, want.GID); err != nil {
-					return fmt.Errorf("mkdir %s: owner %d:%d: %w (composehost runs as the user running Compose)", p, want.UID, want.GID, err)
-				}
-				r.Info("%s owned by %d:%d", p, want.UID, want.GID)
-			}
-		}
-		if mode != nil && st.Mode().Perm() != *mode {
-			// MkdirAll's mode is cut by the umask; this sets it exactly.
-			if err := os.Chmod(full, *mode); err != nil {
-				return fmt.Errorf("mkdir %s: mode %04o: %w", p, uint32(*mode), err)
-			}
-			r.Info("%s mode %04o", p, uint32(*mode))
-		}
-	}
-	return nil
 }
 
 // Waits are conditions to wait for before the dependent services start.
@@ -164,6 +104,7 @@ func Wait(ctx context.Context, r Report, dir string, w Waits) error {
 	if poll == 0 {
 		poll = 500 * time.Millisecond
 	}
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, w.Timeout)
 	defer cancel()
 	told := map[string]bool{}
@@ -183,6 +124,9 @@ func Wait(ctx context.Context, r Report, dir string, w Waits) error {
 		}
 		select {
 		case <-ctx.Done():
+			if parent.Err() != nil {
+				return fmt.Errorf("stopped while waiting for %s", strings.Join(pending, ", "))
+			}
 			return fmt.Errorf("gave up after %s waiting for %s", w.Timeout, strings.Join(pending, ", "))
 		case <-time.After(poll):
 		}
@@ -212,8 +156,10 @@ func Pending(ctx context.Context, dir string, w Waits) ([]string, error) {
 		}
 	}
 	for _, p := range w.Paths {
-		if _, err := os.Stat(abs(p)); err != nil {
+		if _, err := os.Stat(abs(p)); errors.Is(err, fs.ErrNotExist) {
 			pending = append(pending, p+" to exist")
+		} else if err != nil {
+			return nil, fmt.Errorf("wait-path %s: %w", p, err)
 		}
 	}
 	for _, a := range w.TCP {
@@ -230,7 +176,7 @@ func Pending(ctx context.Context, dir string, w Waits) ([]string, error) {
 
 // IsMountPoint says whether path (symbolic links resolved) is where a
 // filesystem is mounted, by /proc/self/mountinfo: an empty directory that a
-// mount will cover is not one.
+// mount will cover is not one, nor an automount point not yet mounted.
 func IsMountPoint(path string) (bool, error) {
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -244,13 +190,22 @@ func IsMountPoint(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// The last mount at the path is the one on top. An autofs one is only a
+	// placeholder: the real filesystem is mounted over it on first use.
+	mounted := false
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Fields(line)
 		if len(f) > 4 && unescape(f[4]) == real {
-			return true, nil
+			mounted = true
+			for i := 5; i+1 < len(f); i++ {
+				if f[i] == "-" {
+					mounted = f[i+1] != "autofs"
+					break
+				}
+			}
 		}
 	}
-	return false, nil
+	return mounted, nil
 }
 
 // unescape undoes mountinfo's octal escapes (\040 for a space).
@@ -296,9 +251,20 @@ func run(ctx context.Context, r Report, dir, what, command string, timeout time.
 	cmd.Env = append(os.Environ(), env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	cmd.WaitDelay = 2 * time.Second // a child holding the pipes open does not hang Compose
-	r.Info("%s: %s", what, oneLine(command))
+	// A child left running in the background (and holding the pipes open)
+	// does not hang Compose; on a timeout, the whole group is killed.
+	cmd.WaitDelay = 2 * time.Second
+	inGroup(cmd)
+	// Compose has already put the values of variables into the command, so
+	// it may hold secrets: only its first word is shown.
+	name := short(command)
+	r.Info("%s: %s", what, name)
 	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// It exited 0; something it started still has its output.
+		r.Debug("%s: a process it started still holds its output, which is no longer read", what)
+		err = nil
+	}
 	if showStdout {
 		for _, l := range lines(stdout.Bytes()) {
 			r.Debug("%s: %s", what, l)
@@ -308,10 +274,10 @@ func run(ctx context.Context, r Report, dir, what, command string, timeout time.
 		r.Debug("%s (stderr): %s", what, l)
 	}
 	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("%s: %q took longer than %s", what, oneLine(command), timeout)
+		return nil, fmt.Errorf("%s: %s took longer than %s", what, name, timeout)
 	}
 	if err != nil {
-		msg := fmt.Sprintf("%s: %q failed: %v", what, oneLine(command), err)
+		msg := fmt.Sprintf("%s: %s failed: %v", what, name, err)
 		if tail := lastLines(stderr.Bytes(), 5); tail != "" {
 			msg += ": " + tail
 		}
@@ -323,10 +289,12 @@ func run(ctx context.Context, r Report, dir, what, command string, timeout time.
 var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ParseEnv reads KEY=VALUE lines (an optional "export " before; blank
-// lines and # comments skipped). Quotes around a value are removed.
+// lines and # comments skipped). Matching quotes around the whole value are
+// removed; nothing else is (no escapes, no comments after a value).
 func ParseEnv(out []byte) ([][2]string, error) {
 	var env [][2]string
 	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(nil, 1<<20) // a certificate on one line
 	for no := 1; sc.Scan(); no++ {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -335,7 +303,8 @@ func ParseEnv(out []byte) ([][2]string, error) {
 		line = strings.TrimPrefix(line, "export ")
 		k, v, ok := strings.Cut(line, "=")
 		if !ok || !envKey.MatchString(k) {
-			return nil, fmt.Errorf("env: line %d is not KEY=VALUE: %q", no, oneLine(line))
+			// The line is likely a secret: it is not shown.
+			return nil, fmt.Errorf("env: line %d of the output is not KEY=VALUE", no)
 		}
 		if len(v) >= 2 && (v[0] == '"' && v[len(v)-1] == '"' || v[0] == '\'' && v[len(v)-1] == '\'') {
 			v = v[1 : len(v)-1]
@@ -361,6 +330,19 @@ func lastLines(b []byte, n int) string {
 		l = l[len(l)-n:]
 	}
 	return strings.Join(l, " / ")
+}
+
+// short is a command's first word, and "…" if there is more.
+func short(command string) string {
+	f := strings.Fields(command)
+	if len(f) == 0 {
+		return ""
+	}
+	w := strings.TrimRight(f[0], ";&|")
+	if len(f) > 1 || w != f[0] {
+		w += " …"
+	}
+	return w
 }
 
 func oneLine(s string) string {
