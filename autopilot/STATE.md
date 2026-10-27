@@ -1,19 +1,20 @@
 # State
 
-Current project: none (tsroam, #15, is finished; see Finished projects).
-Phase: research (round 17 recorded; checks before the spec next).
+Current project: #16, composehost (host-side steps for Compose projects
+through Compose's provider services). Phase: build. Spec:
+projects/composehost/SPEC.md (with what the lab verified).
 
 ## Next step
 
-Project #16, provisional pick in IDEAS round 17: host-side hooks for Compose
-through its provider services (compose#6736, 225 👍). Before the spec, do
-that entry's "Check before the spec" list:
-- in a lab with a current Compose, test the provider protocol: no output,
-  the working directory, DOCKER_HOST and the context;
-- choose a free name;
-- decide whether `upload` (composeremote) is v1 or phase 2.
+Build composehost, milestone by milestone as in its SPEC:
+1. options, actions and the provider protocol;
+2. `check`, the binary, e2e with real dockerd and Compose, and CI;
+3. docs and two reviews.
 
-Then write SPEC.md and build.
+The lab here: start `dockerd` in the background (Docker 29.8.2, Compose
+v5.6.0 at /usr/libexec/docker/cli-plugins). Compose's provider docs are
+docs/extension.md in docker/compose (fetched with curl from
+raw.githubusercontent.com).
 
 Lab facts (2026-10-24):
 - `GOBIN=/tmp/ts-bin GOTOOLCHAIN=auto go install

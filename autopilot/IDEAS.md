@@ -15,7 +15,34 @@ One research pass covering two things:
 "verified" means read from a GitHub search result or the page itself on
 2026-10-24; "web" means a web-search summary only.
 
-### Chosen (provisional): host-side hooks for Compose through provider services (project #16)
+### Chosen: composehost, host-side hooks for Compose through provider services (project #16)
+
+**Checks done 2026-10-28 (run 15), in a lab with Docker 29.8.2 and Compose
+v5.6.0, using a probe provider that logged every call:**
+- **A silent provider is accepted.** Compose calls `compose metadata`
+  first, then `compose --project-name=P up [--opt=v ...] SERVICE`.
+- **Working directory:** the project directory.
+- **Ordering:** dependents start only after `up` returns.
+- **Options become flags:** lists are repeated flags. Once metadata
+  declares parameters, only those are passed.
+- **`rawsetenv`** reaches the dependent container.
+- **Errors:** a non-zero exit with an `error` message fails `up`, and the
+  message is shown.
+- **Calls:**
+  - `up` runs on every `up`, so it must be idempotent;
+  - `stop` is called only when metadata declares it;
+  - `restart` calls nothing;
+  - `down` and `stop` call the provider only when Compose has the
+    compose file. With `docker compose -p NAME down` and no file, it
+    rebuilds the project from container labels and skips provider
+    teardown.
+- **Remote engines:** `--context` is not passed to the provider (only
+  DOCKER_CLI_PLUGIN_SOCKET); DOCKER_HOST is passed only when it is in the
+  environment. So `upload` (composeremote) is phase 2, once the engine can
+  be found reliably.
+- **Name:** `composehost` is free (`hostprep` and `composehook` are taken).
+
+#### Original notes (provisional pick, round 17)
 
 Since v2.36.0 (web), Compose has "provider services". With
 `provider: type: <binary>`, Compose runs that binary on the machine Compose
