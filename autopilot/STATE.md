@@ -6,10 +6,17 @@ projects/composehost/SPEC.md (with what the lab verified).
 
 ## Next step
 
-Build composehost, milestone by milestone as in its SPEC:
-1. options, actions and the provider protocol;
-2. `check`, the binary, e2e with real dockerd and Compose, and CI;
-3. docs and two reviews.
+composehost milestones 1 and 2 are done (CI green at 2be3510, e2e with real
+dockerd and Compose v5.6.0 run in CI). Milestone 3: README (real runs) and
+CHANGELOG are in (240a1e9). Left: two full reviews with their findings
+fixed, then CI green, then mark it finished and ask the owner for the tag
+`composehost/v1.0.0`. Then research project #17.
+
+Lab facts for composehost (2026-10-28): `-p NAME` without `-f` skips
+providers on stop/down (with -f it works); with `env`, every up recreates
+dependents; `docker-composehost` in ~/.docker/cli-plugins is found by
+Compose; `docker compose --verbose` shows provider debug messages; Docker
+Hub may rate-limit pulls here (busybox:latest is already pulled).
 
 The lab here: start `dockerd` in the background (Docker 29.8.2, Compose
 v5.6.0 at /usr/libexec/docker/cli-plugins). Compose's provider docs are
